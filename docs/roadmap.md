@@ -29,11 +29,11 @@
 | **session / FreeBSD session** | 用户登录之后、由会话管理拉起的一组进程与环境（面板、设置守护、自启动等）；阶段二目标，不等于整个操作系统 |
 | **BSD**（本文） | 除非另有说明，均指 **FreeBSD**；不表示 OpenBSD/NetBSD 已纳入同一验收范围 |
 | **compositor** | 显示服务器侧合成器（如 Wayland compositor），负责把各客户端表面合成到屏幕；可自研（`zero-comp`）或复用现有实现 |
-| **Host** | `zero-platform` 抽象：可接收输入与生命周期事件的宿主；普通 `Window` 是 Host 的一种，面板宿主也是 |
+| **Host** | `zui-platform` 抽象：可接收输入与生命周期事件的宿主；普通 `Window` 是 Host 的一种，面板宿主也是 |
 | **Surface**（platform） | 非窗口或通用呈现表面的 platform 侧抽象（experimental）；**不要**与下项混淆 |
-| **`wgpu::Surface`** | `zero-render` 内部的 GPU 交换链对象，由 raw window handle 创建；应用与 widgets 不直接接触 |
+| **`wgpu::Surface`** | `zui-render` 内部的 GPU 交换链对象，由 raw window handle 创建；应用与 widgets 不直接接触 |
 | **dip** | device-independent pixel，逻辑像素；布局与控件尺寸使用 dip，再按 scale factor 映射到物理像素 |
-| **backend** | 实现 platform 公开 API（经 SPI）的平台适配 crate，如 `zero-backend-winit`；由组装根编译期注入 |
+| **backend** | 实现 platform 公开 API（经 SPI）的平台适配 crate，如 `zui-backend-winit`；由组装根编译期注入 |
 | **SPI** | Service Provider Interface：仅供 backend 使用的钩子/类型；应用与 `zero-ui` 不得依赖 |
 | **capability** | 可选平台能力（剪贴板、托盘、LayerShell 等），按需实现，不同于 `core` 必选面 |
 | **组装根** | example 或二进制的 `main` / `zero-ui-app` 入口：选择 backend、创建 `Renderer`、启动 `Application` |
@@ -53,17 +53,17 @@
        │  选择并注入具体 backend + 创建 Renderer
        ▼
   ┌────────────┐     ┌──────────────┐     ┌─────────────┐
-  │ zero-ui-app│────▶│   zero-ui    │────▶│  zero-core  │
+  │ zero-ui-app│────▶│   zero-ui    │────▶│  zui-core  │
   └─────┬──────┘     └──────┬───────┘     └─────────────┘
         │                   │
         │                   │ 仅依赖绘制抽象（如 DisplayList /
         │                   │ Paint 接口），不直接握 wgpu Device
         │                   ▼
         │            ┌──────────────┐
-        ├───────────▶│ zero-render  │────▶ zero-core
+        ├───────────▶│ zui-render  │────▶ zui-core
         │            └──────────────┘
         │
-        ├───────────▶│ zero-platform │────▶ zero-core
+        ├───────────▶│ zui-platform │────▶ zui-core
         │            │  （公开 API）  │
         │            └───────▲───────┘
         │                    │ implements（backend 实现公开 API；
@@ -76,8 +76,8 @@
 **组装根职责（通常在 `zero-ui-app` 或 example 的 `main`）：**
 
 1. 按 **Cargo feature** 编译进所选 `zero-backend-*`  
-2. 构造实现了 `zero-platform` 公开 API 的 backend 实例  
-3. 构造 `zero-render::Renderer`（拥有 Device）  
+2. 构造实现了 `zui-platform` 公开 API 的 backend 实例  
+3. 构造 `zui-render::Renderer`（拥有 Device）  
 4. 将二者交给 `zero-ui-app::Application`，再挂载 `zero-ui` 控件树  
 
 应用业务与 `zero-ui` **不**自己 `new` 某个 OS backend，也 **不**依赖 backend crate。
@@ -88,11 +88,11 @@
   应用业务 / zero-shell
         │ 使用控件与 Application API
         ▼
-  zero-ui-app  ──编排──▶  zero-ui.paint()  →  zero-render.render_frame()
+  zero-ui-app  ──编排──▶  zero-ui.paint()  →  zui-render.render_frame()
         │                      ▲
         │ 事件/窗口/capability │
         ▼                      │
-  zero-platform 公开 API ◀── backend 实现
+  zui-platform 公开 API ◀── backend 实现
 ```
 
 阶段二新增（不改 widgets 稳定 API；目录见第八节 planned）：
@@ -102,33 +102,64 @@
 - `zero-services-*` → 音频/网络/电源等最小权限服务（M4）  
 - `zero-comp` → compositor（可选、后置）  
 
+### UI 控件通信与状态流
+
+控件之间不直接互相持有或调用。采用「事件/命令输入、状态更新、重新渲染」的单向数据流，降低控件耦合，并保持页面在桌面应用与 shell 场景之间的可复用性：
+
+```text
+控件交互
+   │
+   ▼
+局部事件 / Action / Command
+   │
+   ▼
+父组件或 Application 更新 PageState / AppState
+   │
+   ▼
+控件根据新状态重新布局与绘制
+```
+
+通信方式按范围划分：
+
+| 范围 | 推荐方式 | 说明 |
+|------|----------|------|
+| 控件局部交互 | 父子回调 / 局部事件 | 子控件只报告事件，由父组件协调其他子控件 |
+| 页面内部通信 | 共享 `PageState` + 单向数据流 | 一个控件修改状态，相关控件根据状态更新 |
+| 跨页面或应用级行为 | `Action` / `Command` | 例如打开设置、保存配置、切换主题、启动应用 |
+| 平台与后台事件 | 受控事件总线或 channel | 统一投递到 UI 线程，不让控件直接访问 backend |
+| 高频或派生 UI 更新 | 可观察状态 / signal | 作为受控的响应式机制，避免隐式依赖与循环触发 |
+
+控件 API 可以提供事件注册或事件产生能力，但不得直接依赖另一个具体控件。例如，按钮产生 `AppCommand::OpenSettings`，由页面或应用处理，而不是直接调用某个设置面板的方法。事件总线仅用于跨模块或平台级事件，不作为普通控件通信的全局调用中心。
+
+该约束适用于 `zero-ui`、`zero-ui-app` 和 example 业务逻辑；具体事件类型、状态更新 API 与响应式机制可在 M1 先以 `experimental` 形式实现，待焦点、命中测试和基础控件交互稳定后再固化。
+
 ### 公开 API vs Backend SPI
 
 「平台能力只有一条应用可见入口」，**不等于**整个仓库只有一个 trait。
 
 | 类别 | 所在位置 | 谁可以依赖 | 例子 |
 |------|----------|------------|------|
-| **Platform 公开 API** | `zero-platform` 根模块 / `api` | 应用、`zero-ui`、`zero-ui-app` | `AppLoop`、`Window`、`InputEvent`、`Clipboard`、`Paths`、`LayerShell`（capability） |
-| **Render 公开 API** | `zero-render` | `zero-ui-app`；`zero-ui` 仅限绘制抽象 | `Renderer`、`attach_surface`、`DisplayList` / `Paint` |
-| **Backend SPI** | `zero-platform::spi`（或日后 `zero-platform-spi`） | **仅** `zero-backend-*` | 将 raw handle、平台事件泵进公开 API 的钩子；应用禁止依赖 |
+| **Platform 公开 API** | `zui-platform` 根模块 / `api` | 应用、`zero-ui`、`zero-ui-app` | `AppLoop`、`Window`、`InputEvent`、`Clipboard`、`Paths`、`LayerShell`（capability） |
+| **Render 公开 API** | `zui-render` | `zero-ui-app`；`zero-ui` 仅限绘制抽象 | `Renderer`、`attach_surface`、`DisplayList` / `Paint` |
+| **Backend SPI** | `zui-platform::spi`（或日后 `zui-platform-spi`） | **仅** `zui-backend-*` | 将 raw handle、平台事件泵进公开 API 的钩子；应用禁止依赖 |
 | **Backend 实现** | `zero-backend-*` | 仅组装根通过 feature 引用 | `WinitBackend`、`HeadlessBackend`、`LayerShellBackend` |
 
 说明：
 
-- `Renderer` **不属于** `zero-platform`，属于 `zero-render`。  
+- `Renderer` **不属于** `zui-platform`，属于 `zui-render`。  
 - 旧文中的 `WindowBackend` 若保留，应落在 **SPI / backend**，不暴露给应用。  
 - `Clipboard` 等是 **platform 公开 capability trait**；其 OS 实现在 backend 内，经组装注入。
 
-### `zero-platform` 与 `zero-render` 协作（所有权）
+### `zui-platform` 与 `zui-render` 协作（所有权）
 
 | 职责 | 归属 | 说明 |
 |------|------|------|
 | 窗口 / Host / Surface 创建与销毁 | platform 公开 API + backend 实现 | 事件循环、resize、scale、关闭 |
 | Raw window / display handle | backend → 经 SPI/借出接口给 render | 供建交换链 |
-| `wgpu::Instance` / `Adapter` / `Device` / `Queue` | **`zero-render`** | 进程内可共享 |
-| `wgpu::Surface` 与 reconfigure | **`zero-render`** | platform 发 `Resized` → app 调 `render.resize` |
-| 每帧 present | **`zero-render`** | UI 只提交绘制列表 |
-| 输入、IME、剪贴板、路径、托盘等 | **`zero-platform` 公开 API** | render 不感知 |
+| `wgpu::Instance` / `Adapter` / `Device` / `Queue` | **`zui-render`** | 进程内可共享 |
+| `wgpu::Surface` 与 reconfigure | **`zui-render`** | platform 发 `Resized` → app 调 `render.resize` |
+| 每帧 present | **`zui-render`** | UI 只提交绘制列表 |
+| 输入、IME、剪贴板、路径、托盘等 | **`zui-platform` 公开 API** | render 不感知 |
 
 **推荐调用顺序（每窗）：**
 
@@ -142,11 +173,11 @@
 
 | Crate | 职责 | 阶段 |
 |-------|------|------|
-| `zero-core` | 颜色、几何、错误、ID、dip/物理像素、时间 | 1 |
-| `zero-render` | GPU/软件绘制、字形、图片；拥有 device 与 per-window surface | 1 |
-| `zero-platform` | 公开 API（core + capability）+ `spi`（仅 backend） | 1 |
-| `zero-backend-winit` | 普通应用窗：Linux/macOS/Windows/FreeBSD | 1 |
-| `zero-backend-headless` | 测试 / CI | 1 |
+| `zui-core` | 颜色、几何、错误、ID、dip/物理像素、时间 | 1 |
+| `zui-render` | GPU/软件绘制、字形、图片；拥有 device 与 per-window surface | 1 |
+| `zui-platform` | 公开 API（core + capability）+ `spi`（仅 backend） | 1 |
+| `zui-backend-winit` | 普通应用窗：Linux/macOS/Windows/FreeBSD | 1 |
+| `zui-backend-headless` | 测试 / CI | 1 |
 | `zero-backend-layershell` | Wayland layer-shell / X11 dock 类面板宿主 | M3 |
 | `zero-backend-hotkey` | 全局快捷键适配 | M3 |
 | `zero-backend-tray` | 托盘 / StatusNotifier 等适配 | M3 |
@@ -210,10 +241,10 @@
 
 **硬规则：**
 
-- 应用、`zero-ui`、example **业务逻辑**禁止直接依赖 `winit` / 各 OS crate / 协议 crate / `zero-platform::spi`  
+- 应用、`zero-ui`、example **业务逻辑**禁止直接依赖 `winit` / 各 OS crate / 协议 crate / `zui-platform::spi`  
 - **`#[cfg(target_os)]` / 平台 feature：** 不得出现在 `zero-ui`、应用业务与 example 主逻辑中；允许出现在 `zero-backend-*`、workspace/`Cargo.toml` 接线、组装根的薄胶水、`build.rs`、以及为链接/资源选择所必需的最小条件编译  
 - 布局与绘制只用 **逻辑像素（dip）**  
-- 新增公开能力：先改 `zero-platform`（标好级别），再写 backend  
+- 新增公开能力：先改 `zui-platform`（标好级别），再写 backend  
 
 ---
 
@@ -224,7 +255,7 @@
 | 语言 | Rust 2021+，edition 统一 | workspace |
 | 普通窗口 | `winit` 作第一后端 | 不覆盖 shell 专用协议 |
 | Shell 宿主 | 独立 layershell / X11 dock 适配 | M3；经 platform capability |
-| 渲染 | `wgpu` + 自绘 | device 在 `zero-render`；可加 soft 后备 |
+| 渲染 | `wgpu` + 自绘 | device 在 `zui-render`；可加 soft 后备 |
 | 文本 | `cosmic-text` 或等价 | 复杂文本/CJK 必做 |
 | 布局 | 自研简化 flex/stack | 勿过早上完整 CSS |
 | 异步 | UI 线程同步；重活用通道回 UI | 勿把整个 UI 绑死某 runtime |
@@ -309,19 +340,19 @@
 **目标**：在主开发机（建议 Linux 或 macOS）上空窗 + wgpu 清屏 + 事件循环。
 
 - [ ] monorepo workspace；依赖方向与第二节一致  
-- [ ] `zero-core` + `zero-platform` **core** 公开 API + 最小 `spi`  
+- [ ] `zui-core` + `zui-platform` **core** 公开 API + 最小 `spi`  
 - [ ] 文档化 platform↔render 所有权与组装根注入方式  
 - [ ] 建立根目录 `CHANGELOG.md`（Keep a Changelog 或等价）；crate 使用 **0.x** 语义化版本  
 - [ ] 写明 **MSRV**（如在 `README` / `Cargo.toml` `rust-version`），CI 用 MSRV 工具链跑 `check`/`build`  
-- [ ] `zero-backend-winit`：单平台建窗、resize、scale、键盘/鼠标  
-- [ ] `zero-render`：attach surface、清屏一帧  
-- [ ] `zero-backend-headless`：无窗跑一帧  
+- [ ] `zui-backend-winit`：单平台建窗、resize、scale、键盘/鼠标  
+- [ ] `zui-render`：attach surface、清屏一帧  
+- [ ] `zui-backend-headless`：无窗跑一帧  
 - [ ] 示例：`examples/empty_window`（组装根注入 backend）  
 
 **完成标准（可测量）：**
 
 - [ ] 主开发机运行 `empty_window`，手动确认窗口可缩放、关闭  
-- [ ] `cargo test -p zero-backend-headless`（或等价）通过，至少 1 个「提交一帧」测试  
+- [ ] `cargo test -p zui-backend-headless`（或等价）通过，至少 1 个「提交一帧」测试  
 - [ ] CI：主开发机对应 OS 上 build + 上述测试绿，且 **MSRV job 绿**  
 - [ ] `CHANGELOG.md` 已存在且含 M0a 条目；MSRV 版本号有文档可查  
 - [ ] 第二节依赖图与所有权表可被 PR 引用；`zero-ui` 无 `target_os` cfg  
@@ -369,7 +400,7 @@
 
 **目标**：IME 走 `experimental` capability；打通一条 CJK 上屏路径。
 
-- [ ] `zero-platform` IME 事件草案（preedit / commit / 候选区职责划分）  
+- [ ] `zui-platform` IME 事件草案（preedit / commit / 候选区职责划分）  
 - [ ] 一平台完整实现（建议 Linux 或 macOS）  
 - [ ] `examples/text_input`：中文输入、提交、取消 preedit  
 - [ ] 其它平台：能编译；行为写入 platform-status  
@@ -409,7 +440,7 @@
 
 **目标**：同一 toolkit 做出 **受限** shell；**不依赖 winit 提供面板能力**。可先在 Linux Wayland 验证，再落 FreeBSD。
 
-- [ ] `zero-platform`：`LayerShell` / `GlobalHotkey` / `Tray`（或 Notify）capability  
+- [ ] `zui-platform`：`LayerShell` / `GlobalHotkey` / `Tray`（或 Notify）capability  
 - [ ] `zero-backend-layershell`（及必要时 X11 strut/dock 适配）  
 - [ ] `zero-backend-hotkey`、`zero-backend-tray`  
 - [ ] `zero-shell` + `examples/panel_shell`：边缘面板 + 简单启动器  
@@ -473,7 +504,7 @@
 
 ## 七、每个里程碑的工程纪律
 
-1. **API 审查**：新公开能力先入 `zero-platform`（标成熟度）；SPI 变更不影响应用  
+1. **API 审查**：新公开能力先入 `zui-platform`（标成熟度）；SPI 变更不影响应用  
 2. **变更记录**：自 M0 起维护 `CHANGELOG.md` 与语义化版本（前期 0.x）；破坏性变更必须记入 changelog  
 3. **MSRV**：自 M0 起文档化并在 CI 验证；提升 MSRV 须写入 changelog  
 4. **双后端验证**：涉及绘制的里程碑，窗 backend + `headless` 同时绿  
@@ -490,11 +521,11 @@
 zero-ui/
   Cargo.toml                 # workspace；feature 接线允许平台 cfg
   crates/
-    zero-core/
-    zero-platform/           # api + spi
-    zero-render/
-    zero-backend-winit/
-    zero-backend-headless/
+    zui-core/
+    zui-platform/             # api + spi
+    zui-render/
+    zui-backend-winit/
+    zui-backend-headless/
     zero-backend-layershell/ # M3
     zero-backend-hotkey/     # M3
     zero-backend-tray/       # M3
@@ -539,7 +570,7 @@ zero-ui/
 
 1. 建 workspace + CI（主 OS 测试；FreeBSD `check`；**MSRV job**）  
 2. 建立 `CHANGELOG.md`、初始 crate 版本与 MSRV 声明  
-3. 写下 `zero-platform` **core** 公开 API + 最小 `spi`（不冻结 IME/A11y）  
+3. 写下 `zui-platform` **core** 公开 API + 最小 `spi`（不冻结 IME/A11y）  
 4. 写清依赖方向、组装根注入、platform↔render 所有权  
 5. 打通主 OS 上 `empty_window`  
 6. headless「一帧」测试  
@@ -558,7 +589,7 @@ zero-ui/
 | 普通应用窗 | winit 第一后端 |
 | Shell 专用能力 | 独立 backend；shell 为受限客户端 |
 | 系统服务 | M4 最小权限进程 + IPC；不进阶段一契约 |
-| GPU 生命周期 | Device 在 zero-render |
+| GPU 生命周期 | Device 在 zui-render |
 | 平台 API 演进 | core + capability + experimental |
 | Backend 切换 | **仅编译期** feature；无插件 ABI 承诺 |
 | cfg 规则 | widgets/业务禁止平台 cfg；backend/接线/组装允许 |
