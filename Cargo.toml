@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/zui-core",
+    "crates/zui-platform",
+    "crates/zui-render",
+    "crates/zui-ui",
+    "crates/zui-backend-headless",
+    "crates/zui-backend-winit",
+    "examples/empty_window",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+zui-core = { package = "zui-core", path = "crates/zui-core", version = "0.1.0" }
+zui-platform = { package = "zui-platform", path = "crates/zui-platform", version = "0.1.0" }
+winit = "0.30.13"
+wgpu = { version = "29.0.4", features = ["noop"] }
+pollster = "0.4.0"
+raw-window-handle = "0.6.2"
+bytemuck = { version = "1.25.2", features = ["derive"] }

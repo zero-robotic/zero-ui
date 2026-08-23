@@ -1,0 +1,10 @@
+[package]
+name = "zui-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+zui-core.workspace = true
+raw-window-handle.workspace = true

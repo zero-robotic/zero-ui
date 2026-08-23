@@ -1,0 +1,10 @@
+[package]
+name = "zui-backend-headless"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+zui-core.workspace = true
+zui-platform.workspace = true
