@@ -34,20 +34,20 @@ impl Widget for Padding {
     fn bounds(&self) -> Rect {
         self.bounds
     }
-    fn set_bounds(&mut self, bounds: Rect) {
+    fn arrange(&mut self, bounds: Rect) {
         self.bounds = bounds;
     }
-    fn layout(&mut self, constraints: Constraints) -> Size {
+    fn measure(&mut self, constraints: Constraints) -> Size {
         let inset = self.amount.0 * 2.0;
         let child_origin = Point {
             x: Dip(self.bounds.origin.x.0 + self.amount.0),
             y: Dip(self.bounds.origin.y.0 + self.amount.0),
         };
-        self.child.set_bounds(Rect {
+        self.child.arrange(Rect {
             origin: child_origin,
             size: Size::ZERO,
         });
-        let child_size = self.child.layout(Constraints::loose(Size {
+        let child_size = self.child.measure(Constraints::loose(Size {
             width: Dip((constraints.max.width.0 - inset).max(0.0)),
             height: Dip((constraints.max.height.0 - inset).max(0.0)),
         }));
@@ -55,7 +55,7 @@ impl Widget for Padding {
             width: Dip(child_size.width.0 + inset),
             height: Dip(child_size.height.0 + inset),
         });
-        self.child.set_bounds(Rect {
+        self.child.arrange(Rect {
             origin: child_origin,
             size: child_size,
         });

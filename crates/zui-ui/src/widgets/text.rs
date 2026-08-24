@@ -37,10 +37,10 @@ impl Widget for Text {
     fn bounds(&self) -> Rect {
         self.bounds
     }
-    fn set_bounds(&mut self, bounds: Rect) {
+    fn arrange(&mut self, bounds: Rect) {
         self.bounds = bounds;
     }
-    fn layout(&mut self, constraints: Constraints) -> Size {
+    fn measure(&mut self, constraints: Constraints) -> Size {
         let size = constraints.constrain(Size {
             width: Dip(self.text.chars().count() as f32 * 8.0),
             height: Dip(20.0),

@@ -5,7 +5,6 @@ pub struct Constraints {
     pub min: Size,
     pub max: Size,
 }
-
 impl Constraints {
     pub fn loose(max: Size) -> Self {
         Self {
@@ -31,7 +30,6 @@ impl Constraints {
 pub struct LayoutBox {
     pub rect: Rect,
 }
-
 impl LayoutBox {
     pub fn at(origin: Point, size: Size) -> Self {
         Self {

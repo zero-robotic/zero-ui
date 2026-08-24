@@ -18,8 +18,17 @@ impl WidgetTree {
             theme: Theme::default(),
         }
     }
+    pub fn measure(&mut self, constraints: Constraints) -> zui_core::Size {
+        self.root.measure(constraints)
+    }
+    pub fn arrange(&mut self, bounds: zui_core::Rect) {
+        self.root.arrange(bounds);
+    }
     pub fn layout(&mut self, constraints: Constraints) -> zui_core::Size {
-        self.root.layout(constraints)
+        let size = self.measure(constraints);
+        let origin = self.root.bounds().origin;
+        self.arrange(zui_core::Rect { origin, size });
+        size
     }
     pub fn event(&mut self, event: &UiEvent) -> (EventResult, Vec<Action>) {
         let mut ctx = EventContext::new();

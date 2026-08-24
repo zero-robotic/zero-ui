@@ -48,8 +48,17 @@ impl<'a> PaintContext<'a> {
 pub trait Widget {
     fn id(&self) -> WidgetId;
     fn bounds(&self) -> Rect;
-    fn set_bounds(&mut self, bounds: Rect);
-    fn layout(&mut self, constraints: Constraints) -> Size;
+    fn measure(&mut self, constraints: Constraints) -> Size;
+    fn arrange(&mut self, bounds: Rect);
+    fn set_bounds(&mut self, bounds: Rect) {
+        self.arrange(bounds);
+    }
+    fn layout(&mut self, constraints: Constraints) -> Size {
+        let size = self.measure(constraints);
+        let origin = self.bounds().origin;
+        self.arrange(Rect { origin, size });
+        size
+    }
     fn event(&mut self, event: &UiEvent, ctx: &mut EventContext) -> EventResult;
     fn set_theme(&mut self, _theme: &Theme) {}
     fn paint(&self, _ctx: &mut PaintContext<'_>) {}

@@ -3,6 +3,7 @@
 pub mod event;
 pub mod focus;
 pub mod layout;
+pub mod layouts;
 pub mod semantics;
 pub mod theme;
 pub mod tree;
@@ -12,11 +13,16 @@ pub mod widgets;
 pub use event::{Action, ActionKind, EventContext, EventResult, UiEvent};
 pub use focus::FocusManager;
 pub use layout::{Constraints, LayoutBox};
+pub use layouts::{
+    ColumnLayout, GridLayout, Layout, LayoutStrategy, RowLayout, StackLayout, WrapLayout,
+};
 pub use semantics::{SemanticRole, SemanticsNode};
 pub use theme::{ButtonStyle, TextInputStyle, TextStyle, Theme, ThemeToken};
 pub use tree::WidgetTree;
 pub use widget::{PaintContext, Widget, WidgetId};
-pub use widgets::{Button, Column, Padding, Row, Text, TextInput};
+pub use widgets::{
+    Align, Alignment, Button, Divider, DividerAxis, Padding, SizedBox, Spacer, Text, TextInput,
+};
 
 #[cfg(test)]
 mod tests {
@@ -26,8 +32,9 @@ mod tests {
 
     #[test]
     fn row_lays_out_children_with_spacing() {
-        let mut row = Row::new(vec![Box::new(Text::new("A")), Box::new(Text::new("BB"))])
-            .with_spacing(Dip(4.0));
+        let mut row = Layout::new(RowLayout::new().spacing(Dip(4.0)))
+            .child(Text::new("A"))
+            .child(Text::new("BB"));
         let size = row.layout(Constraints::loose(Size {
             width: Dip(200.0),
             height: Dip(100.0),

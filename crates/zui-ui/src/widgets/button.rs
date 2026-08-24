@@ -37,10 +37,10 @@ impl Widget for Button {
     fn bounds(&self) -> Rect {
         self.bounds
     }
-    fn set_bounds(&mut self, bounds: Rect) {
+    fn arrange(&mut self, bounds: Rect) {
         self.bounds = bounds;
     }
-    fn layout(&mut self, constraints: Constraints) -> Size {
+    fn measure(&mut self, constraints: Constraints) -> Size {
         let size = constraints.constrain(Size {
             width: Dip(
                 zui_render::measure_text(&self.label, self.theme.button.font_size).0

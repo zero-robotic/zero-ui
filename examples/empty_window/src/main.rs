@@ -4,18 +4,18 @@ use zui_backend_winit::WinitBackend;
 use zui_core::{Dip, PhysicalSize, Point};
 use zui_platform::{Host, InputEvent, PlatformEvent, WindowOptions};
 use zui_render::{DisplayList, RenderError, Renderer};
-use zui_ui::{Button, Column, Constraints, Padding, Text, TextInput, Theme, UiEvent, WidgetTree};
+use zui_ui::{
+    Button, ColumnLayout, Constraints, Layout, Padding, Text, TextInput, Theme, UiEvent, WidgetTree,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let renderer = RefCell::new(Renderer::new_blocking()?);
     let display_list = RefCell::new(DisplayList::new());
     let mut tree = WidgetTree::new(Padding::new(
-        Column::new(vec![
-            Box::new(Text::new("zero-ui controls")),
-            Box::new(Button::new("开始语音")),
-            Box::new(TextInput::new()),
-        ])
-        .with_spacing(Dip(8.0)),
+        Layout::new(ColumnLayout::new().spacing(Dip(8.0)))
+            .child(Text::new("zero-ui controls"))
+            .child(Button::new("开始语音"))
+            .child(TextInput::new()),
         Dip(16.0),
     ));
     let theme = Theme::from_toml_str(include_str!("../theme.toml"))?;

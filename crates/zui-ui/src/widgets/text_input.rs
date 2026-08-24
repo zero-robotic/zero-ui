@@ -54,10 +54,10 @@ impl Widget for TextInput {
     fn bounds(&self) -> Rect {
         self.bounds
     }
-    fn set_bounds(&mut self, bounds: Rect) {
+    fn arrange(&mut self, bounds: Rect) {
         self.bounds = bounds;
     }
-    fn layout(&mut self, constraints: Constraints) -> Size {
+    fn measure(&mut self, constraints: Constraints) -> Size {
         let size = constraints.constrain(Size {
             width: self.theme.text_input.width,
             height: self.theme.text_input.height,

@@ -1,13 +1,17 @@
+mod align;
 mod button;
-mod column;
+mod divider;
 mod padding;
-mod row;
+mod sized_box;
+mod spacer;
 mod text;
 mod text_input;
 
+pub use align::{Align, Alignment};
 pub use button::Button;
-pub use column::Column;
+pub use divider::{Divider, DividerAxis};
 pub use padding::Padding;
-pub use row::Row;
+pub use sized_box::SizedBox;
+pub use spacer::Spacer;
 pub use text::Text;
 pub use text_input::TextInput;
