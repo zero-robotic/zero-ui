@@ -56,8 +56,8 @@ impl Widget for TextInput {
     }
     fn layout(&mut self, constraints: Constraints) -> Size {
         let size = constraints.constrain(Size {
-            width: Dip(240.0),
-            height: Dip(32.0),
+            width: Dip(280.0),
+            height: Dip(40.0),
         });
         self.bounds.size = size;
         size
@@ -133,19 +133,19 @@ impl Widget for TextInput {
                 y: Dip(self.bounds.origin.y.0 + 9.0),
             },
             Color::BLACK,
-            2,
+            3,
         );
         if self.focused && ctx.now.duration_since(self.focus_started).as_millis() / 500 % 2 == 0 {
-            let caret_x = self.bounds.origin.x.0 + 8.0 + self.text.chars().count() as f32 * 12.0;
+            let caret_x = self.bounds.origin.x.0 + 8.0 + zui_render::measure_text(&self.text, 3).0;
             ctx.fill_rect(
                 Rect {
                     origin: Point {
                         x: Dip(caret_x),
-                        y: Dip(self.bounds.origin.y.0 + 6.0),
+                        y: Dip(self.bounds.origin.y.0 + 7.0),
                     },
                     size: Size {
                         width: Dip(2.0),
-                        height: Dip(20.0),
+                        height: Dip(26.0),
                     },
                 },
                 Color::BLACK,

@@ -4,12 +4,28 @@
 //! drawing data; `Renderer` owns the GPU and the per-window swap-chain surfaces.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use wgpu::util::DeviceExt;
 use zui_core::{Color, Dip, PhysicalSize, Point, Rect, ScaleFactor, WindowId};
 use zui_platform::spi::RawWindowHandleProvider;
 
 pub use wgpu;
+
+static SYSTEM_FONT: OnceLock<Option<fontdue::Font>> = OnceLock::new();
+
+/// Measures text using the same system font used by the renderer.
+pub fn measure_text(text: &str, scale: u32) -> Dip {
+    if let Some(font) = cached_system_font() {
+        let size = (scale.max(1) * 7) as f32;
+        Dip(text
+            .chars()
+            .map(|character| font.metrics(character, size).advance_width)
+            .sum())
+    } else {
+        Dip(text.chars().count() as f32 * 6.0 * scale.max(1) as f32)
+    }
+}
 
 #[derive(Debug)]
 pub enum RenderError {
@@ -41,6 +57,11 @@ pub enum PaintCommand {
         rect: Rect,
         color: Color,
     },
+    FillRoundedRect {
+        rect: Rect,
+        radius: Dip,
+        color: Color,
+    },
     Text {
         text: String,
         origin: Point,
@@ -63,6 +84,13 @@ impl DisplayList {
     }
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         self.commands.push(PaintCommand::FillRect { rect, color });
+    }
+    pub fn fill_rounded_rect(&mut self, rect: Rect, radius: Dip, color: Color) {
+        self.commands.push(PaintCommand::FillRoundedRect {
+            rect,
+            radius,
+            color,
+        });
     }
     pub fn text(&mut self, text: impl Into<String>, origin: Point, color: Color, scale: u32) {
         self.commands.push(PaintCommand::Text {
@@ -96,6 +124,13 @@ pub struct Renderer {
     pub(crate) device: wgpu::Device,
     pub(crate) queue: wgpu::Queue,
     surfaces: HashMap<WindowId, SurfaceState>,
+    font: Option<&'static fontdue::Font>,
+    glyph_cache: HashMap<(char, u32), CachedGlyph>,
+}
+
+struct CachedGlyph {
+    metrics: fontdue::Metrics,
+    bitmap: Vec<u8>,
 }
 
 impl Renderer {
@@ -122,6 +157,8 @@ impl Renderer {
             device,
             queue,
             surfaces: HashMap::new(),
+            font: cached_system_font(),
+            glyph_cache: HashMap::new(),
         })
     }
 
@@ -259,6 +296,7 @@ impl Renderer {
                     a: color.a as f64,
                 }),
                 PaintCommand::FillRect { .. } => None,
+                PaintCommand::FillRoundedRect { .. } => None,
                 PaintCommand::Text { .. } => None,
             })
             .unwrap_or(wgpu::Color {
@@ -279,37 +317,29 @@ impl Renderer {
                     PaintCommand::FillRect { rect, color } => {
                         append_rect(&mut rects, *rect, *color, state.size);
                     }
+                    PaintCommand::FillRoundedRect {
+                        rect,
+                        radius,
+                        color,
+                    } => {
+                        append_rounded_rect(&mut rects, *rect, *radius, *color, state.size);
+                    }
                     PaintCommand::Text {
                         text,
                         origin,
                         color,
                         scale,
                     } => {
-                        let mut x = origin.x.0;
-                        for character in text.chars() {
-                            for (row, bits) in glyph_rows(character).iter().enumerate() {
-                                for column in 0..5 {
-                                    if bits & (1 << (4 - column)) != 0 {
-                                        append_rect(
-                                            &mut rects,
-                                            Rect {
-                                                origin: Point {
-                                                    x: Dip(x + column as f32 * *scale as f32),
-                                                    y: Dip(origin.y.0 + row as f32 * *scale as f32),
-                                                },
-                                                size: zui_core::Size {
-                                                    width: Dip(*scale as f32),
-                                                    height: Dip(*scale as f32),
-                                                },
-                                            },
-                                            *color,
-                                            state.size,
-                                        );
-                                    }
-                                }
-                            }
-                            x += 6.0 * *scale as f32;
-                        }
+                        append_text(
+                            &mut rects,
+                            &self.font,
+                            &mut self.glyph_cache,
+                            text,
+                            *origin,
+                            *color,
+                            *scale,
+                            state.size,
+                        );
                     }
                     PaintCommand::Clear(_) => {}
                 }
@@ -362,6 +392,105 @@ impl Renderer {
     }
 }
 
+fn cached_system_font() -> Option<&'static fontdue::Font> {
+    SYSTEM_FONT.get_or_init(|| load_system_font()).as_ref()
+}
+
+fn load_system_font() -> Option<fontdue::Font> {
+    let candidates = [
+        std::env::var("ZUI_FONT_PATH").ok(),
+        Some("/System/Library/Fonts/Supplemental/Arial Unicode.ttf".into()),
+        Some("/System/Library/Fonts/Supplemental/NISC18030.ttf".into()),
+        Some("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc".into()),
+        Some("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc".into()),
+        Some("C:\\Windows\\Fonts\\msyh.ttc".into()),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find_map(|path| std::fs::read(path).ok())
+        .and_then(|bytes| fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok())
+}
+
+fn append_text(
+    vertices: &mut Vec<RectVertex>,
+    font: &Option<&fontdue::Font>,
+    glyph_cache: &mut HashMap<(char, u32), CachedGlyph>,
+    text: &str,
+    origin: Point,
+    color: Color,
+    scale: u32,
+    size: PhysicalSize,
+) {
+    if let Some(font) = font {
+        let font_size = (scale.max(1) * 7) as f32;
+        let mut x = origin.x.0;
+        for character in text.chars() {
+            let glyph = glyph_cache
+                .entry((character, scale.max(1)))
+                .or_insert_with(|| {
+                    let (metrics, bitmap) = font.rasterize(character, font_size);
+                    CachedGlyph { metrics, bitmap }
+                });
+            let metrics = glyph.metrics;
+            let top = origin.y.0 + (font_size - metrics.height as f32) + metrics.ymin as f32;
+            for row in 0..metrics.height {
+                for column in 0..metrics.width {
+                    let alpha = glyph.bitmap[row * metrics.width + column] as f32 / 255.0;
+                    if alpha > 0.01 {
+                        append_rect(
+                            vertices,
+                            Rect {
+                                origin: Point {
+                                    x: Dip(x + column as f32),
+                                    y: Dip(top + row as f32),
+                                },
+                                size: zui_core::Size {
+                                    width: Dip(1.0),
+                                    height: Dip(1.0),
+                                },
+                            },
+                            Color {
+                                a: color.a * alpha,
+                                ..color
+                            },
+                            size,
+                        );
+                    }
+                }
+            }
+            x += metrics.advance_width;
+        }
+        return;
+    }
+
+    let mut x = origin.x.0;
+    for character in text.chars() {
+        for (row, bits) in glyph_rows(character).iter().enumerate() {
+            for column in 0..5 {
+                if bits & (1 << (4 - column)) != 0 {
+                    append_rect(
+                        vertices,
+                        Rect {
+                            origin: Point {
+                                x: Dip(x + column as f32 * scale as f32),
+                                y: Dip(origin.y.0 + row as f32 * scale as f32),
+                            },
+                            size: zui_core::Size {
+                                width: Dip(scale as f32),
+                                height: Dip(scale as f32),
+                            },
+                        },
+                        color,
+                        size,
+                    );
+                }
+            }
+        }
+        x += 6.0 * scale as f32;
+    }
+}
+
 fn append_rect(vertices: &mut Vec<RectVertex>, rect: Rect, color: Color, size: PhysicalSize) {
     let left = rect.origin.x.0 / size.width.max(1) as f32 * 2.0 - 1.0;
     let right = (rect.origin.x.0 + rect.size.width.0) / size.width.max(1) as f32 * 2.0 - 1.0;
@@ -394,6 +523,90 @@ fn append_rect(vertices: &mut Vec<RectVertex>, rect: Rect, color: Color, size: P
             color,
         },
     ]);
+}
+
+fn append_rounded_rect(
+    vertices: &mut Vec<RectVertex>,
+    rect: Rect,
+    radius: Dip,
+    color: Color,
+    size: PhysicalSize,
+) {
+    let radius = radius
+        .0
+        .min(rect.size.width.0 / 2.0)
+        .min(rect.size.height.0 / 2.0);
+    if radius <= 0.0 {
+        append_rect(vertices, rect, color, size);
+        return;
+    }
+
+    let center = Point {
+        x: Dip(rect.origin.x.0 + rect.size.width.0 / 2.0),
+        y: Dip(rect.origin.y.0 + rect.size.height.0 / 2.0),
+    };
+    let corners = [
+        (
+            rect.origin.x.0 + radius,
+            rect.origin.y.0 + radius,
+            std::f32::consts::PI,
+        ),
+        (
+            rect.origin.x.0 + rect.size.width.0 - radius,
+            rect.origin.y.0 + radius,
+            1.5 * std::f32::consts::PI,
+        ),
+        (
+            rect.origin.x.0 + rect.size.width.0 - radius,
+            rect.origin.y.0 + rect.size.height.0 - radius,
+            0.0,
+        ),
+        (
+            rect.origin.x.0 + radius,
+            rect.origin.y.0 + rect.size.height.0 - radius,
+            0.5 * std::f32::consts::PI,
+        ),
+    ];
+    let mut points = Vec::with_capacity(20);
+    for (cx, cy, start) in corners {
+        for step in 0..=4 {
+            let angle = start + step as f32 * std::f32::consts::FRAC_PI_2 / 4.0;
+            points.push(Point {
+                x: Dip(cx + radius * angle.cos()),
+                y: Dip(cy + radius * angle.sin()),
+            });
+        }
+    }
+    let color = [color.r, color.g, color.b, color.a];
+    for pair in points.windows(2) {
+        append_triangle(vertices, center, pair[0], pair[1], color, size);
+    }
+    append_triangle(
+        vertices,
+        center,
+        *points.last().unwrap(),
+        points[0],
+        color,
+        size,
+    );
+}
+
+fn append_triangle(
+    vertices: &mut Vec<RectVertex>,
+    a: Point,
+    b: Point,
+    c: Point,
+    color: [f32; 4],
+    size: PhysicalSize,
+) {
+    let to_vertex = |point: Point| RectVertex {
+        position: [
+            point.x.0 / size.width.max(1) as f32 * 2.0 - 1.0,
+            1.0 - point.y.0 / size.height.max(1) as f32 * 2.0,
+        ],
+        color,
+    };
+    vertices.extend([to_vertex(a), to_vertex(b), to_vertex(c)]);
 }
 
 fn glyph_rows(character: char) -> [u8; 7] {

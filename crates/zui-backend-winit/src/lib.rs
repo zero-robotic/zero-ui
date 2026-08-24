@@ -1,7 +1,7 @@
 //! Ordinary application-window backend built on winit.
 
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, Ime, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::raw_window_handle::{
@@ -86,6 +86,7 @@ impl ApplicationHandler for Runner<'_> {
         let Ok(window) = event_loop.create_window(attrs) else {
             return;
         };
+        window.set_ime_allowed(true);
         let id = WindowId(Id::new(1));
         let scale_factor = ScaleFactor(window.scale_factor());
         let physical = window.inner_size();
@@ -156,13 +157,13 @@ impl ApplicationHandler for Runner<'_> {
                         modifiers: Default::default(),
                     },
                 });
-                if event.state == ElementState::Pressed {
-                    if let KeyCode::Character(c) = key {
-                        (self.handler)(PlatformEvent::Input {
-                            window: host.id,
-                            event: InputEvent::Text(c.to_string()),
-                        });
-                    }
+            }
+            WindowEvent::Ime(Ime::Commit(text)) => {
+                if !text.is_empty() {
+                    (self.handler)(PlatformEvent::Input {
+                        window: host.id,
+                        event: InputEvent::Text(text),
+                    });
                 }
             }
             _ => {}

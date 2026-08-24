@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ui = RefCell::new(WidgetTree::new(Padding::new(
         Column::new(vec![
             Box::new(Text::new("zero-ui controls")),
-            Box::new(Button::new("Click me")),
+            Box::new(Button::new("开始语音")),
             Box::new(TextInput::new()),
         ])
         .with_spacing(Dip(8.0)),
@@ -79,6 +79,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 *pointer_position.borrow_mut() = *position;
             }
             let ui_event = match event {
+                InputEvent::CursorMoved { position } => {
+                    UiEvent::pointer(Some(window), position, event)
+                }
                 InputEvent::MouseInput { .. } => {
                     UiEvent::pointer(Some(window), *pointer_position.borrow(), event)
                 }

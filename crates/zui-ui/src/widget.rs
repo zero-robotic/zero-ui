@@ -34,6 +34,9 @@ impl<'a> PaintContext<'a> {
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         self.display_list.fill_rect(rect, color);
     }
+    pub fn fill_rounded_rect(&mut self, rect: Rect, radius: zui_core::Dip, color: Color) {
+        self.display_list.fill_rounded_rect(rect, radius, color);
+    }
     pub fn draw_text(&mut self, text: impl Into<String>, origin: Point, color: Color, scale: u32) {
         self.display_list.text(text, origin, color, scale);
     }
