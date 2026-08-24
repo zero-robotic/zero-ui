@@ -52,6 +52,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     error => eprintln!("failed to render frame: {error}"),
                 }
+            } else {
+                ui.borrow_mut().mark_clean();
             }
         }
         PlatformEvent::WindowResized {

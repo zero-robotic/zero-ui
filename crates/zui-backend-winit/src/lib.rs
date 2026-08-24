@@ -130,23 +130,30 @@ impl ApplicationHandler for Runner<'_> {
                     size: host.size,
                     scale_factor: host.scale_factor,
                 });
+                host.window.request_redraw();
             }
-            WindowEvent::CursorMoved { position, .. } => (self.handler)(PlatformEvent::Input {
-                window: host.id,
-                event: InputEvent::CursorMoved {
-                    position: Point {
-                        x: Dip(position.x as f32),
-                        y: Dip(position.y as f32),
+            WindowEvent::CursorMoved { position, .. } => {
+                (self.handler)(PlatformEvent::Input {
+                    window: host.id,
+                    event: InputEvent::CursorMoved {
+                        position: Point {
+                            x: Dip(position.x as f32),
+                            y: Dip(position.y as f32),
+                        },
                     },
-                },
-            }),
-            WindowEvent::MouseInput { state, button, .. } => (self.handler)(PlatformEvent::Input {
-                window: host.id,
-                event: InputEvent::MouseInput {
-                    button: map_button(button),
-                    state: map_state(state),
-                },
-            }),
+                });
+                host.window.request_redraw();
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                (self.handler)(PlatformEvent::Input {
+                    window: host.id,
+                    event: InputEvent::MouseInput {
+                        button: map_button(button),
+                        state: map_state(state),
+                    },
+                });
+                host.window.request_redraw();
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 let key = map_key(&event.logical_key);
                 (self.handler)(PlatformEvent::Input {
@@ -157,6 +164,7 @@ impl ApplicationHandler for Runner<'_> {
                         modifiers: Default::default(),
                     },
                 });
+                host.window.request_redraw();
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
                 if !text.is_empty() {
@@ -164,6 +172,7 @@ impl ApplicationHandler for Runner<'_> {
                         window: host.id,
                         event: InputEvent::Text(text),
                     });
+                    host.window.request_redraw();
                 }
             }
             _ => {}
@@ -172,9 +181,6 @@ impl ApplicationHandler for Runner<'_> {
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         (self.handler)(PlatformEvent::AboutToWait);
-        if let Some(host) = self.host.as_ref() {
-            host.window.request_redraw();
-        }
     }
 }
 

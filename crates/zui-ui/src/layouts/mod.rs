@@ -78,8 +78,9 @@ impl Widget for Layout {
     }
     fn event(&mut self, event: &UiEvent, ctx: &mut EventContext) -> EventResult {
         for child in self.children.iter_mut().rev() {
-            if child.event(event, ctx) != EventResult::Ignored {
-                return EventResult::Handled;
+            match child.event(event, ctx) {
+                EventResult::Ignored => {}
+                result => return result,
             }
         }
         EventResult::Ignored
