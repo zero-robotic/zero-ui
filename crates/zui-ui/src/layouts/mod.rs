@@ -6,21 +6,33 @@ use crate::{
 };
 use zui_core::{Rect, Size};
 
+mod align;
 mod column;
+mod context;
+mod gap;
 mod grid;
+mod padding;
 mod row;
+mod sized_box;
+mod spacer;
 mod stack;
 mod wrap;
 
+pub use align::{Align, Alignment};
 pub use column::ColumnLayout;
+pub use context::LayoutContext;
+pub use gap::Gap;
 pub use grid::GridLayout;
+pub use padding::Padding;
 pub use row::RowLayout;
+pub use sized_box::SizedBox;
+pub use spacer::Spacer;
 pub use stack::StackLayout;
 pub use wrap::WrapLayout;
 
 pub trait LayoutStrategy {
-    fn measure(&self, children: &mut [Box<dyn Widget>], constraints: Constraints) -> Size;
-    fn arrange(&self, children: &mut [Box<dyn Widget>], bounds: Rect);
+    fn measure(&self, context: &mut LayoutContext<'_>) -> Size;
+    fn arrange(&self, context: &mut LayoutContext<'_>, bounds: Rect);
 }
 
 pub struct Layout {
@@ -54,13 +66,15 @@ impl Widget for Layout {
         self.bounds
     }
     fn measure(&mut self, constraints: Constraints) -> Size {
-        let size = self.strategy.measure(&mut self.children, constraints);
+        let mut context = LayoutContext::new(&mut self.children, constraints);
+        let size = self.strategy.measure(&mut context);
         self.bounds.size = size;
         size
     }
     fn arrange(&mut self, bounds: Rect) {
         self.bounds = bounds;
-        self.strategy.arrange(&mut self.children, bounds);
+        let mut context = LayoutContext::new(&mut self.children, Constraints::tight(bounds.size));
+        self.strategy.arrange(&mut context, bounds);
     }
     fn event(&mut self, event: &UiEvent, ctx: &mut EventContext) -> EventResult {
         for child in self.children.iter_mut().rev() {

@@ -4,35 +4,28 @@ use crate::{
     theme::Theme,
     widget::{PaintContext, Widget, WidgetId},
 };
-use zui_core::{Dip, Rect, Size};
+use zui_core::{Dip, Point, Rect, Size};
 
-pub struct SizedBox {
+pub struct Padding {
     id: WidgetId,
     child: Box<dyn Widget>,
-    width: Option<Dip>,
-    height: Option<Dip>,
+    amount: Dip,
     bounds: Rect,
 }
-impl SizedBox {
-    pub fn new(child: impl Widget + 'static) -> Self {
+impl Padding {
+    pub fn new(child: impl Widget + 'static, amount: Dip) -> Self {
         Self {
             id: WidgetId::new(),
             child: Box::new(child),
-            width: None,
-            height: None,
+            amount,
             bounds: Rect::default(),
         }
     }
-    pub fn width(mut self, value: f32) -> Self {
-        self.width = Some(Dip(value));
-        self
-    }
-    pub fn height(mut self, value: f32) -> Self {
-        self.height = Some(Dip(value));
-        self
+    pub fn child(&self) -> &dyn Widget {
+        &*self.child
     }
 }
-impl Widget for SizedBox {
+impl Widget for Padding {
     fn id(&self) -> WidgetId {
         self.id
     }
@@ -41,17 +34,24 @@ impl Widget for SizedBox {
     }
     fn arrange(&mut self, bounds: Rect) {
         self.bounds = bounds;
+        let child_size = self.child.bounds().size;
+        self.child.arrange(Rect {
+            origin: Point {
+                x: Dip(bounds.origin.x.0 + self.amount.0),
+                y: Dip(bounds.origin.y.0 + self.amount.0),
+            },
+            size: child_size,
+        });
     }
     fn measure(&mut self, constraints: Constraints) -> Size {
-        let desired = Size {
-            width: self.width.unwrap_or(constraints.max.width),
-            height: self.height.unwrap_or(constraints.max.height),
-        };
-        let size = constraints.constrain(desired);
-        self.child.measure(Constraints::tight(size));
-        self.child.arrange(Rect {
-            origin: self.bounds.origin,
-            size,
+        let inset = self.amount.0 * 2.0;
+        let child_size = self.child.measure(Constraints::loose(Size {
+            width: Dip((constraints.max.width.0 - inset).max(0.0)),
+            height: Dip((constraints.max.height.0 - inset).max(0.0)),
+        }));
+        let size = constraints.constrain(Size {
+            width: Dip(child_size.width.0 + inset),
+            height: Dip(child_size.height.0 + inset),
         });
         self.bounds.size = size;
         size

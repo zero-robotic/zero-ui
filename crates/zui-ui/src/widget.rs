@@ -50,6 +50,9 @@ pub trait Widget {
     fn bounds(&self) -> Rect;
     fn measure(&mut self, constraints: Constraints) -> Size;
     fn arrange(&mut self, bounds: Rect);
+    fn flex_factor(&self) -> Option<f32> {
+        None
+    }
     fn set_bounds(&mut self, bounds: Rect) {
         self.arrange(bounds);
     }

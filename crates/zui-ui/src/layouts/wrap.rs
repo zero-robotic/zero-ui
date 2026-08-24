@@ -1,5 +1,5 @@
-use super::LayoutStrategy;
-use crate::{layout::Constraints, widget::Widget};
+use super::{LayoutContext, LayoutStrategy};
+use crate::layout::Constraints;
 use zui_core::{Dip, Point, Rect, Size};
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -18,7 +18,9 @@ impl WrapLayout {
     }
 }
 impl LayoutStrategy for WrapLayout {
-    fn measure(&self, children: &mut [Box<dyn Widget>], constraints: Constraints) -> Size {
+    fn measure(&self, context: &mut LayoutContext<'_>) -> Size {
+        let children = &mut *context.children;
+        let constraints = context.constraints;
         let max_width = constraints.max.width.0;
         let mut x: f32 = 0.0;
         let mut y: f32 = 0.0;
@@ -40,7 +42,8 @@ impl LayoutStrategy for WrapLayout {
             height: Dip(y + line_height),
         })
     }
-    fn arrange(&self, children: &mut [Box<dyn Widget>], bounds: Rect) {
+    fn arrange(&self, context: &mut LayoutContext<'_>, bounds: Rect) {
+        let children = &mut *context.children;
         let mut x: f32 = 0.0;
         let mut y: f32 = 0.0;
         let mut line_height: f32 = 0.0;

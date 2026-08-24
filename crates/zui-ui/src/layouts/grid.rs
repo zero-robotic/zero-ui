@@ -1,5 +1,5 @@
-use super::LayoutStrategy;
-use crate::{layout::Constraints, widget::Widget};
+use super::{LayoutContext, LayoutStrategy};
+use crate::layout::Constraints;
 use zui_core::{Dip, Point, Rect, Size};
 
 #[derive(Clone, Copy, Debug)]
@@ -20,7 +20,9 @@ impl GridLayout {
     }
 }
 impl LayoutStrategy for GridLayout {
-    fn measure(&self, children: &mut [Box<dyn Widget>], constraints: Constraints) -> Size {
+    fn measure(&self, context: &mut LayoutContext<'_>) -> Size {
+        let children = &mut *context.children;
+        let constraints = context.constraints;
         let cols = self.columns as f32;
         let cell_width = ((constraints.max.width.0 - self.gap.0 * (cols - 1.0)) / cols).max(0.0);
         let mut rows: Vec<f32> = Vec::new();
@@ -41,7 +43,8 @@ impl LayoutStrategy for GridLayout {
             height: Dip(height),
         })
     }
-    fn arrange(&self, children: &mut [Box<dyn Widget>], bounds: Rect) {
+    fn arrange(&self, context: &mut LayoutContext<'_>, bounds: Rect) {
+        let children = &mut *context.children;
         let cell_width = ((bounds.size.width.0 - self.gap.0 * (self.columns as f32 - 1.0))
             / self.columns as f32)
             .max(0.0);

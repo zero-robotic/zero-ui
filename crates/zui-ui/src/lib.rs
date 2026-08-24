@@ -14,15 +14,14 @@ pub use event::{Action, ActionKind, EventContext, EventResult, UiEvent};
 pub use focus::FocusManager;
 pub use layout::{Constraints, LayoutBox};
 pub use layouts::{
-    ColumnLayout, GridLayout, Layout, LayoutStrategy, RowLayout, StackLayout, WrapLayout,
+    Align, Alignment, ColumnLayout, Gap, GridLayout, Layout, LayoutContext, LayoutStrategy,
+    Padding, RowLayout, SizedBox, Spacer, StackLayout, WrapLayout,
 };
 pub use semantics::{SemanticRole, SemanticsNode};
 pub use theme::{ButtonStyle, TextInputStyle, TextStyle, Theme, ThemeToken};
 pub use tree::WidgetTree;
 pub use widget::{PaintContext, Widget, WidgetId};
-pub use widgets::{
-    Align, Alignment, Button, Divider, DividerAxis, Padding, SizedBox, Spacer, Text, TextInput,
-};
+pub use widgets::{Button, Divider, DividerAxis, Text, TextInput};
 
 #[cfg(test)]
 mod tests {
@@ -155,5 +154,60 @@ mod tests {
                 y: Dip(16.0)
             }
         );
+    }
+
+    #[test]
+    fn sized_box_uses_child_size_when_dimension_is_not_fixed() {
+        let mut box_widget = SizedBox::new(Text::new("hello")).width(100.0);
+        let size = box_widget.layout(Constraints::loose(Size {
+            width: Dip(200.0),
+            height: Dip(100.0),
+        }));
+        assert_eq!(size.width, Dip(100.0));
+        assert_eq!(size.height, Dip(20.0));
+    }
+
+    #[test]
+    fn align_supports_center_left() {
+        let mut align = Align::new(Text::new("x"), Alignment::CENTER_LEFT);
+        align.layout(Constraints::tight(Size {
+            width: Dip(100.0),
+            height: Dip(40.0),
+        }));
+        assert_eq!(
+            align.child().bounds().origin,
+            Point {
+                x: Dip(0.0),
+                y: Dip(10.0),
+            }
+        );
+    }
+
+    #[test]
+    fn row_allocates_remaining_space_to_flexible_spacer() {
+        let mut row = Layout::new(RowLayout::new())
+            .child(Text::new("A"))
+            .child(Spacer::flex(1.0))
+            .child(Text::new("B"));
+        let size = row.layout(Constraints::loose(Size {
+            width: Dip(100.0),
+            height: Dip(40.0),
+        }));
+        assert_eq!(size.width, Dip(100.0));
+        assert_eq!(row.children()[1].bounds().size.width, Dip(84.0));
+    }
+
+    #[test]
+    fn column_allocates_remaining_space_to_flexible_spacer() {
+        let mut column = Layout::new(ColumnLayout::new())
+            .child(Text::new("A"))
+            .child(Spacer::flex(1.0))
+            .child(Text::new("B"));
+        let size = column.layout(Constraints::loose(Size {
+            width: Dip(40.0),
+            height: Dip(100.0),
+        }));
+        assert_eq!(size.height, Dip(100.0));
+        assert_eq!(column.children()[1].bounds().size.height, Dip(60.0));
     }
 }

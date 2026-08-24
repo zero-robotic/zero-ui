@@ -1,5 +1,5 @@
-use super::LayoutStrategy;
-use crate::{layout::Constraints, widget::Widget};
+use super::{LayoutContext, LayoutStrategy};
+use crate::layout::Constraints;
 use zui_core::{Rect, Size};
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -10,7 +10,9 @@ impl StackLayout {
     }
 }
 impl LayoutStrategy for StackLayout {
-    fn measure(&self, children: &mut [Box<dyn Widget>], constraints: Constraints) -> Size {
+    fn measure(&self, context: &mut LayoutContext<'_>) -> Size {
+        let children = &mut *context.children;
+        let constraints = context.constraints;
         let mut size = Size::ZERO;
         for child in children {
             let child_size = child.measure(Constraints::loose(constraints.max));
@@ -19,7 +21,8 @@ impl LayoutStrategy for StackLayout {
         }
         constraints.constrain(size)
     }
-    fn arrange(&self, children: &mut [Box<dyn Widget>], bounds: Rect) {
+    fn arrange(&self, context: &mut LayoutContext<'_>, bounds: Rect) {
+        let children = &mut *context.children;
         for child in children {
             child.arrange(Rect {
                 origin: bounds.origin,
