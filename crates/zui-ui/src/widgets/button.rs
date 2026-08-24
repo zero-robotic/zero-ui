@@ -1,9 +1,10 @@
 use crate::{
     event::{is_left_press, ActionKind, EventContext, EventResult, UiEvent},
     layout::Constraints,
+    theme::Theme,
     widget::{Widget, WidgetId},
 };
-use zui_core::{Color, Dip, Point, Rect, Size};
+use zui_core::{Dip, Point, Rect, Size};
 use zui_platform::InputEvent;
 
 pub struct Button {
@@ -11,6 +12,7 @@ pub struct Button {
     label: String,
     bounds: Rect,
     hovered: bool,
+    theme: Theme,
 }
 
 impl Button {
@@ -20,6 +22,7 @@ impl Button {
             label: label.into(),
             bounds: Rect::default(),
             hovered: false,
+            theme: Theme::default(),
         }
     }
     pub fn label(&self) -> &str {
@@ -39,8 +42,11 @@ impl Widget for Button {
     }
     fn layout(&mut self, constraints: Constraints) -> Size {
         let size = constraints.constrain(Size {
-            width: Dip(zui_render::measure_text(&self.label, 3).0 + 32.0),
-            height: Dip(40.0),
+            width: Dip(
+                zui_render::measure_text(&self.label, self.theme.button.font_size).0
+                    + self.theme.button.padding_x.0 * 2.0,
+            ),
+            height: self.theme.button.height,
         });
         self.bounds.size = size;
         size
@@ -64,25 +70,29 @@ impl Widget for Button {
             EventResult::Ignored
         }
     }
+    fn set_theme(&mut self, theme: &Theme) {
+        self.theme = theme.clone();
+    }
     fn paint(&self, ctx: &mut crate::PaintContext<'_>) {
+        let style = &ctx.theme.button;
         ctx.fill_rounded_rect(
             self.bounds,
-            Dip(8.0),
-            Color {
-                r: if self.hovered { 0.14 } else { 0.18 },
-                g: if self.hovered { 0.34 } else { 0.42 },
-                b: if self.hovered { 0.72 } else { 0.86 },
-                a: 1.0,
+            style.radius,
+            if self.hovered {
+                style.hover_background
+            } else {
+                style.background
             },
         );
         ctx.draw_text(
             &self.label,
             Point {
-                x: Dip(self.bounds.origin.x.0 + 16.0),
-                y: Dip(self.bounds.origin.y.0 + 9.0),
+                x: Dip(self.bounds.origin.x.0 + style.padding_x.0),
+                y: Dip(self.bounds.origin.y.0
+                    + (self.bounds.size.height.0 - style.font_size as f32 * 7.0) / 2.0),
             },
-            Color::WHITE,
-            3,
+            style.foreground,
+            style.font_size,
         );
     }
 }

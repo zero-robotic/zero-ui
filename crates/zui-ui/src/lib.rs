@@ -13,7 +13,7 @@ pub use event::{Action, ActionKind, EventContext, EventResult, UiEvent};
 pub use focus::FocusManager;
 pub use layout::{Constraints, LayoutBox};
 pub use semantics::{SemanticRole, SemanticsNode};
-pub use theme::{Theme, ThemeToken};
+pub use theme::{ButtonStyle, TextInputStyle, TextStyle, Theme, ThemeToken};
 pub use tree::WidgetTree;
 pub use widget::{PaintContext, Widget, WidgetId};
 pub use widgets::{Button, Column, Padding, Row, Text, TextInput};

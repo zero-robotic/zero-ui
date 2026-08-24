@@ -24,3 +24,5 @@ wgpu = { version = "29.0.4", features = ["noop"] }
 pollster = "0.4.0"
 raw-window-handle = "0.6.2"
 bytemuck = { version = "1.25.2", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.4"

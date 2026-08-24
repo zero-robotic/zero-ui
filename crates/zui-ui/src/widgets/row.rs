@@ -1,6 +1,7 @@
 use crate::{
     event::{EventContext, EventResult, UiEvent},
     layout::Constraints,
+    theme::Theme,
     widget::{PaintContext, Widget, WidgetId},
 };
 use zui_core::{Dip, Point, Rect, Size};
@@ -74,6 +75,11 @@ impl Widget for Row {
     fn paint(&self, ctx: &mut PaintContext<'_>) {
         for child in &self.children {
             child.paint(ctx);
+        }
+    }
+    fn set_theme(&mut self, theme: &Theme) {
+        for child in &mut self.children {
+            child.set_theme(theme);
         }
     }
 }

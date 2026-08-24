@@ -1,6 +1,7 @@
 use crate::{
     event::{EventContext, EventResult, UiEvent},
     layout::Constraints,
+    theme::Theme,
     widget::{PaintContext, Widget, WidgetId},
 };
 use zui_core::{Dip, Point, Rect, Size};
@@ -66,5 +67,8 @@ impl Widget for Padding {
     }
     fn paint(&self, ctx: &mut PaintContext<'_>) {
         self.child.paint(ctx);
+    }
+    fn set_theme(&mut self, theme: &Theme) {
+        self.child.set_theme(theme);
     }
 }

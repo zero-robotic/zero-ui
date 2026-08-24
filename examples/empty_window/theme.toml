@@ -1,0 +1,27 @@
+background = "#151923"
+foreground = "#ffffff"
+accent = "#5f9be8"
+spacing = 8.0
+
+[text]
+font_size = 2
+color = "#ffffff"
+
+[button]
+height = 40.0
+padding_x = 16.0
+radius = 8.0
+background = "#5f9be8"
+hover_background = "#3972c4"
+foreground = "#ffffff"
+font_size = 3
+
+[text_input]
+width = 280.0
+height = 40.0
+padding_x = 8.0
+background = "#d1d8e5"
+focused_background = "#f0f4ff"
+foreground = "#111111"
+caret_color = "#111111"
+font_size = 3

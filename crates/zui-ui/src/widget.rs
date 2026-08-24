@@ -7,6 +7,7 @@ use zui_render::DisplayList;
 use crate::{
     event::{EventContext, EventResult, UiEvent},
     layout::Constraints,
+    theme::Theme,
 };
 
 static NEXT_WIDGET_ID: AtomicU64 = AtomicU64::new(1);
@@ -23,12 +24,14 @@ impl WidgetId {
 pub struct PaintContext<'a> {
     pub display_list: &'a mut DisplayList,
     pub now: Instant,
+    pub theme: &'a Theme,
 }
 impl<'a> PaintContext<'a> {
-    pub fn new(display_list: &'a mut DisplayList) -> Self {
+    pub fn new(display_list: &'a mut DisplayList, theme: &'a Theme) -> Self {
         Self {
             display_list,
             now: Instant::now(),
+            theme,
         }
     }
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
@@ -48,5 +51,6 @@ pub trait Widget {
     fn set_bounds(&mut self, bounds: Rect);
     fn layout(&mut self, constraints: Constraints) -> Size;
     fn event(&mut self, event: &UiEvent, ctx: &mut EventContext) -> EventResult;
+    fn set_theme(&mut self, _theme: &Theme) {}
     fn paint(&self, _ctx: &mut PaintContext<'_>) {}
 }

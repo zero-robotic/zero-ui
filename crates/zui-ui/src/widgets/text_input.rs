@@ -1,10 +1,11 @@
 use crate::{
     event::{ActionKind, EventContext, EventResult, UiEvent},
     layout::Constraints,
+    theme::Theme,
     widget::{Widget, WidgetId},
 };
 use std::time::Instant;
-use zui_core::{Color, Dip, Point, Rect, Size};
+use zui_core::{Dip, Point, Rect, Size};
 use zui_platform::{InputEvent, KeyCode, KeyState};
 
 pub struct TextInput {
@@ -13,6 +14,7 @@ pub struct TextInput {
     bounds: Rect,
     focused: bool,
     focus_started: Instant,
+    theme: Theme,
 }
 
 impl TextInput {
@@ -23,6 +25,7 @@ impl TextInput {
             bounds: Rect::default(),
             focused: false,
             focus_started: Instant::now(),
+            theme: Theme::default(),
         }
     }
     pub fn with_text(text: impl Into<String>) -> Self {
@@ -56,8 +59,8 @@ impl Widget for TextInput {
     }
     fn layout(&mut self, constraints: Constraints) -> Size {
         let size = constraints.constrain(Size {
-            width: Dip(280.0),
-            height: Dip(40.0),
+            width: self.theme.text_input.width,
+            height: self.theme.text_input.height,
         });
         self.bounds.size = size;
         size
@@ -109,46 +112,45 @@ impl Widget for TextInput {
             _ => EventResult::Ignored,
         }
     }
+    fn set_theme(&mut self, theme: &Theme) {
+        self.theme = theme.clone();
+    }
     fn paint(&self, ctx: &mut crate::PaintContext<'_>) {
-        let color = if self.focused {
-            Color {
-                r: 0.92,
-                g: 0.95,
-                b: 1.0,
-                a: 1.0,
-            }
-        } else {
-            Color {
-                r: 0.82,
-                g: 0.85,
-                b: 0.9,
-                a: 1.0,
-            }
-        };
-        ctx.fill_rect(self.bounds, color);
+        let style = &ctx.theme.text_input;
+        ctx.fill_rect(
+            self.bounds,
+            if self.focused {
+                style.focused_background
+            } else {
+                style.background
+            },
+        );
         ctx.draw_text(
             &self.text,
             Point {
-                x: Dip(self.bounds.origin.x.0 + 8.0),
-                y: Dip(self.bounds.origin.y.0 + 9.0),
+                x: Dip(self.bounds.origin.x.0 + style.padding_x.0),
+                y: Dip(self.bounds.origin.y.0
+                    + (self.bounds.size.height.0 - style.font_size as f32 * 7.0) / 2.0),
             },
-            Color::BLACK,
-            3,
+            style.foreground,
+            style.font_size,
         );
         if self.focused && ctx.now.duration_since(self.focus_started).as_millis() / 500 % 2 == 0 {
-            let caret_x = self.bounds.origin.x.0 + 8.0 + zui_render::measure_text(&self.text, 3).0;
+            let caret_x = self.bounds.origin.x.0
+                + style.padding_x.0
+                + zui_render::measure_text(&self.text, style.font_size).0;
             ctx.fill_rect(
                 Rect {
                     origin: Point {
                         x: Dip(caret_x),
-                        y: Dip(self.bounds.origin.y.0 + 7.0),
+                        y: Dip(self.bounds.origin.y.0 + (self.bounds.size.height.0 - 26.0) / 2.0),
                     },
                     size: Size {
                         width: Dip(2.0),
                         height: Dip(26.0),
                     },
                 },
-                Color::BLACK,
+                style.caret_color,
             );
         }
     }

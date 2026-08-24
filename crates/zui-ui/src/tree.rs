@@ -1,18 +1,21 @@
 use crate::{
     event::{Action, EventContext, EventResult, UiEvent},
     layout::Constraints,
+    theme::Theme,
     widget::{PaintContext, Widget},
 };
 use zui_render::DisplayList;
 
 pub struct WidgetTree {
     root: Box<dyn Widget>,
+    theme: Theme,
 }
 
 impl WidgetTree {
     pub fn new(root: impl Widget + 'static) -> Self {
         Self {
             root: Box::new(root),
+            theme: Theme::default(),
         }
     }
     pub fn layout(&mut self, constraints: Constraints) -> zui_core::Size {
@@ -24,7 +27,15 @@ impl WidgetTree {
         (result, ctx.take_actions())
     }
     pub fn paint(&self, display_list: &mut DisplayList) {
-        self.root.paint(&mut PaintContext::new(display_list));
+        self.root
+            .paint(&mut PaintContext::new(display_list, &self.theme));
+    }
+    pub fn theme(&self) -> &Theme {
+        &self.theme
+    }
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+        self.root.set_theme(&self.theme);
     }
     pub fn root(&self) -> &dyn Widget {
         &*self.root

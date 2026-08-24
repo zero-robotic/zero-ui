@@ -1,14 +1,16 @@
 use crate::{
     event::{EventContext, EventResult, UiEvent},
     layout::Constraints,
+    theme::Theme,
     widget::{Widget, WidgetId},
 };
-use zui_core::{Color, Dip, Point, Rect, Size};
+use zui_core::{Dip, Point, Rect, Size};
 
 pub struct Text {
     id: WidgetId,
     text: String,
     bounds: Rect,
+    theme: Theme,
 }
 
 impl Text {
@@ -17,6 +19,7 @@ impl Text {
             id: WidgetId::new(),
             text: text.into(),
             bounds: Rect::default(),
+            theme: Theme::default(),
         }
     }
     pub fn text(&self) -> &str {
@@ -48,6 +51,9 @@ impl Widget for Text {
     fn event(&mut self, _event: &UiEvent, _ctx: &mut EventContext) -> EventResult {
         EventResult::Ignored
     }
+    fn set_theme(&mut self, theme: &Theme) {
+        self.theme = theme.clone();
+    }
     fn paint(&self, ctx: &mut crate::PaintContext<'_>) {
         ctx.draw_text(
             &self.text,
@@ -55,8 +61,8 @@ impl Widget for Text {
                 x: Dip(self.bounds.origin.x.0),
                 y: Dip(self.bounds.origin.y.0 + 4.0),
             },
-            Color::WHITE,
-            2,
+            ctx.theme.text.color,
+            ctx.theme.text.font_size,
         );
     }
 }

@@ -1,15 +1,15 @@
 use std::cell::RefCell;
 
 use zui_backend_winit::WinitBackend;
-use zui_core::{Color, Dip, PhysicalSize, Point};
+use zui_core::{Dip, PhysicalSize, Point};
 use zui_platform::{Host, InputEvent, PlatformEvent, WindowOptions};
 use zui_render::{DisplayList, RenderError, Renderer};
-use zui_ui::{Button, Column, Constraints, Padding, Text, TextInput, UiEvent, WidgetTree};
+use zui_ui::{Button, Column, Constraints, Padding, Text, TextInput, Theme, UiEvent, WidgetTree};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let renderer = RefCell::new(Renderer::new_blocking()?);
     let display_list = RefCell::new(DisplayList::new());
-    let ui = RefCell::new(WidgetTree::new(Padding::new(
+    let mut tree = WidgetTree::new(Padding::new(
         Column::new(vec![
             Box::new(Text::new("zero-ui controls")),
             Box::new(Button::new("开始语音")),
@@ -17,18 +17,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ])
         .with_spacing(Dip(8.0)),
         Dip(16.0),
-    )));
+    ));
+    let theme = Theme::from_toml_str(include_str!("../theme.toml"))?;
+    let background = theme.background;
+    tree.set_theme(theme);
+    let ui = RefCell::new(tree);
     let pointer_position = RefCell::new(Point {
         x: Dip(0.0),
         y: Dip(0.0),
     });
 
-    display_list.borrow_mut().clear(Color {
-        r: 0.08,
-        g: 0.10,
-        b: 0.14,
-        a: 1.0,
-    });
+    display_list.borrow_mut().clear(background);
 
     let mut on_window = |host: &zui_backend_winit::WinitHost| {
         let size = host.scale_factor().to_physical(host.size());
@@ -44,12 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut handler = |event: PlatformEvent| match event {
         PlatformEvent::RedrawRequested(window) => {
             let mut commands = display_list.borrow_mut();
-            commands.clear(Color {
-                r: 0.08,
-                g: 0.10,
-                b: 0.14,
-                a: 1.0,
-            });
+            commands.clear(background);
             ui.borrow().paint(&mut commands);
             if let Err(error) = renderer.borrow_mut().render_frame(window, &commands) {
                 match error {
