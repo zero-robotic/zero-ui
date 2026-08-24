@@ -4,7 +4,7 @@ accent = "#5f9be8"
 spacing = 8.0
 
 [text]
-font_size = 2
+font_size = 3
 color = "#ffffff"
 
 [button]

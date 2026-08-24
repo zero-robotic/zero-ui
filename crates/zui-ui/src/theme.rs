@@ -72,7 +72,7 @@ impl Default for Theme {
             spacing: Dip(8.0),
             text: TextStyle {
                 color: Color::WHITE,
-                font_size: 2,
+                font_size: 3,
             },
             button: ButtonStyle {
                 height: Dip(40.0),

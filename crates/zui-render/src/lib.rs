@@ -12,15 +12,22 @@ use zui_platform::spi::RawWindowHandleProvider;
 
 pub use wgpu;
 
-static SYSTEM_FONT: OnceLock<Option<fontdue::Font>> = OnceLock::new();
+static SYSTEM_FONTS: OnceLock<Vec<fontdue::Font>> = OnceLock::new();
 
 /// Measures text using the same system font used by the renderer.
 pub fn measure_text(text: &str, scale: u32) -> Dip {
-    if let Some(font) = cached_system_font() {
+    let fonts = cached_system_fonts();
+    if !fonts.is_empty() {
         let size = (scale.max(1) * 7) as f32;
         Dip(text
             .chars()
-            .map(|character| font.metrics(character, size).advance_width)
+            .map(|character| {
+                fonts
+                    .iter()
+                    .find(|font| font.lookup_glyph_index(character) != 0)
+                    .map(|font| font.metrics(character, size).advance_width)
+                    .unwrap_or(size)
+            })
             .sum())
     } else {
         Dip(text.chars().count() as f32 * 6.0 * scale.max(1) as f32)
@@ -124,8 +131,8 @@ pub struct Renderer {
     pub(crate) device: wgpu::Device,
     pub(crate) queue: wgpu::Queue,
     surfaces: HashMap<WindowId, SurfaceState>,
-    font: Option<&'static fontdue::Font>,
-    glyph_cache: HashMap<(char, u32), CachedGlyph>,
+    fonts: &'static [fontdue::Font],
+    glyph_cache: HashMap<(usize, char, u32), CachedGlyph>,
 }
 
 struct CachedGlyph {
@@ -157,7 +164,7 @@ impl Renderer {
             device,
             queue,
             surfaces: HashMap::new(),
-            font: cached_system_font(),
+            fonts: cached_system_fonts(),
             glyph_cache: HashMap::new(),
         })
     }
@@ -332,7 +339,7 @@ impl Renderer {
                     } => {
                         append_text(
                             &mut rects,
-                            &self.font,
+                            self.fonts,
                             &mut self.glyph_cache,
                             text,
                             *origin,
@@ -392,48 +399,69 @@ impl Renderer {
     }
 }
 
-fn cached_system_font() -> Option<&'static fontdue::Font> {
-    SYSTEM_FONT.get_or_init(|| load_system_font()).as_ref()
+fn cached_system_fonts() -> &'static [fontdue::Font] {
+    SYSTEM_FONTS.get_or_init(load_system_fonts).as_slice()
 }
 
-fn load_system_font() -> Option<fontdue::Font> {
+fn load_system_fonts() -> Vec<fontdue::Font> {
     let candidates = [
         std::env::var("ZUI_FONT_PATH").ok(),
+        std::env::var("ZUI_LATIN_FONT_PATH").ok(),
+        Some("/System/Library/Fonts/Supplemental/Verdana.ttf".into()),
+        Some("/System/Library/Fonts/Supplemental/Tahoma.ttf".into()),
+        Some("/System/Library/Fonts/Supplemental/Arial.ttf".into()),
         Some("/System/Library/Fonts/Supplemental/Arial Unicode.ttf".into()),
+        Some("/System/Library/Fonts/SFNS.ttf".into()),
         Some("/System/Library/Fonts/Supplemental/NISC18030.ttf".into()),
+        Some("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".into()),
+        std::env::var("ZUI_CJK_FONT_PATH").ok(),
         Some("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc".into()),
         Some("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc".into()),
+        Some("C:\\Windows\\Fonts\\segoeui.ttf".into()),
         Some("C:\\Windows\\Fonts\\msyh.ttc".into()),
     ];
     candidates
         .into_iter()
         .flatten()
-        .find_map(|path| std::fs::read(path).ok())
-        .and_then(|bytes| fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok())
+        .filter_map(|path| std::fs::read(path).ok())
+        .filter_map(|bytes| fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok())
+        .collect()
 }
 
 fn append_text(
     vertices: &mut Vec<RectVertex>,
-    font: &Option<&fontdue::Font>,
-    glyph_cache: &mut HashMap<(char, u32), CachedGlyph>,
+    fonts: &[fontdue::Font],
+    glyph_cache: &mut HashMap<(usize, char, u32), CachedGlyph>,
     text: &str,
     origin: Point,
     color: Color,
     scale: u32,
     size: PhysicalSize,
 ) {
-    if let Some(font) = font {
+    if !fonts.is_empty() {
         let font_size = (scale.max(1) * 7) as f32;
+        let baseline = origin.y.0 + font_size * 0.8;
         let mut x = origin.x.0;
         for character in text.chars() {
+            let Some((font_id, font)) = fonts
+                .iter()
+                .enumerate()
+                .find(|(_, font)| font.lookup_glyph_index(character) != 0)
+            else {
+                x += font_size;
+                continue;
+            };
             let glyph = glyph_cache
-                .entry((character, scale.max(1)))
+                .entry((font_id, character, scale.max(1)))
                 .or_insert_with(|| {
                     let (metrics, bitmap) = font.rasterize(character, font_size);
                     CachedGlyph { metrics, bitmap }
                 });
             let metrics = glyph.metrics;
-            let top = origin.y.0 + (font_size - metrics.height as f32) + metrics.ymin as f32;
+            // Fontdue reports glyph bounds relative to the baseline. Keeping
+            // one baseline for the complete run prevents punctuation and
+            // lowercase glyphs from drifting vertically.
+            let top = baseline - metrics.height as f32 - metrics.ymin as f32;
             for row in 0..metrics.height {
                 for column in 0..metrics.width {
                     let alpha = glyph.bitmap[row * metrics.width + column] as f32 / 255.0;
