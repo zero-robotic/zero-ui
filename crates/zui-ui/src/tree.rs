@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::{
     event::{Action, EventContext, EventResult, UiEvent},
     layout::Constraints,
@@ -14,6 +16,7 @@ pub struct WidgetTree {
     layout_dirty: bool,
     paint_dirty: bool,
     dirty_region: Option<Rect>,
+    dirty_widget_ids: HashSet<crate::WidgetId>,
 }
 
 impl WidgetTree {
@@ -25,6 +28,7 @@ impl WidgetTree {
             layout_dirty: true,
             paint_dirty: true,
             dirty_region: None,
+            dirty_widget_ids: HashSet::new(),
         }
     }
     pub fn measure(&mut self, constraints: Constraints) -> zui_core::Size {
@@ -46,6 +50,10 @@ impl WidgetTree {
     pub fn event(&mut self, event: &UiEvent) -> (EventResult, Vec<Action>) {
         let mut ctx = EventContext::new();
         let result = self.root.event(event, &mut ctx);
+        let actions = ctx.take_actions();
+        for action in &actions {
+            self.dirty_widget_ids.insert(action.source);
+        }
         if result == EventResult::RequestRedraw {
             let region = if ctx.requires_full_redraw() {
                 None
@@ -54,16 +62,17 @@ impl WidgetTree {
             };
             self.request_paint(region);
         }
-        (result, ctx.take_actions())
+        (result, actions)
     }
     pub fn paint(&mut self, display_list: &mut DisplayList) {
         if self.render_node.is_none() {
             self.render_node = Some(self.root.build_render_node(&self.theme));
         } else if self.paint_dirty {
             let previous = self.render_node.take();
-            self.render_node = Some(self.root.build_render_node_with_cache(
+            self.render_node = Some(self.root.build_render_node_with_dirty_widgets(
                 previous.as_ref(),
                 self.dirty_region,
+                &self.dirty_widget_ids,
                 &self.theme,
             ));
         }
@@ -88,6 +97,7 @@ impl WidgetTree {
         self.paint_dirty = true;
         self.render_node = None;
         self.dirty_region = None;
+        self.dirty_widget_ids.clear();
     }
     pub fn request_paint(&mut self, region: Option<Rect>) {
         self.paint_dirty = true;
@@ -113,6 +123,7 @@ impl WidgetTree {
         self.layout_dirty = false;
         self.paint_dirty = false;
         self.dirty_region = None;
+        self.dirty_widget_ids.clear();
     }
     pub fn root(&self) -> &dyn Widget {
         &*self.root

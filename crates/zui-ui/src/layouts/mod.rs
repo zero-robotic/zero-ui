@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::{
     event::{EventContext, EventResult, UiEvent},
     layout::Constraints,
@@ -99,6 +101,7 @@ impl Widget for Layout {
     }
     fn build_render_node(&self, theme: &Theme) -> RenderNode {
         let mut node = RenderNode::new(self.bounds);
+        node.set_source_id(self.id.0);
         for child in &self.children {
             node.add_child(child.build_render_node(theme));
         }
@@ -111,9 +114,30 @@ impl Widget for Layout {
         theme: &Theme,
     ) -> RenderNode {
         let mut node = RenderNode::new(self.bounds);
+        node.set_source_id(self.id.0);
         for (index, child) in self.children.iter().enumerate() {
             let cached_child = previous.and_then(|node| node.children.get(index));
             node.add_child(child.build_render_node_with_cache(cached_child, dirty_region, theme));
+        }
+        node
+    }
+    fn build_render_node_with_dirty_widgets(
+        &self,
+        previous: Option<&RenderNode>,
+        dirty_region: Option<Rect>,
+        dirty_widgets: &HashSet<WidgetId>,
+        theme: &Theme,
+    ) -> RenderNode {
+        let mut node = RenderNode::new(self.bounds);
+        node.set_source_id(self.id.0);
+        for (index, child) in self.children.iter().enumerate() {
+            let cached_child = previous.and_then(|node| node.children.get(index));
+            node.add_child(child.build_render_node_with_dirty_widgets(
+                cached_child,
+                dirty_region,
+                dirty_widgets,
+                theme,
+            ));
         }
         node
     }

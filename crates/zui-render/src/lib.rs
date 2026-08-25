@@ -4,6 +4,7 @@
 //! drawing data; `Renderer` owns the GPU and the per-window swap-chain surfaces.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
 
 use wgpu::util::DeviceExt;
@@ -563,8 +564,8 @@ impl DisplayList {
 pub struct RenderNode {
     /// Bounds in the node's local coordinate system.
     pub local_bounds: Rect,
-    /// Kept as a compatibility alias while widgets migrate to local bounds.
-    pub bounds: Rect,
+    /// The originating widget identity, when this node was built by a Widget.
+    pub source_id: Option<u64>,
     pub transform: Transform,
     pub clip: Option<Rect>,
     pub opacity: f32,
@@ -580,7 +581,7 @@ impl RenderNode {
     pub fn new(bounds: Rect) -> Self {
         Self {
             local_bounds: bounds,
-            bounds,
+            source_id: None,
             transform: Transform::IDENTITY,
             clip: None,
             opacity: 1.0,
@@ -637,6 +638,14 @@ impl RenderNode {
     pub fn set_transform(&mut self, transform: Transform) {
         self.transform = transform;
         self.mark_dirty(DirtyFlags::PAINT);
+    }
+
+    pub fn set_source_id(&mut self, source_id: u64) {
+        self.source_id = Some(source_id);
+    }
+
+    pub fn world_bounds(&self) -> Rect {
+        self.transform.rect(self.local_bounds)
     }
 
     pub fn set_clip(&mut self, clip: Option<Rect>) {
@@ -959,6 +968,15 @@ impl RenderNodeBuilder {
         }
     }
 
+    pub fn for_widget(bounds: Rect) -> Self {
+        let mut builder = Self::new(Rect {
+            origin: Point::default(),
+            size: bounds.size,
+        });
+        builder.transform(Transform::translate(bounds.origin.x, bounds.origin.y));
+        builder
+    }
+
     pub fn commands_mut(&mut self) -> &mut DisplayList {
         &mut self.node.commands
     }
@@ -969,6 +987,11 @@ impl RenderNodeBuilder {
 
     pub fn transform(&mut self, transform: Transform) -> &mut Self {
         self.node.transform = transform;
+        self
+    }
+
+    pub fn source_id(&mut self, source_id: u64) -> &mut Self {
+        self.node.set_source_id(source_id);
         self
     }
 
@@ -996,12 +1019,14 @@ struct SurfaceState {
     pipeline: wgpu::RenderPipeline,
     rounded_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
+    image_pipeline: wgpu::RenderPipeline,
     canvas: wgpu::Texture,
     canvas_view: wgpu::TextureView,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group: wgpu::BindGroup,
     scale_factor: ScaleFactor,
     has_contents: bool,
+    batch_cache: Option<(u64, Vec<GpuBatch>)>,
 }
 
 #[repr(C)]
@@ -1032,10 +1057,23 @@ struct LineVertex {
     color: [f32; 4],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ImageVertex {
+    position: [f32; 2],
+    uv: [f32; 2],
+    opacity: f32,
+}
+
 enum RenderBatch {
     Rect(Vec<RectVertex>),
     Rounded(Vec<RoundedRectVertex>),
     Line(Vec<LineVertex>),
+    Image {
+        image: ImageId,
+        vertices: Vec<ImageVertex>,
+    },
+    Clip(Option<Rect>),
 }
 
 #[derive(Clone, Copy)]
@@ -1043,6 +1081,12 @@ enum BatchKind {
     Rect,
     Rounded,
     Line,
+    Image(ImageId),
+}
+
+enum GpuBatch {
+    Draw(BatchKind, wgpu::Buffer, u32),
+    Clip(Option<Rect>),
 }
 
 fn rect_batch(batches: &mut Vec<RenderBatch>) -> &mut Vec<RectVertex> {
@@ -1075,6 +1119,20 @@ fn line_batch(batches: &mut Vec<RenderBatch>) -> &mut Vec<LineVertex> {
     }
 }
 
+fn image_batch(batches: &mut Vec<RenderBatch>, image: ImageId) -> &mut Vec<ImageVertex> {
+    if !matches!(batches.last(), Some(RenderBatch::Image { image: current, .. }) if *current == image)
+    {
+        batches.push(RenderBatch::Image {
+            image,
+            vertices: Vec::new(),
+        });
+    }
+    match batches.last_mut().expect("image batch was just added") {
+        RenderBatch::Image { vertices, .. } => vertices,
+        _ => unreachable!(),
+    }
+}
+
 pub struct Renderer {
     pub(crate) instance: wgpu::Instance,
     pub(crate) adapter: wgpu::Adapter,
@@ -1085,6 +1143,15 @@ pub struct Renderer {
     glyph_cache: HashMap<(usize, char, u32, u32), CachedGlyph>,
     font_cache: HashMap<char, Option<usize>>,
     resources: ResourceCache,
+    gpu_images: HashMap<ImageId, GpuImage>,
+    image_sampler: wgpu::Sampler,
+    image_bind_groups: HashMap<(WindowId, ImageId), wgpu::BindGroup>,
+}
+
+struct GpuImage {
+    // Kept alive for the view and bind groups.
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
 }
 
 struct CachedGlyph {
@@ -1116,6 +1183,12 @@ impl Renderer {
             })
             .await
             .map_err(|error| RenderError::Device(error.to_string()))?;
+        let image_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("zui-render image sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         Ok(Self {
             instance,
             adapter,
@@ -1126,6 +1199,9 @@ impl Renderer {
             glyph_cache: HashMap::new(),
             font_cache: HashMap::new(),
             resources: ResourceCache::default(),
+            gpu_images: HashMap::new(),
+            image_sampler,
+            image_bind_groups: HashMap::new(),
         })
     }
 
@@ -1134,10 +1210,56 @@ impl Renderer {
     }
 
     pub fn register_image(&mut self, id: ImageId, image: ImageResource) {
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("zui-render image"),
+            size: wgpu::Extent3d {
+                width: image.width,
+                height: image.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &image.rgba8,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(image.width * 4),
+                rows_per_image: Some(image.height),
+            },
+            wgpu::Extent3d {
+                width: image.width,
+                height: image.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.gpu_images.insert(
+            id,
+            GpuImage {
+                _texture: texture,
+                view,
+            },
+        );
+        self.image_bind_groups
+            .retain(|(_, image_id), _| *image_id != id);
         self.resources.register_image(id, image);
     }
 
     pub fn remove_image(&mut self, id: ImageId) -> Option<ImageResource> {
+        self.gpu_images.remove(&id);
+        self.image_bind_groups
+            .retain(|(_, image_id), _| *image_id != id);
         self.resources.remove_image(id)
     }
 
@@ -1171,6 +1293,7 @@ impl Renderer {
         let pipeline = create_rect_pipeline(&self.device, config.format);
         let rounded_pipeline = create_rounded_rect_pipeline(&self.device, config.format);
         let line_pipeline = create_line_pipeline(&self.device, config.format);
+        let image_pipeline = create_image_pipeline(&self.device, config.format);
         let (canvas, canvas_view) = create_canvas(&self.device, size, config.format);
         let blit_pipeline = create_blit_pipeline(&self.device, config.format);
         let blit_bind_group = create_blit_bind_group(&self.device, &blit_pipeline, &canvas_view);
@@ -1183,12 +1306,14 @@ impl Renderer {
                 pipeline,
                 rounded_pipeline,
                 line_pipeline,
+                image_pipeline,
                 canvas,
                 canvas_view,
                 blit_pipeline,
                 blit_bind_group,
                 scale_factor,
                 has_contents: false,
+                batch_cache: None,
             },
         );
         Ok(())
@@ -1216,6 +1341,7 @@ impl Renderer {
         let pipeline = create_rect_pipeline(&self.device, config.format);
         let rounded_pipeline = create_rounded_rect_pipeline(&self.device, config.format);
         let line_pipeline = create_line_pipeline(&self.device, config.format);
+        let image_pipeline = create_image_pipeline(&self.device, config.format);
         let (canvas, canvas_view) = create_canvas(&self.device, size, config.format);
         let blit_pipeline = create_blit_pipeline(&self.device, config.format);
         let blit_bind_group = create_blit_bind_group(&self.device, &blit_pipeline, &canvas_view);
@@ -1228,12 +1354,14 @@ impl Renderer {
                 pipeline,
                 rounded_pipeline,
                 line_pipeline,
+                image_pipeline,
                 canvas,
                 canvas_view,
                 blit_pipeline,
                 blit_bind_group,
                 scale_factor,
                 has_contents: false,
+                batch_cache: None,
             },
         );
         Ok(())
@@ -1263,6 +1391,7 @@ impl Renderer {
         state.blit_bind_group =
             create_blit_bind_group(&self.device, &state.blit_pipeline, &state.canvas_view);
         state.has_contents = false;
+        state.batch_cache = None;
         Ok(())
     }
 
@@ -1312,6 +1441,7 @@ impl Renderer {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let resolved_commands = resolve_commands(display_list);
+        let batch_hash = display_list_hash(&resolved_commands);
         let clear = resolved_commands
             .iter()
             .rev()
@@ -1351,6 +1481,10 @@ impl Renderer {
             };
             let mut batches = Vec::new();
             for command in &resolved_commands {
+                if let PaintCommand::Clip { rect } = command {
+                    batches.push(RenderBatch::Clip(Some(*rect)));
+                    continue;
+                }
                 if let Some(damage) = damage.filter(|_| state.has_contents) {
                     if !command_intersects(command, damage) {
                         continue;
@@ -1424,54 +1558,39 @@ impl Renderer {
                             );
                         }
                     }
+                    PaintCommand::Image {
+                        rect,
+                        image,
+                        opacity,
+                    } => {
+                        append_image(
+                            image_batch(&mut batches, *image),
+                            *rect,
+                            *opacity,
+                            render_size,
+                        );
+                    }
                     // These commands are retained in the IR for validation
                     // and future scoped GPU state. Node-level state is
                     // resolved before flattening, so they do not draw by
                     // themselves. Image resources are handled by the image
                     // resource backend when it is attached.
-                    PaintCommand::Image { .. }
-                    | PaintCommand::Clip { .. }
+                    PaintCommand::Clip { .. }
                     | PaintCommand::Transform(_)
                     | PaintCommand::Opacity(_) => {}
                     PaintCommand::Clear(_) => {}
                 }
             }
-            let gpu_batches: Vec<(BatchKind, wgpu::Buffer, u32)> = batches
-                .into_iter()
-                .filter_map(|batch| match batch {
-                    RenderBatch::Rect(vertices) if !vertices.is_empty() => Some((
-                        BatchKind::Rect,
-                        self.device
-                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                label: Some("zui-render rectangles"),
-                                contents: bytemuck::cast_slice(&vertices),
-                                usage: wgpu::BufferUsages::VERTEX,
-                            }),
-                        vertices.len() as u32,
-                    )),
-                    RenderBatch::Rounded(vertices) if !vertices.is_empty() => Some((
-                        BatchKind::Rounded,
-                        self.device
-                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                label: Some("zui-render rounded rectangles"),
-                                contents: bytemuck::cast_slice(&vertices),
-                                usage: wgpu::BufferUsages::VERTEX,
-                            }),
-                        vertices.len() as u32,
-                    )),
-                    RenderBatch::Line(vertices) if !vertices.is_empty() => Some((
-                        BatchKind::Line,
-                        self.device
-                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                label: Some("zui-render lines"),
-                                contents: bytemuck::cast_slice(&vertices),
-                                usage: wgpu::BufferUsages::VERTEX,
-                            }),
-                        vertices.len() as u32,
-                    )),
-                    _ => None,
-                })
-                .collect();
+            let cached_batches = state.batch_cache.take();
+            let gpu_batches = if let Some((cached_hash, cached_batches)) = cached_batches {
+                if cached_hash == batch_hash {
+                    cached_batches
+                } else {
+                    build_gpu_batches(&self.device, batches)
+                }
+            } else {
+                build_gpu_batches(&self.device, batches)
+            };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("zui-render clear pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1492,27 +1611,58 @@ impl Renderer {
                 timestamp_writes: None,
                 multiview_mask: None,
             });
-            if let Some(damage) = damage.filter(|_| state.has_contents) {
-                let scale = state.scale_factor.0 as f32;
-                let x = (damage.origin.x.0 * scale).max(0.0) as u32;
-                let y = (damage.origin.y.0 * scale).max(0.0) as u32;
-                let right = ((damage.origin.x.0 + damage.size.width.0) * scale)
-                    .min(state.size.width as f32)
-                    .max(x as f32) as u32;
-                let bottom = ((damage.origin.y.0 + damage.size.height.0) * scale)
-                    .min(state.size.height as f32)
-                    .max(y as f32) as u32;
-                pass.set_scissor_rect(x, y, right.saturating_sub(x), bottom.saturating_sub(y));
-            }
-            for (kind, vertex_buffer, count) in gpu_batches {
+            let mut active_clip = None;
+            for batch in &gpu_batches {
+                if let GpuBatch::Clip(clip) = batch {
+                    active_clip = *clip;
+                    continue;
+                }
+                let GpuBatch::Draw(kind, vertex_buffer, count) = batch else {
+                    continue;
+                };
+                let scissor = intersect_clip(active_clip, damage.filter(|_| state.has_contents));
+                set_scissor(&mut pass, scissor, state.size, state.scale_factor);
                 pass.set_pipeline(match kind {
                     BatchKind::Rect => &state.pipeline,
                     BatchKind::Rounded => &state.rounded_pipeline,
                     BatchKind::Line => &state.line_pipeline,
+                    BatchKind::Image(_) => &state.image_pipeline,
                 });
                 pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                pass.draw(0..count, 0..1);
+                if let BatchKind::Image(image) = *kind {
+                    if let Some(gpu_image) = self.gpu_images.get(&image) {
+                        if !self.image_bind_groups.contains_key(&(window, image)) {
+                            let bind_group =
+                                self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                    label: Some("zui-render image bind group"),
+                                    layout: &state.image_pipeline.get_bind_group_layout(0),
+                                    entries: &[
+                                        wgpu::BindGroupEntry {
+                                            binding: 0,
+                                            resource: wgpu::BindingResource::TextureView(
+                                                &gpu_image.view,
+                                            ),
+                                        },
+                                        wgpu::BindGroupEntry {
+                                            binding: 1,
+                                            resource: wgpu::BindingResource::Sampler(
+                                                &self.image_sampler,
+                                            ),
+                                        },
+                                    ],
+                                });
+                            self.image_bind_groups.insert((window, image), bind_group);
+                        }
+                        if let Some(bind_group) = self.image_bind_groups.get(&(window, image)) {
+                            pass.set_bind_group(0, bind_group, &[]);
+                            pass.draw(0..*count, 0..1);
+                        }
+                    }
+                } else {
+                    pass.draw(0..*count, 0..1);
+                }
             }
+            state.batch_cache = Some((batch_hash, gpu_batches));
         }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1547,6 +1697,52 @@ impl Renderer {
     pub fn queue(&self) -> &wgpu::Queue {
         &self.queue
     }
+}
+
+fn build_gpu_batches(device: &wgpu::Device, batches: Vec<RenderBatch>) -> Vec<GpuBatch> {
+    batches
+        .into_iter()
+        .filter_map(|batch| match batch {
+            RenderBatch::Rect(vertices) if !vertices.is_empty() => Some(GpuBatch::Draw(
+                BatchKind::Rect,
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("zui-render rectangles"),
+                    contents: bytemuck::cast_slice(&vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                }),
+                vertices.len() as u32,
+            )),
+            RenderBatch::Rounded(vertices) if !vertices.is_empty() => Some(GpuBatch::Draw(
+                BatchKind::Rounded,
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("zui-render rounded rectangles"),
+                    contents: bytemuck::cast_slice(&vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                }),
+                vertices.len() as u32,
+            )),
+            RenderBatch::Line(vertices) if !vertices.is_empty() => Some(GpuBatch::Draw(
+                BatchKind::Line,
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("zui-render lines"),
+                    contents: bytemuck::cast_slice(&vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                }),
+                vertices.len() as u32,
+            )),
+            RenderBatch::Image { image, vertices } if !vertices.is_empty() => Some(GpuBatch::Draw(
+                BatchKind::Image(image),
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("zui-render images"),
+                    contents: bytemuck::cast_slice(&vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                }),
+                vertices.len() as u32,
+            )),
+            RenderBatch::Clip(clip) => Some(GpuBatch::Clip(clip)),
+            _ => None,
+        })
+        .collect()
 }
 
 fn cached_system_fonts() -> &'static [fontdue::Font] {
@@ -1748,6 +1944,9 @@ fn resolve_commands(display_list: &DisplayList) -> Vec<PaintCommand> {
             PaintCommand::Transform(next) => transform = compose_transform(transform, *next),
             PaintCommand::Clip { rect } => {
                 clip = intersect_clip(clip, Some(transform.rect(*rect)));
+                if let Some(rect) = clip {
+                    resolved.push(PaintCommand::Clip { rect });
+                }
             }
             PaintCommand::Opacity(value) => opacity *= value.clamp(0.0, 1.0),
             command => {
@@ -1848,6 +2047,76 @@ fn append_line(
         to_vertex(points[2]),
         to_vertex(points[3]),
     ]);
+}
+
+fn append_image(vertices: &mut Vec<ImageVertex>, rect: Rect, opacity: f32, size: PhysicalSize) {
+    let left = rect.origin.x.0 / size.width.max(1) as f32 * 2.0 - 1.0;
+    let right = (rect.origin.x.0 + rect.size.width.0) / size.width.max(1) as f32 * 2.0 - 1.0;
+    let top = 1.0 - rect.origin.y.0 / size.height.max(1) as f32 * 2.0;
+    let bottom = 1.0 - (rect.origin.y.0 + rect.size.height.0) / size.height.max(1) as f32 * 2.0;
+    vertices.extend([
+        ImageVertex {
+            position: [left, top],
+            uv: [0.0, 0.0],
+            opacity,
+        },
+        ImageVertex {
+            position: [right, top],
+            uv: [1.0, 0.0],
+            opacity,
+        },
+        ImageVertex {
+            position: [right, bottom],
+            uv: [1.0, 1.0],
+            opacity,
+        },
+        ImageVertex {
+            position: [left, top],
+            uv: [0.0, 0.0],
+            opacity,
+        },
+        ImageVertex {
+            position: [right, bottom],
+            uv: [1.0, 1.0],
+            opacity,
+        },
+        ImageVertex {
+            position: [left, bottom],
+            uv: [0.0, 1.0],
+            opacity,
+        },
+    ]);
+}
+
+fn set_scissor(
+    pass: &mut wgpu::RenderPass<'_>,
+    rect: Option<Rect>,
+    size: PhysicalSize,
+    scale_factor: ScaleFactor,
+) {
+    let rect = rect.unwrap_or(Rect {
+        origin: Point::default(),
+        size: zui_core::Size {
+            width: Dip(size.width as f32 / scale_factor.0 as f32),
+            height: Dip(size.height as f32 / scale_factor.0 as f32),
+        },
+    });
+    let scale = scale_factor.0.max(1.0) as f32;
+    let x = (rect.origin.x.0 * scale).max(0.0).min(size.width as f32) as u32;
+    let y = (rect.origin.y.0 * scale).max(0.0).min(size.height as f32) as u32;
+    let right = ((rect.origin.x.0 + rect.size.width.0) * scale)
+        .min(size.width as f32)
+        .max(x as f32) as u32;
+    let bottom = ((rect.origin.y.0 + rect.size.height.0) * scale)
+        .min(size.height as f32)
+        .max(y as f32) as u32;
+    pass.set_scissor_rect(x, y, right.saturating_sub(x), bottom.saturating_sub(y));
+}
+
+fn display_list_hash(commands: &[PaintCommand]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    format!("{commands:?}").hash(&mut hasher);
+    hasher.finish()
 }
 
 fn append_rounded_rect(
@@ -2174,6 +2443,102 @@ fn create_rect_pipeline(
     })
 }
 
+fn create_image_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("zui-render image shader"),
+        source: wgpu::ShaderSource::Wgsl(
+            r#"
+            @group(0) @binding(0) var image: texture_2d<f32>;
+            @group(0) @binding(1) var image_sampler: sampler;
+
+            struct VertexOutput {
+                @builtin(position) position: vec4<f32>,
+                @location(0) uv: vec2<f32>,
+                @location(1) opacity: f32,
+            };
+
+            @vertex
+            fn vs(
+                @location(0) position: vec2<f32>,
+                @location(1) uv: vec2<f32>,
+                @location(2) opacity: f32,
+            ) -> VertexOutput {
+                var output: VertexOutput;
+                output.position = vec4<f32>(position, 0.0, 1.0);
+                output.uv = uv;
+                output.opacity = opacity;
+                return output;
+            }
+
+            @fragment
+            fn fs(input: VertexOutput) -> @location(0) vec4<f32> {
+                let color = textureSample(image, image_sampler, input.uv);
+                return vec4<f32>(color.rgb, color.a * input.opacity);
+            }
+        "#
+            .into(),
+        ),
+    });
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("zui-render image bind group layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("zui-render image pipeline layout"),
+        bind_group_layouts: &[Some(&bind_group_layout)],
+        immediate_size: 0,
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("zui-render image pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<ImageVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32],
+            }],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
 fn create_rounded_rect_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
@@ -2368,7 +2733,19 @@ mod tests {
     #[test]
     fn display_list_clear_starts_a_new_frame() {
         let mut list = DisplayList::new();
-        list.fill_rect(Rect::default(), Color::WHITE);
+        list.fill_rect(
+            Rect {
+                origin: Point {
+                    x: Dip(2.0),
+                    y: Dip(3.0),
+                },
+                size: zui_core::Size {
+                    width: Dip(4.0),
+                    height: Dip(5.0),
+                },
+            },
+            Color::WHITE,
+        );
         list.clear(Color::BLACK);
         list.text("new frame", Point::default(), Color::WHITE, 1);
 
@@ -2392,6 +2769,7 @@ mod tests {
         let _encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let _pipeline = create_rounded_rect_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
         let _line_pipeline = create_line_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let _image_pipeline = create_image_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
     }
 
     #[test]
@@ -2519,5 +2897,36 @@ mod tests {
     fn image_resource_requires_matching_rgba_data() {
         assert!(ImageResource::new(2, 2, vec![0; 16]).is_ok());
         assert!(ImageResource::new(2, 2, vec![0; 15]).is_err());
+    }
+
+    #[test]
+    fn clip_commands_are_preserved_for_gpu_scissor_segments() {
+        let mut list = DisplayList::new();
+        list.clip(Rect {
+            origin: Point {
+                x: Dip(1.0),
+                y: Dip(2.0),
+            },
+            size: zui_core::Size {
+                width: Dip(10.0),
+                height: Dip(11.0),
+            },
+        });
+        list.fill_rect(
+            Rect {
+                origin: Point {
+                    x: Dip(2.0),
+                    y: Dip(3.0),
+                },
+                size: zui_core::Size {
+                    width: Dip(4.0),
+                    height: Dip(5.0),
+                },
+            },
+            Color::WHITE,
+        );
+        let resolved = resolve_commands(&list);
+        assert!(matches!(resolved.first(), Some(PaintCommand::Clip { .. })));
+        assert!(matches!(resolved.get(1), Some(PaintCommand::Rect { .. })));
     }
 }

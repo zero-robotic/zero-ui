@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -25,6 +26,7 @@ pub struct PaintContext<'a> {
     pub display_list: &'a mut DisplayList,
     pub now: Instant,
     pub theme: &'a Theme,
+    origin: Point,
 }
 impl<'a> PaintContext<'a> {
     pub fn new(display_list: &'a mut DisplayList, theme: &'a Theme) -> Self {
@@ -32,28 +34,63 @@ impl<'a> PaintContext<'a> {
             display_list,
             now: Instant::now(),
             theme,
+            origin: Point::default(),
+        }
+    }
+    pub fn new_at(display_list: &'a mut DisplayList, theme: &'a Theme, origin: Point) -> Self {
+        Self {
+            display_list,
+            now: Instant::now(),
+            theme,
+            origin,
+        }
+    }
+    fn local_point(&self, point: Point) -> Point {
+        Point {
+            x: zui_core::Dip(point.x.0 - self.origin.x.0),
+            y: zui_core::Dip(point.y.0 - self.origin.y.0),
+        }
+    }
+    fn local_rect(&self, rect: Rect) -> Rect {
+        Rect {
+            origin: self.local_point(rect.origin),
+            size: rect.size,
         }
     }
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
-        self.display_list.fill_rect(rect, color);
+        self.display_list.fill_rect(self.local_rect(rect), color);
     }
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: zui_core::Dip, color: Color) {
-        self.display_list.fill_rounded_rect(rect, radius, color);
+        self.display_list
+            .fill_rounded_rect(self.local_rect(rect), radius, color);
     }
     pub fn draw_line(&mut self, start: Point, end: Point, width: zui_core::Dip, color: Color) {
-        self.display_list.line(start, end, width, color);
+        self.display_list
+            .line(self.local_point(start), self.local_point(end), width, color);
     }
     pub fn draw_text(&mut self, text: impl Into<String>, origin: Point, color: Color, scale: u32) {
-        self.display_list.text(text, origin, color, scale);
+        self.display_list
+            .text(text, self.local_point(origin), color, scale);
     }
     pub fn draw_icon(&mut self, rect: Rect, path: IconPath, color: Color, stroke: zui_core::Dip) {
-        self.display_list.icon(rect, path, color, stroke);
+        let path = zui_render::IconPath::new(
+            path.segments
+                .into_iter()
+                .map(|segment| zui_render::LineSegment {
+                    start: self.local_point(segment.start),
+                    end: self.local_point(segment.end),
+                })
+                .collect::<Vec<_>>(),
+        );
+        self.display_list
+            .icon(self.local_rect(rect), path, color, stroke);
     }
     pub fn draw_image(&mut self, rect: Rect, image: ImageId, opacity: f32) {
-        self.display_list.image(rect, image, opacity);
+        self.display_list
+            .image(self.local_rect(rect), image, opacity);
     }
     pub fn push_clip(&mut self, rect: Rect) {
-        self.display_list.clip(rect);
+        self.display_list.clip(self.local_rect(rect));
     }
     pub fn push_transform(&mut self, transform: Transform) {
         self.display_list.transform(transform);
@@ -88,8 +125,14 @@ pub trait Widget {
     fn paint(&self, _ctx: &mut PaintContext<'_>) {}
 
     fn build_render_node(&self, theme: &Theme) -> RenderNode {
-        let mut builder = RenderNodeBuilder::new(self.bounds());
-        self.paint(&mut PaintContext::new(builder.commands_mut(), theme));
+        let bounds = self.bounds();
+        let mut builder = RenderNodeBuilder::for_widget(bounds);
+        builder.source_id(self.id().0);
+        self.paint(&mut PaintContext::new_at(
+            builder.commands_mut(),
+            theme,
+            bounds.origin,
+        ));
         builder.finish()
     }
 
@@ -100,11 +143,25 @@ pub trait Widget {
         theme: &Theme,
     ) -> RenderNode {
         if let (Some(previous), Some(dirty_region)) = (previous, dirty_region) {
-            if !rect_intersects(previous.bounds, dirty_region) {
+            if !rect_intersects(previous.world_bounds(), dirty_region) {
                 return previous.clone();
             }
         }
         self.build_render_node(theme)
+    }
+
+    fn build_render_node_with_dirty_widgets(
+        &self,
+        previous: Option<&RenderNode>,
+        dirty_region: Option<Rect>,
+        dirty_widgets: &HashSet<WidgetId>,
+        theme: &Theme,
+    ) -> RenderNode {
+        if dirty_widgets.contains(&self.id()) {
+            self.build_render_node(theme)
+        } else {
+            self.build_render_node_with_cache(previous, dirty_region, theme)
+        }
     }
 }
 
