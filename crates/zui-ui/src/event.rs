@@ -1,5 +1,7 @@
+use std::collections::HashSet;
 use zui_core::{Point, WindowId};
 use zui_platform::{InputEvent, KeyState, MouseButton};
+use zui_render::DirtyRegionSet;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiEvent {
@@ -49,7 +51,8 @@ pub struct Action {
 #[derive(Default)]
 pub struct EventContext {
     actions: Vec<Action>,
-    dirty_region: Option<zui_core::Rect>,
+    dirty_regions: DirtyRegionSet,
+    invalidated_widgets: HashSet<crate::WidgetId>,
     full_redraw: bool,
 }
 
@@ -67,10 +70,15 @@ impl EventContext {
         std::mem::take(&mut self.actions)
     }
     pub fn invalidate(&mut self, region: zui_core::Rect) {
-        self.dirty_region = Some(match self.dirty_region {
-            Some(current) => union_rect(current, region),
-            None => region,
-        });
+        self.dirty_regions.add(region);
+        self.full_redraw = true;
+    }
+    pub fn invalidate_widget(&mut self, widget: crate::WidgetId, region: zui_core::Rect) {
+        self.invalidated_widgets.insert(widget);
+        self.dirty_regions.add(region);
+    }
+    pub fn take_invalidated_widgets(&mut self) -> HashSet<crate::WidgetId> {
+        std::mem::take(&mut self.invalidated_widgets)
     }
     pub fn request_full_redraw(&mut self) {
         self.full_redraw = true;
@@ -79,7 +87,12 @@ impl EventContext {
         self.full_redraw
     }
     pub fn take_dirty_region(&mut self) -> Option<zui_core::Rect> {
-        self.dirty_region.take()
+        self.take_dirty_regions().into_iter().reduce(union_rect)
+    }
+    pub fn take_dirty_regions(&mut self) -> Vec<zui_core::Rect> {
+        let regions = self.dirty_regions.as_slice().to_vec();
+        self.dirty_regions.clear();
+        regions
     }
 }
 

@@ -4,7 +4,7 @@ use std::time::Instant;
 use zui_backend_winit::WinitBackend;
 use zui_core::{Dip, PhysicalSize, Point};
 use zui_platform::{Host, InputEvent, PlatformEvent, WindowOptions};
-use zui_render::{DisplayList, RenderError, Renderer};
+use zui_render::{RenderError, Renderer};
 use zui_ui::{
     Button, Checkbox, ColumnLayout, Constraints, IconButton, IconName, Layout, Padding, Switch,
     Text, TextInput, Theme, UiEvent, WidgetTree,
@@ -12,7 +12,6 @@ use zui_ui::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let renderer = RefCell::new(Renderer::new_blocking()?);
-    let display_list = RefCell::new(DisplayList::new());
     let mut tree = WidgetTree::new(Padding::new(
         Layout::new(ColumnLayout::new().spacing(Dip(8.0)))
             .child(Text::new("zero-ui controls"))
@@ -31,8 +30,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         x: Dip(0.0),
         y: Dip(0.0),
     });
-
-    display_list.borrow_mut().clear(background);
 
     let mut on_window = |host: &zui_backend_winit::WinitHost| {
         let size = host.scale_factor().to_physical(host.size());
@@ -57,14 +54,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return None;
                 }
             }
-            let mut commands = display_list.borrow_mut();
-            commands.clear(background);
-            let damage = ui.borrow().dirty_region();
-            ui.borrow_mut().paint(&mut commands);
-            if let Err(error) = renderer
-                .borrow_mut()
-                .render_frame_with_damage(window, &commands, damage)
-            {
+            let damage_regions = ui.borrow().dirty_regions().to_vec();
+            let node = ui.borrow_mut().render_node_cached().clone();
+            if let Err(error) = renderer.borrow_mut().render_node_with_damage_regions(
+                window,
+                &node,
+                &damage_regions,
+                background,
+            ) {
                 match error {
                     RenderError::SurfaceLost => {
                         eprintln!("render surface lost; waiting for resize")

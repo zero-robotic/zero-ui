@@ -2,7 +2,7 @@ use crate::{
     event::{EventContext, EventResult, UiEvent},
     layout::Constraints,
     theme::Theme,
-    widget::{build_render_node_from_paint, PaintContext, Widget, WidgetId},
+    widget::{build_render_node_with_commands, Widget, WidgetId},
 };
 use zui_core::{Dip, Rect, Size};
 
@@ -67,7 +67,6 @@ impl Widget for Spacer {
         EventResult::Ignored
     }
     fn build_render_node(&self, theme: &Theme) -> zui_render::RenderNode {
-        build_render_node_from_paint(self.id, self.bounds, theme, |_ctx| {})
+        build_render_node_with_commands(self.id, self.bounds, theme, |_ctx| {})
     }
-    fn paint(&self, _ctx: &mut PaintContext<'_>) {}
 }

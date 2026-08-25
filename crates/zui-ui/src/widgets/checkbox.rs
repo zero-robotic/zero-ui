@@ -2,7 +2,7 @@ use crate::{
     event::{is_left_press, ActionKind, EventContext, EventResult, UiEvent},
     layout::Constraints,
     theme::Theme,
-    widget::{build_render_node_from_paint, Widget, WidgetId},
+    widget::{build_render_node_with_commands, Widget, WidgetId},
 };
 use zui_core::{Dip, Point, Rect, Size};
 
@@ -41,55 +41,8 @@ impl Checkbox {
     pub fn label(&self) -> &str {
         &self.label
     }
-}
 
-impl Widget for Checkbox {
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    fn bounds(&self) -> Rect {
-        self.bounds
-    }
-
-    fn arrange(&mut self, bounds: Rect) {
-        self.bounds = bounds;
-    }
-
-    fn measure(&mut self, constraints: Constraints) -> Size {
-        let style = &self.theme.checkbox;
-        let label_width = zui_render::measure_text(&self.label, style.font_size).0;
-        let size = constraints.constrain(Size {
-            width: Dip(style.size.0 + style.gap.0 + label_width),
-            height: Dip(style.size.0.max(style.font_size as f32 * 7.0)),
-        });
-        self.bounds.size = size;
-        size
-    }
-
-    fn event(&mut self, event: &UiEvent, ctx: &mut EventContext) -> EventResult {
-        if is_left_press(event)
-            && event
-                .position
-                .is_some_and(|point| self.bounds.contains(point))
-        {
-            self.checked = !self.checked;
-            ctx.emit(self.id, ActionKind::CheckedChanged);
-            ctx.invalidate(self.bounds);
-            EventResult::RequestRedraw
-        } else {
-            EventResult::Ignored
-        }
-    }
-
-    fn set_theme(&mut self, theme: &Theme) {
-        self.theme = theme.clone();
-    }
-
-    fn build_render_node(&self, theme: &Theme) -> zui_render::RenderNode {
-        build_render_node_from_paint(self.id, self.bounds, theme, |ctx| self.paint(ctx))
-    }
-    fn paint(&self, ctx: &mut crate::PaintContext<'_>) {
+    fn build_render_commands(&self, ctx: &mut crate::PaintContext<'_>) {
         let style = &ctx.theme.checkbox;
         let box_rect = Rect {
             origin: self.bounds.origin,
@@ -154,5 +107,55 @@ impl Widget for Checkbox {
             ctx.theme.text.color,
             style.font_size,
         );
+    }
+}
+
+impl Widget for Checkbox {
+    fn id(&self) -> WidgetId {
+        self.id
+    }
+
+    fn bounds(&self) -> Rect {
+        self.bounds
+    }
+
+    fn arrange(&mut self, bounds: Rect) {
+        self.bounds = bounds;
+    }
+
+    fn measure(&mut self, constraints: Constraints) -> Size {
+        let style = &self.theme.checkbox;
+        let label_width = zui_render::measure_text(&self.label, style.font_size).0;
+        let size = constraints.constrain(Size {
+            width: Dip(style.size.0 + style.gap.0 + label_width),
+            height: Dip(style.size.0.max(style.font_size as f32 * 7.0)),
+        });
+        self.bounds.size = size;
+        size
+    }
+
+    fn event(&mut self, event: &UiEvent, ctx: &mut EventContext) -> EventResult {
+        if is_left_press(event)
+            && event
+                .position
+                .is_some_and(|point| self.bounds.contains(point))
+        {
+            self.checked = !self.checked;
+            ctx.emit(self.id, ActionKind::CheckedChanged);
+            self.invalidate(ctx, self.bounds);
+            EventResult::RequestRedraw
+        } else {
+            EventResult::Ignored
+        }
+    }
+
+    fn set_theme(&mut self, theme: &Theme) {
+        self.theme = theme.clone();
+    }
+
+    fn build_render_node(&self, theme: &Theme) -> zui_render::RenderNode {
+        build_render_node_with_commands(self.id, self.bounds, theme, |ctx| {
+            self.build_render_commands(ctx)
+        })
     }
 }

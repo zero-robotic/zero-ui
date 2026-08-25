@@ -1,9 +1,9 @@
-use super::icon::{paint_icon, IconName};
+use super::icon::{build_icon_commands, IconName};
 use crate::{
     event::{is_left_press, ActionKind, EventContext, EventResult, UiEvent},
     layout::Constraints,
     theme::Theme,
-    widget::{build_render_node_from_paint, Widget, WidgetId},
+    widget::{build_render_node_with_commands, Widget, WidgetId},
 };
 use zui_core::{Dip, Point, Rect, Size};
 use zui_platform::InputEvent;
@@ -14,6 +14,41 @@ pub struct IconButton {
     bounds: Rect,
     hovered: bool,
     theme: Theme,
+}
+
+impl IconButton {
+    fn build_render_commands(&self, ctx: &mut crate::PaintContext<'_>) {
+        let style = &ctx.theme.icon_button;
+        ctx.fill_rounded_rect(
+            self.bounds,
+            style.radius,
+            if self.hovered {
+                style.hover_background
+            } else {
+                style.background
+            },
+        );
+        let icon_rect =
+            Rect {
+                origin: Point {
+                    x: Dip(self.bounds.origin.x.0
+                        + (self.bounds.size.width.0 - style.icon_size.0) / 2.0),
+                    y: Dip(self.bounds.origin.y.0
+                        + (self.bounds.size.height.0 - style.icon_size.0) / 2.0),
+                },
+                size: Size {
+                    width: style.icon_size,
+                    height: style.icon_size,
+                },
+            };
+        build_icon_commands(
+            ctx,
+            self.icon,
+            icon_rect,
+            style.foreground,
+            style.stroke_width,
+        );
+    }
 }
 
 impl IconButton {
@@ -55,7 +90,7 @@ impl Widget for IconButton {
             let hovered = self.bounds.contains(point);
             if hovered != self.hovered {
                 self.hovered = hovered;
-                ctx.invalidate(self.bounds);
+                self.invalidate(ctx, self.bounds);
                 return EventResult::RequestRedraw;
             }
         }
@@ -65,7 +100,7 @@ impl Widget for IconButton {
                 .is_some_and(|point| self.bounds.contains(point))
         {
             ctx.emit(self.id, ActionKind::Clicked);
-            ctx.invalidate(self.bounds);
+            self.invalidate(ctx, self.bounds);
             EventResult::RequestRedraw
         } else {
             EventResult::Ignored
@@ -75,38 +110,8 @@ impl Widget for IconButton {
         self.theme = theme.clone();
     }
     fn build_render_node(&self, theme: &Theme) -> zui_render::RenderNode {
-        build_render_node_from_paint(self.id, self.bounds, theme, |ctx| self.paint(ctx))
-    }
-    fn paint(&self, ctx: &mut crate::PaintContext<'_>) {
-        let style = &ctx.theme.icon_button;
-        ctx.fill_rounded_rect(
-            self.bounds,
-            style.radius,
-            if self.hovered {
-                style.hover_background
-            } else {
-                style.background
-            },
-        );
-        let icon_rect =
-            Rect {
-                origin: Point {
-                    x: Dip(self.bounds.origin.x.0
-                        + (self.bounds.size.width.0 - style.icon_size.0) / 2.0),
-                    y: Dip(self.bounds.origin.y.0
-                        + (self.bounds.size.height.0 - style.icon_size.0) / 2.0),
-                },
-                size: Size {
-                    width: style.icon_size,
-                    height: style.icon_size,
-                },
-            };
-        paint_icon(
-            ctx,
-            self.icon,
-            icon_rect,
-            style.foreground,
-            style.stroke_width,
-        );
+        build_render_node_with_commands(self.id, self.bounds, theme, |ctx| {
+            self.build_render_commands(ctx)
+        })
     }
 }

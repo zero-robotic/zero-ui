@@ -2,7 +2,7 @@ use crate::{
     event::{EventContext, EventResult, UiEvent},
     layout::Constraints,
     theme::Theme,
-    widget::{build_render_node_from_paint, Widget, WidgetId},
+    widget::{build_render_node_with_commands, Widget, WidgetId},
 };
 use zui_core::{Dip, Point, Rect, Size};
 
@@ -27,6 +27,18 @@ impl Text {
     }
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.text = text.into();
+    }
+
+    fn build_render_commands(&self, ctx: &mut crate::PaintContext<'_>) {
+        ctx.draw_text(
+            &self.text,
+            Point {
+                x: Dip(self.bounds.origin.x.0),
+                y: Dip(self.bounds.origin.y.0 + 4.0),
+            },
+            ctx.theme.text.color,
+            ctx.theme.text.font_size,
+        );
     }
 }
 
@@ -55,17 +67,8 @@ impl Widget for Text {
         self.theme = theme.clone();
     }
     fn build_render_node(&self, theme: &Theme) -> zui_render::RenderNode {
-        build_render_node_from_paint(self.id, self.bounds, theme, |ctx| self.paint(ctx))
-    }
-    fn paint(&self, ctx: &mut crate::PaintContext<'_>) {
-        ctx.draw_text(
-            &self.text,
-            Point {
-                x: Dip(self.bounds.origin.x.0),
-                y: Dip(self.bounds.origin.y.0 + 4.0),
-            },
-            ctx.theme.text.color,
-            ctx.theme.text.font_size,
-        );
+        build_render_node_with_commands(self.id, self.bounds, theme, |ctx| {
+            self.build_render_commands(ctx)
+        })
     }
 }

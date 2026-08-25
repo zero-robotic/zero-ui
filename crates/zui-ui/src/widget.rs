@@ -1,9 +1,8 @@
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use zui_core::{Color, Point, Rect, Size};
-use zui_render::{DisplayList, IconPath, ImageId, RenderNode, RenderNodeBuilder, Transform};
+use zui_render::{IconPath, ImageId, PaintCommand, RenderNode, RenderNodeBuilder, Transform};
 
 use crate::{
     event::{EventContext, EventResult, UiEvent},
@@ -23,21 +22,21 @@ impl WidgetId {
 }
 
 pub struct PaintContext<'a> {
-    pub display_list: &'a mut DisplayList,
+    pub commands: &'a mut Vec<PaintCommand>,
     pub now: Instant,
     pub theme: &'a Theme,
     origin: Point,
 }
 
-pub(crate) fn build_render_node_from_paint(
+pub(crate) fn build_render_node_with_commands(
     id: WidgetId,
     bounds: Rect,
     theme: &Theme,
-    paint: impl FnOnce(&mut PaintContext<'_>),
+    build_commands: impl FnOnce(&mut PaintContext<'_>),
 ) -> RenderNode {
     let mut builder = RenderNodeBuilder::for_widget(bounds);
     builder.source_id(id.0);
-    paint(&mut PaintContext::new_at(
+    build_commands(&mut PaintContext::new_at(
         builder.commands_mut(),
         theme,
         bounds.origin,
@@ -45,17 +44,17 @@ pub(crate) fn build_render_node_from_paint(
     builder.finish()
 }
 impl<'a> PaintContext<'a> {
-    pub fn new(display_list: &'a mut DisplayList, theme: &'a Theme) -> Self {
+    pub fn new(commands: &'a mut Vec<PaintCommand>, theme: &'a Theme) -> Self {
         Self {
-            display_list,
+            commands,
             now: Instant::now(),
             theme,
             origin: Point::default(),
         }
     }
-    pub fn new_at(display_list: &'a mut DisplayList, theme: &'a Theme, origin: Point) -> Self {
+    pub fn new_at(commands: &'a mut Vec<PaintCommand>, theme: &'a Theme, origin: Point) -> Self {
         Self {
-            display_list,
+            commands,
             now: Instant::now(),
             theme,
             origin,
@@ -74,19 +73,33 @@ impl<'a> PaintContext<'a> {
         }
     }
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
-        self.display_list.fill_rect(self.local_rect(rect), color);
+        self.commands.push(PaintCommand::Rect {
+            rect: self.local_rect(rect),
+            color,
+        });
     }
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: zui_core::Dip, color: Color) {
-        self.display_list
-            .fill_rounded_rect(self.local_rect(rect), radius, color);
+        self.commands.push(PaintCommand::RoundedRect {
+            rect: self.local_rect(rect),
+            radius,
+            color,
+        });
     }
     pub fn draw_line(&mut self, start: Point, end: Point, width: zui_core::Dip, color: Color) {
-        self.display_list
-            .line(self.local_point(start), self.local_point(end), width, color);
+        self.commands.push(PaintCommand::Line {
+            start: self.local_point(start),
+            end: self.local_point(end),
+            width,
+            color,
+        });
     }
     pub fn draw_text(&mut self, text: impl Into<String>, origin: Point, color: Color, scale: u32) {
-        self.display_list
-            .text(text, self.local_point(origin), color, scale);
+        self.commands.push(PaintCommand::Text {
+            text: text.into(),
+            origin: self.local_point(origin),
+            color,
+            scale: scale.max(1),
+        });
     }
     pub fn draw_icon(&mut self, rect: Rect, path: IconPath, color: Color, stroke: zui_core::Dip) {
         let path = zui_render::IconPath::new(
@@ -98,21 +111,31 @@ impl<'a> PaintContext<'a> {
                 })
                 .collect::<Vec<_>>(),
         );
-        self.display_list
-            .icon(self.local_rect(rect), path, color, stroke);
+        self.commands.push(PaintCommand::Icon {
+            rect: self.local_rect(rect),
+            path,
+            color,
+            stroke,
+        });
     }
     pub fn draw_image(&mut self, rect: Rect, image: ImageId, opacity: f32) {
-        self.display_list
-            .image(self.local_rect(rect), image, opacity);
+        self.commands.push(PaintCommand::Image {
+            rect: self.local_rect(rect),
+            image,
+            opacity: opacity.clamp(0.0, 1.0),
+        });
     }
     pub fn push_clip(&mut self, rect: Rect) {
-        self.display_list.clip(self.local_rect(rect));
+        self.commands.push(PaintCommand::Clip {
+            rect: self.local_rect(rect),
+        });
     }
     pub fn push_transform(&mut self, transform: Transform) {
-        self.display_list.transform(transform);
+        self.commands.push(PaintCommand::Transform(transform));
     }
     pub fn push_opacity(&mut self, opacity: f32) {
-        self.display_list.opacity(opacity);
+        self.commands
+            .push(PaintCommand::Opacity(opacity.clamp(0.0, 1.0)));
     }
 }
 
@@ -137,52 +160,11 @@ pub trait Widget {
         size
     }
     fn event(&mut self, event: &UiEvent, ctx: &mut EventContext) -> EventResult;
+    /// Records a paint invalidation owned by this widget. The WidgetTree uses
+    /// the source id to update only the affected RenderNode subtree.
+    fn invalidate(&self, ctx: &mut EventContext, region: Rect) {
+        ctx.invalidate_widget(self.id(), region);
+    }
     fn set_theme(&mut self, _theme: &Theme) {}
-    fn paint(&self, _ctx: &mut PaintContext<'_>) {}
-
-    fn build_render_node(&self, theme: &Theme) -> RenderNode {
-        build_render_node_from_paint(self.id(), self.bounds(), theme, |ctx| self.paint(ctx))
-    }
-
-    fn build_render_node_with_cache(
-        &self,
-        previous: Option<&RenderNode>,
-        dirty_region: Option<Rect>,
-        theme: &Theme,
-    ) -> RenderNode {
-        if let (Some(previous), Some(dirty_region)) = (previous, dirty_region) {
-            // A standalone node does not know its parent's world transform.
-            // Do not make a local-vs-world intersection decision for an
-            // already-normalized cached node; rebuilding it is conservative
-            // and avoids stale rendering in nested layouts.
-            if previous.coordinates_normalized {
-                return self.build_render_node(theme);
-            }
-            if !rect_intersects(previous.world_bounds(), dirty_region) {
-                return previous.clone();
-            }
-        }
-        self.build_render_node(theme)
-    }
-
-    fn build_render_node_with_dirty_widgets(
-        &self,
-        previous: Option<&RenderNode>,
-        dirty_region: Option<Rect>,
-        dirty_widgets: &HashSet<WidgetId>,
-        theme: &Theme,
-    ) -> RenderNode {
-        if dirty_widgets.contains(&self.id()) {
-            self.build_render_node(theme)
-        } else {
-            self.build_render_node_with_cache(previous, dirty_region, theme)
-        }
-    }
-}
-
-fn rect_intersects(a: Rect, b: Rect) -> bool {
-    a.origin.x.0 < b.origin.x.0 + b.size.width.0
-        && a.origin.x.0 + a.size.width.0 > b.origin.x.0
-        && a.origin.y.0 < b.origin.y.0 + b.size.height.0
-        && a.origin.y.0 + a.size.height.0 > b.origin.y.0
+    fn build_render_node(&self, theme: &Theme) -> RenderNode;
 }

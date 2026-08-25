@@ -115,6 +115,10 @@ pub enum PaintCommand {
     Clip {
         rect: Rect,
     },
+    RoundedClip {
+        rect: Rect,
+        radius: Dip,
+    },
     Transform(Transform),
     Opacity(f32),
 }
@@ -126,7 +130,8 @@ impl PaintCommand {
             Self::Rect { rect, .. }
             | Self::RoundedRect { rect, .. }
             | Self::Image { rect, .. }
-            | Self::Clip { rect } => Some(*rect),
+            | Self::Clip { rect }
+            | Self::RoundedClip { rect, .. } => Some(*rect),
             Self::Line {
                 start, end, width, ..
             } => Some(line_bounds(*start, *end, *width)),
@@ -225,6 +230,15 @@ impl PaintCommand {
                 Ok(())
             }
             Self::Clip { rect } => validate_rect(*rect),
+            Self::RoundedClip { rect, radius } => {
+                validate_rect(*rect)?;
+                if !radius.0.is_finite() || radius.0 < 0.0 {
+                    return Err(RenderError::InvalidCommand(
+                        "rounded clip radius must be finite and non-negative".into(),
+                    ));
+                }
+                Ok(())
+            }
             Self::Transform(transform) => {
                 if transform.matrix.iter().all(|value| value.is_finite()) {
                     Ok(())
@@ -478,88 +492,57 @@ impl DirtyFlags {
     }
 }
 
+/// A small normalized set of invalidated rectangles. Overlapping rectangles
+/// are coalesced, while distant regions remain independent so callers can
+/// submit precise damage to the GPU.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct DisplayList {
-    commands: Vec<PaintCommand>,
+pub struct DirtyRegionSet {
+    regions: Vec<Rect>,
 }
 
-impl DisplayList {
+impl DirtyRegionSet {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn clear(&mut self, color: Color) {
-        self.commands.clear();
-        self.commands.push(PaintCommand::Clear(color));
-    }
-    pub fn fill_rect(&mut self, rect: Rect, color: Color) {
-        self.commands.push(PaintCommand::Rect { rect, color });
-    }
-    pub fn fill_rounded_rect(&mut self, rect: Rect, radius: Dip, color: Color) {
-        self.commands.push(PaintCommand::RoundedRect {
-            rect,
-            radius,
-            color,
-        });
-    }
-    pub fn line(&mut self, start: Point, end: Point, width: Dip, color: Color) {
-        self.commands.push(PaintCommand::Line {
-            start,
-            end,
-            width,
-            color,
-        });
-    }
-    pub fn text(&mut self, text: impl Into<String>, origin: Point, color: Color, scale: u32) {
-        self.commands.push(PaintCommand::Text {
-            text: text.into(),
-            origin,
-            color,
-            scale: scale.max(1),
-        });
-    }
-    pub fn icon(&mut self, rect: Rect, path: IconPath, color: Color, stroke: Dip) {
-        self.commands.push(PaintCommand::Icon {
-            rect,
-            path,
-            color,
-            stroke,
-        });
-    }
-    pub fn image(&mut self, rect: Rect, image: ImageId, opacity: f32) {
-        self.commands.push(PaintCommand::Image {
-            rect,
-            image,
-            opacity: opacity.clamp(0.0, 1.0),
-        });
-    }
-    pub fn clip(&mut self, rect: Rect) {
-        self.commands.push(PaintCommand::Clip { rect });
-    }
-    pub fn transform(&mut self, transform: Transform) {
-        self.commands.push(PaintCommand::Transform(transform));
-    }
-    pub fn opacity(&mut self, opacity: f32) {
-        self.commands
-            .push(PaintCommand::Opacity(opacity.clamp(0.0, 1.0)));
-    }
-    pub fn commands(&self) -> &[PaintCommand] {
-        &self.commands
+
+    pub fn add(&mut self, region: Rect) {
+        let mut merged = region;
+        let mut index = 0;
+        while index < self.regions.len() {
+            if rects_touch_or_overlap(self.regions[index], merged) {
+                merged = union_rect(self.regions[index], merged);
+                self.regions.remove(index);
+            } else {
+                index += 1;
+            }
+        }
+        self.regions.push(merged);
     }
 
-    pub fn validate(&self) -> Result<(), RenderError> {
-        self.commands.iter().try_for_each(PaintCommand::validate)
+    pub fn extend(&mut self, regions: impl IntoIterator<Item = Rect>) {
+        for region in regions {
+            self.add(region);
+        }
     }
 
-    pub fn append(&mut self, other: &mut Self) {
-        self.commands.append(&mut other.commands);
+    pub fn clear(&mut self) {
+        self.regions.clear();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.regions.is_empty()
+    }
+
+    pub fn as_slice(&self) -> &[Rect] {
+        &self.regions
+    }
+
+    pub fn union(&self) -> Option<Rect> {
+        self.regions.iter().copied().reduce(union_rect)
     }
 }
 
 /// Retained intermediate representation between widgets and the renderer.
-///
-/// The current renderer still consumes a flattened `DisplayList`; keeping the
-/// node tree here allows caching, clipping and partial rebuilds to be added
-/// without changing widget painting APIs again.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RenderNode {
     /// Bounds in the node's local coordinate system.
@@ -569,7 +552,7 @@ pub struct RenderNode {
     pub transform: Transform,
     pub clip: Option<Rect>,
     pub opacity: f32,
-    pub commands: DisplayList,
+    pub commands: Vec<PaintCommand>,
     pub children: Vec<Self>,
     /// `false` while the node still stores an absolute placement transform.
     /// Cached nodes remain `true` when a parent subtree is rebuilt.
@@ -578,6 +561,33 @@ pub struct RenderNode {
     /// Compatibility view for callers that only need to know if a node is dirty.
     pub dirty: bool,
     pub dirty_region: Option<Rect>,
+    pub dirty_regions: DirtyRegionSet,
+}
+
+#[derive(Clone, Debug)]
+struct RenderSegment {
+    key: u64,
+    bounds: Rect,
+    commands: Vec<PaintCommand>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RenderNodeIndex {
+    paths: HashMap<u64, Vec<usize>>,
+}
+
+impl RenderNodeIndex {
+    pub fn path_for(&self, source_id: u64) -> Option<&[usize]> {
+        self.paths.get(&source_id).map(Vec::as_slice)
+    }
+
+    pub fn node<'a>(&self, root: &'a RenderNode, source_id: u64) -> Option<&'a RenderNode> {
+        let mut node = root;
+        for index in self.path_for(source_id)? {
+            node = node.children.get(*index)?;
+        }
+        Some(node)
+    }
 }
 
 impl RenderNode {
@@ -588,12 +598,13 @@ impl RenderNode {
             transform: Transform::IDENTITY,
             clip: None,
             opacity: 1.0,
-            commands: DisplayList::new(),
+            commands: Vec::new(),
             children: Vec::new(),
             coordinates_normalized: false,
             dirty_flags: DirtyFlags::LAYOUT.union(DirtyFlags::PAINT),
             dirty: true,
             dirty_region: None,
+            dirty_regions: DirtyRegionSet::new(),
         }
     }
 
@@ -609,6 +620,68 @@ impl RenderNode {
     pub fn add_child(&mut self, child: Self) {
         self.children.push(child);
         self.mark_dirty(DirtyFlags::CHILDREN);
+    }
+
+    pub fn build_index(&self) -> RenderNodeIndex {
+        let mut index = RenderNodeIndex::default();
+        let mut path = Vec::new();
+        self.index_into(&mut index, &mut path);
+        index
+    }
+
+    /// Reuses unchanged subtrees from a previous retained tree. Widgets do
+    /// not participate in cache decisions; the tree builder supplies the
+    /// current node and this method compares source ids to retain clean
+    /// RenderNode subtrees.
+    pub fn reuse_clean_subtrees(
+        mut self,
+        previous: Option<&Self>,
+        dirty_widget_ids: &std::collections::HashSet<u64>,
+        force_rebuild: bool,
+    ) -> Self {
+        let can_match = previous
+            .map(|previous| previous.source_id == self.source_id)
+            .unwrap_or(false);
+        if can_match && !force_rebuild && !self.contains_dirty_widget(dirty_widget_ids) {
+            return previous.expect("previous node exists when matched").clone();
+        }
+
+        if let Some(previous) = previous.filter(|previous| previous.source_id == self.source_id) {
+            let old_children = &previous.children;
+            let children = std::mem::take(&mut self.children);
+            self.children = children
+                .into_iter()
+                .enumerate()
+                .map(|(index, child)| {
+                    child.reuse_clean_subtrees(
+                        old_children.get(index),
+                        dirty_widget_ids,
+                        force_rebuild,
+                    )
+                })
+                .collect();
+        }
+        self
+    }
+
+    fn contains_dirty_widget(&self, dirty_widget_ids: &std::collections::HashSet<u64>) -> bool {
+        self.source_id
+            .is_some_and(|source_id| dirty_widget_ids.contains(&source_id))
+            || self
+                .children
+                .iter()
+                .any(|child| child.contains_dirty_widget(dirty_widget_ids))
+    }
+
+    fn index_into(&self, index: &mut RenderNodeIndex, path: &mut Vec<usize>) {
+        if let Some(source_id) = self.source_id {
+            index.paths.insert(source_id, path.clone());
+        }
+        for (child_index, child) in self.children.iter().enumerate() {
+            path.push(child_index);
+            child.index_into(index, path);
+            path.pop();
+        }
     }
 
     pub fn child_mut(&mut self, index: usize) -> Option<&mut Self> {
@@ -661,6 +734,72 @@ impl RenderNode {
         self.transform.rect(self.local_bounds)
     }
 
+    /// Stable fingerprint for retained GPU resources. It changes when this
+    /// node's commands, state, placement, or any descendant changes.
+    pub fn gpu_cache_key(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.local_gpu_cache_key().hash(&mut hasher);
+        for child in &self.children {
+            child.gpu_cache_key().hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
+    fn local_gpu_cache_key(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        format!(
+            "{:?}{:?}{:?}{:?}{:?}{:?}",
+            self.source_id,
+            self.local_bounds,
+            self.transform,
+            self.clip,
+            self.opacity,
+            &self.commands
+        )
+        .hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn flatten_segments(&self) -> Vec<RenderSegment> {
+        let mut segments = Vec::new();
+        self.flatten_segments_with_state(&mut segments, Transform::IDENTITY, None, 1.0);
+        segments
+    }
+
+    fn flatten_segments_with_state(
+        &self,
+        segments: &mut Vec<RenderSegment>,
+        parent_transform: Transform,
+        parent_clip: Option<Rect>,
+        parent_opacity: f32,
+    ) {
+        let transform = compose_transform(parent_transform, self.transform);
+        let clip = intersect_clip(parent_clip, self.clip.map(|clip| transform.rect(clip)));
+        let opacity = parent_opacity * self.opacity;
+        let mut commands = Vec::new();
+        if let Some(clip) = clip {
+            commands.push(PaintCommand::Clip { rect: clip });
+        }
+        for command in &self.commands {
+            if let Some(command) = transform_command(command, transform, clip, opacity) {
+                commands.push(command);
+            }
+        }
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.local_gpu_cache_key().hash(&mut hasher);
+        format!("{:?}{:?}{:?}{:?}", transform, clip, opacity, commands).hash(&mut hasher);
+        segments.push(RenderSegment {
+            key: hasher.finish(),
+            bounds: clip
+                .map(|clip| intersect_rect(transform.rect(self.local_bounds), clip))
+                .unwrap_or_else(|| transform.rect(self.local_bounds)),
+            commands,
+        });
+        for child in &self.children {
+            child.flatten_segments_with_state(segments, transform, clip, opacity);
+        }
+    }
+
     /// Converts a tree whose nodes were arranged in window coordinates into
     /// local bounds plus transforms relative to the immediate parent.
     pub fn normalize_local_coordinates(&mut self) {
@@ -702,6 +841,7 @@ impl RenderNode {
 
     pub fn mark_dirty_region(&mut self, region: Rect) {
         self.mark_dirty(DirtyFlags::PAINT);
+        self.dirty_regions.add(region);
         self.dirty_region = Some(match self.dirty_region {
             Some(current) => union_rect(current, region),
             None => region,
@@ -712,18 +852,19 @@ impl RenderNode {
         self.dirty_flags = DirtyFlags::empty();
         self.dirty = false;
         self.dirty_region = None;
+        self.dirty_regions.clear();
         for child in &mut self.children {
             child.clear_dirty();
         }
     }
 
-    pub fn flatten_into(&self, display_list: &mut DisplayList) {
-        self.flatten_with_state(display_list, Transform::IDENTITY, None, 1.0);
+    pub fn flatten_into(&self, commands: &mut Vec<PaintCommand>) {
+        self.flatten_with_state(commands, Transform::IDENTITY, None, 1.0);
     }
 
     fn flatten_with_state(
         &self,
-        display_list: &mut DisplayList,
+        commands: &mut Vec<PaintCommand>,
         parent_transform: Transform,
         parent_clip: Option<Rect>,
         parent_opacity: f32,
@@ -731,13 +872,13 @@ impl RenderNode {
         let transform = compose_transform(parent_transform, self.transform);
         let clip = intersect_clip(parent_clip, self.clip.map(|clip| transform.rect(clip)));
         let opacity = parent_opacity * self.opacity;
-        for command in self.commands.commands() {
+        for command in &self.commands {
             if let Some(command) = transform_command(command, transform, clip, opacity) {
-                display_list.commands.push(command);
+                commands.push(command);
             }
         }
         for child in &self.children {
-            child.flatten_with_state(display_list, transform, clip, opacity);
+            child.flatten_with_state(commands, transform, clip, opacity);
         }
     }
 }
@@ -777,6 +918,23 @@ fn intersect_clip(parent: Option<Rect>, child: Option<Rect>) -> Option<Rect> {
             })
         }
         (clip, None) | (None, clip) => clip,
+    }
+}
+
+fn intersect_rect(a: Rect, b: Rect) -> Rect {
+    let left = a.origin.x.0.max(b.origin.x.0);
+    let top = a.origin.y.0.max(b.origin.y.0);
+    let right = (a.origin.x.0 + a.size.width.0).min(b.origin.x.0 + b.size.width.0);
+    let bottom = (a.origin.y.0 + a.size.height.0).min(b.origin.y.0 + b.size.height.0);
+    Rect {
+        origin: Point {
+            x: Dip(left),
+            y: Dip(top),
+        },
+        size: zui_core::Size {
+            width: Dip((right - left).max(0.0)),
+            height: Dip((bottom - top).max(0.0)),
+        },
     }
 }
 
@@ -965,6 +1123,10 @@ fn transform_command(
         PaintCommand::Clip { rect } => Some(PaintCommand::Clip {
             rect: transform.rect(*rect),
         }),
+        PaintCommand::RoundedClip { rect, radius } => Some(PaintCommand::RoundedClip {
+            rect: transform.rect(*rect),
+            radius: *radius,
+        }),
         PaintCommand::Transform(transform) => Some(PaintCommand::Transform(*transform)),
         PaintCommand::Opacity(value) => Some(PaintCommand::Opacity(value * opacity)),
     }
@@ -975,6 +1137,40 @@ fn rect_intersects(a: Rect, b: Rect) -> bool {
         && a.origin.x.0 + a.size.width.0 > b.origin.x.0
         && a.origin.y.0 < b.origin.y.0 + b.size.height.0
         && a.origin.y.0 + a.size.height.0 > b.origin.y.0
+}
+
+fn rects_touch_or_overlap(a: Rect, b: Rect) -> bool {
+    let a_right = a.origin.x.0 + a.size.width.0;
+    let a_bottom = a.origin.y.0 + a.size.height.0;
+    let b_right = b.origin.x.0 + b.size.width.0;
+    let b_bottom = b.origin.y.0 + b.size.height.0;
+    a.origin.x.0 <= b_right
+        && b.origin.x.0 <= a_right
+        && a.origin.y.0 <= b_bottom
+        && b.origin.y.0 <= a_bottom
+}
+
+fn coalesce_damage_for_segments(regions: &[Rect], segments: &[RenderSegment]) -> Vec<Rect> {
+    let mut result = regions.to_vec();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        'outer: for left in 0..result.len() {
+            for right in (left + 1)..result.len() {
+                if segments.iter().any(|segment| {
+                    rect_intersects(segment.bounds, result[left])
+                        && rect_intersects(segment.bounds, result[right])
+                }) {
+                    let merged = union_rect(result[left], result[right]);
+                    result[left] = merged;
+                    result.remove(right);
+                    changed = true;
+                    break 'outer;
+                }
+            }
+        }
+    }
+    result
 }
 
 fn union_rect(a: Rect, b: Rect) -> Rect {
@@ -1014,7 +1210,7 @@ impl RenderNodeBuilder {
         builder
     }
 
-    pub fn commands_mut(&mut self) -> &mut DisplayList {
+    pub fn commands_mut(&mut self) -> &mut Vec<PaintCommand> {
         &mut self.node.commands
     }
 
@@ -1055,15 +1251,53 @@ struct SurfaceState {
     size: PhysicalSize,
     pipeline: wgpu::RenderPipeline,
     rounded_pipeline: wgpu::RenderPipeline,
+    stencil_rounded_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     image_pipeline: wgpu::RenderPipeline,
+    stencil_pipeline: wgpu::RenderPipeline,
     canvas: wgpu::Texture,
     canvas_view: wgpu::TextureView,
+    stencil: wgpu::Texture,
+    stencil_view: wgpu::TextureView,
+    stencil_reset: wgpu::Buffer,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group: wgpu::BindGroup,
     scale_factor: ScaleFactor,
     has_contents: bool,
-    batch_cache: Option<(u64, Vec<GpuBatch>)>,
+    /// GPU vertex buffers keyed by the retained render-node/display-list
+    /// fingerprint. Unchanged nodes reuse their buffers across frames.
+    node_gpu_cache: HashMap<u64, GpuBatchCacheEntry>,
+    cache_clock: u64,
+    max_gpu_cache_entries: usize,
+}
+
+struct GpuBatchCacheEntry {
+    batches: Vec<GpuBatch>,
+    last_used: u64,
+}
+
+fn take_gpu_cache(state: &mut SurfaceState, key: u64) -> Option<Vec<GpuBatch>> {
+    state.cache_clock = state.cache_clock.wrapping_add(1);
+    state.node_gpu_cache.remove(&key).map(|entry| entry.batches)
+}
+
+fn insert_gpu_cache(state: &mut SurfaceState, key: u64, batches: Vec<GpuBatch>) {
+    state.cache_clock = state.cache_clock.wrapping_add(1);
+    let last_used = state.cache_clock;
+    state
+        .node_gpu_cache
+        .insert(key, GpuBatchCacheEntry { batches, last_used });
+    while state.node_gpu_cache.len() > state.max_gpu_cache_entries {
+        let Some(oldest_key) = state
+            .node_gpu_cache
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(key, _)| *key)
+        else {
+            break;
+        };
+        state.node_gpu_cache.remove(&oldest_key);
+    }
 }
 
 #[repr(C)]
@@ -1110,10 +1344,17 @@ enum RenderBatch {
         image: ImageId,
         vertices: Vec<ImageVertex>,
     },
-    Clip(Option<Rect>),
+    Clip(ClipGeometry),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
+enum ClipGeometry {
+    Reset,
+    Rect(Rect),
+    Rounded { rect: Rect, radius: Dip },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum BatchKind {
     Rect,
     Rounded,
@@ -1121,9 +1362,12 @@ enum BatchKind {
     Image(ImageId),
 }
 
+#[derive(Clone)]
 enum GpuBatch {
     Draw(BatchKind, wgpu::Buffer, u32),
-    Clip(Option<Rect>),
+    DrawGroup(BatchKind, Vec<(wgpu::Buffer, u32)>),
+    Clip(ClipGeometry, Option<(wgpu::Buffer, u32)>),
+    Scissor(Rect),
 }
 
 fn rect_batch(batches: &mut Vec<RenderBatch>) -> &mut Vec<RectVertex> {
@@ -1329,9 +1573,13 @@ impl Renderer {
         surface.configure(&self.device, &config);
         let pipeline = create_rect_pipeline(&self.device, config.format);
         let rounded_pipeline = create_rounded_rect_pipeline(&self.device, config.format);
+        let stencil_rounded_pipeline = create_stencil_rounded_pipeline(&self.device, config.format);
         let line_pipeline = create_line_pipeline(&self.device, config.format);
         let image_pipeline = create_image_pipeline(&self.device, config.format);
+        let stencil_pipeline = create_stencil_pipeline(&self.device, config.format);
         let (canvas, canvas_view) = create_canvas(&self.device, size, config.format);
+        let (stencil, stencil_view) = create_stencil(&self.device, size);
+        let stencil_reset = create_stencil_reset_buffer(&self.device);
         let blit_pipeline = create_blit_pipeline(&self.device, config.format);
         let blit_bind_group = create_blit_bind_group(&self.device, &blit_pipeline, &canvas_view);
         self.surfaces.insert(
@@ -1342,15 +1590,22 @@ impl Renderer {
                 size,
                 pipeline,
                 rounded_pipeline,
+                stencil_rounded_pipeline,
                 line_pipeline,
                 image_pipeline,
+                stencil_pipeline,
                 canvas,
                 canvas_view,
+                stencil,
+                stencil_view,
+                stencil_reset,
                 blit_pipeline,
                 blit_bind_group,
                 scale_factor,
                 has_contents: false,
-                batch_cache: None,
+                node_gpu_cache: HashMap::new(),
+                cache_clock: 0,
+                max_gpu_cache_entries: 256,
             },
         );
         Ok(())
@@ -1377,9 +1632,13 @@ impl Renderer {
         surface.configure(&self.device, &config);
         let pipeline = create_rect_pipeline(&self.device, config.format);
         let rounded_pipeline = create_rounded_rect_pipeline(&self.device, config.format);
+        let stencil_rounded_pipeline = create_stencil_rounded_pipeline(&self.device, config.format);
         let line_pipeline = create_line_pipeline(&self.device, config.format);
         let image_pipeline = create_image_pipeline(&self.device, config.format);
+        let stencil_pipeline = create_stencil_pipeline(&self.device, config.format);
         let (canvas, canvas_view) = create_canvas(&self.device, size, config.format);
+        let (stencil, stencil_view) = create_stencil(&self.device, size);
+        let stencil_reset = create_stencil_reset_buffer(&self.device);
         let blit_pipeline = create_blit_pipeline(&self.device, config.format);
         let blit_bind_group = create_blit_bind_group(&self.device, &blit_pipeline, &canvas_view);
         self.surfaces.insert(
@@ -1390,15 +1649,22 @@ impl Renderer {
                 size,
                 pipeline,
                 rounded_pipeline,
+                stencil_rounded_pipeline,
                 line_pipeline,
                 image_pipeline,
+                stencil_pipeline,
                 canvas,
                 canvas_view,
+                stencil,
+                stencil_view,
+                stencil_reset,
                 blit_pipeline,
                 blit_bind_group,
                 scale_factor,
                 has_contents: false,
-                batch_cache: None,
+                node_gpu_cache: HashMap::new(),
+                cache_clock: 0,
+                max_gpu_cache_entries: 256,
             },
         );
         Ok(())
@@ -1425,10 +1691,14 @@ impl Renderer {
         let (canvas, canvas_view) = create_canvas(&self.device, size, state.config.format);
         state.canvas = canvas;
         state.canvas_view = canvas_view;
+        let (stencil, stencil_view) = create_stencil(&self.device, size);
+        state.stencil = stencil;
+        state.stencil_view = stencil_view;
         state.blit_bind_group =
             create_blit_bind_group(&self.device, &state.blit_pipeline, &state.canvas_view);
         state.has_contents = false;
-        state.batch_cache = None;
+        state.node_gpu_cache.clear();
+        state.cache_clock = 0;
         Ok(())
     }
 
@@ -1436,22 +1706,119 @@ impl Renderer {
         self.surfaces.remove(&window);
     }
 
-    pub fn render_frame(
-        &mut self,
-        window: WindowId,
-        display_list: &DisplayList,
-    ) -> Result<(), RenderError> {
-        self.render_frame_with_damage(window, display_list, None)
+    fn build_render_batches(
+        fonts: &'static [fontdue::Font],
+        glyph_cache: &mut HashMap<(usize, char, u32, u32), CachedGlyph>,
+        font_cache: &mut HashMap<char, Option<usize>>,
+        commands: &[PaintCommand],
+        render_size: PhysicalSize,
+        scale_factor: f32,
+    ) -> Vec<RenderBatch> {
+        let mut batches = Vec::new();
+        for command in commands {
+            match command {
+                PaintCommand::Clip { rect } => {
+                    batches.push(RenderBatch::Clip(ClipGeometry::Rect(*rect)));
+                    continue;
+                }
+                PaintCommand::RoundedClip { rect, radius } => {
+                    batches.push(RenderBatch::Clip(ClipGeometry::Rounded {
+                        rect: *rect,
+                        radius: *radius,
+                    }));
+                    continue;
+                }
+                _ => {}
+            }
+            match command {
+                PaintCommand::Rect { rect, color } => {
+                    append_rect(rect_batch(&mut batches), *rect, *color, render_size);
+                }
+                PaintCommand::RoundedRect {
+                    rect,
+                    radius,
+                    color,
+                } => append_rounded_rect(
+                    rounded_batch(&mut batches),
+                    *rect,
+                    *radius,
+                    *color,
+                    render_size,
+                ),
+                PaintCommand::Line {
+                    start,
+                    end,
+                    width,
+                    color,
+                } => append_line(
+                    line_batch(&mut batches),
+                    *start,
+                    *end,
+                    *width,
+                    *color,
+                    render_size,
+                ),
+                PaintCommand::Text {
+                    text,
+                    origin,
+                    color,
+                    scale,
+                } => append_text(
+                    rect_batch(&mut batches),
+                    fonts,
+                    glyph_cache,
+                    font_cache,
+                    text,
+                    *origin,
+                    *color,
+                    *scale,
+                    render_size,
+                    scale_factor,
+                ),
+                PaintCommand::Icon {
+                    path,
+                    color,
+                    stroke,
+                    ..
+                } => {
+                    for segment in &path.segments {
+                        append_line(
+                            line_batch(&mut batches),
+                            segment.start,
+                            segment.end,
+                            *stroke,
+                            *color,
+                            render_size,
+                        );
+                    }
+                }
+                PaintCommand::Image {
+                    rect,
+                    image,
+                    opacity,
+                } => append_image(
+                    image_batch(&mut batches, *image),
+                    *rect,
+                    *opacity,
+                    render_size,
+                ),
+                PaintCommand::Transform(_) | PaintCommand::Opacity(_) | PaintCommand::Clear(_) => {}
+                PaintCommand::Clip { .. } | PaintCommand::RoundedClip { .. } => unreachable!(),
+            }
+        }
+        batches
     }
 
-    pub fn render_frame_with_damage(
+    fn render_commands_with_damage_regions_key(
         &mut self,
         window: WindowId,
-        display_list: &DisplayList,
-        damage: Option<Rect>,
+        commands: &[PaintCommand],
+        damage_regions: &[Rect],
+        cache_key: Option<u64>,
+        segments: Option<&[RenderSegment]>,
     ) -> Result<(), RenderError> {
-        display_list.validate()?;
-        for command in display_list.commands() {
+        commands.iter().try_for_each(PaintCommand::validate)?;
+        for command in commands {
             if let PaintCommand::Image { image, .. } = command {
                 if !self.resources.contains_image(*image) {
                     return Err(RenderError::MissingImage(*image));
@@ -1477,8 +1844,8 @@ impl Renderer {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let resolved_commands = resolve_commands(display_list);
-        let batch_hash = display_list_hash(&resolved_commands);
+        let resolved_commands = resolve_commands(commands);
+        let batch_hash = cache_key.unwrap_or_else(|| command_list_hash(&resolved_commands));
         let clear = resolved_commands
             .iter()
             .rev()
@@ -1496,6 +1863,7 @@ impl Renderer {
                 PaintCommand::Icon { .. }
                 | PaintCommand::Image { .. }
                 | PaintCommand::Clip { .. }
+                | PaintCommand::RoundedClip { .. }
                 | PaintCommand::Transform(_)
                 | PaintCommand::Opacity(_) => None,
             })
@@ -1516,117 +1884,71 @@ impl Renderer {
                 width: (state.size.width as f64 / scale).round().max(1.0) as u32,
                 height: (state.size.height as f64 / scale).round().max(1.0) as u32,
             };
-            let mut batches = Vec::new();
-            for command in &resolved_commands {
-                if let PaintCommand::Clip { rect } = command {
-                    batches.push(RenderBatch::Clip(Some(*rect)));
-                    continue;
-                }
-                if let Some(damage) = damage.filter(|_| state.has_contents) {
-                    if !command_intersects(command, damage) {
-                        continue;
-                    }
-                }
-                match command {
-                    PaintCommand::Rect { rect, color } => {
-                        append_rect(rect_batch(&mut batches), *rect, *color, render_size);
-                    }
-                    PaintCommand::RoundedRect {
-                        rect,
-                        radius,
-                        color,
-                    } => {
-                        append_rounded_rect(
-                            rounded_batch(&mut batches),
-                            *rect,
-                            *radius,
-                            *color,
-                            render_size,
-                        );
-                    }
-                    PaintCommand::Line {
-                        start,
-                        end,
-                        width,
-                        color,
-                    } => {
-                        append_line(
-                            line_batch(&mut batches),
-                            *start,
-                            *end,
-                            *width,
-                            *color,
-                            render_size,
-                        );
-                    }
-                    PaintCommand::Text {
-                        text,
-                        origin,
-                        color,
-                        scale,
-                    } => {
-                        append_text(
-                            rect_batch(&mut batches),
-                            self.fonts,
-                            &mut self.glyph_cache,
-                            &mut self.font_cache,
-                            text,
-                            *origin,
-                            *color,
-                            *scale,
-                            render_size,
-                            state.scale_factor.0 as f32,
-                        );
-                    }
-                    PaintCommand::Icon {
-                        path,
-                        color,
-                        stroke,
-                        ..
-                    } => {
-                        for segment in &path.segments {
-                            append_line(
-                                line_batch(&mut batches),
-                                segment.start,
-                                segment.end,
-                                *stroke,
-                                *color,
+            let batches = Self::build_render_batches(
+                self.fonts,
+                &mut self.glyph_cache,
+                &mut self.font_cache,
+                &resolved_commands,
+                render_size,
+                state.scale_factor.0 as f32,
+            );
+            let node_batches = segments.map(|segments| {
+                segments
+                    .iter()
+                    .map(|segment| {
+                        let resolved = resolve_commands(&segment.commands);
+                        let gpu_batches = if let Some(cached) = take_gpu_cache(state, segment.key) {
+                            cached
+                        } else {
+                            let batches = Self::build_render_batches(
+                                self.fonts,
+                                &mut self.glyph_cache,
+                                &mut self.font_cache,
+                                &resolved,
                                 render_size,
+                                state.scale_factor.0 as f32,
                             );
+                            build_gpu_batches(&self.device, batches, render_size)
+                        };
+                        (segment.key, segment.bounds, gpu_batches)
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let gpu_batches = if let Some(node_batches) = &node_batches {
+                let mut all = Vec::new();
+                for (_, _, batches) in node_batches {
+                    all.push(GpuBatch::Clip(ClipGeometry::Reset, None));
+                    all.extend(batches.iter().cloned());
+                }
+                all
+            } else {
+                take_gpu_cache(state, batch_hash)
+                    .unwrap_or_else(|| build_gpu_batches(&self.device, batches, render_size))
+            };
+            let replay_batches = if state.has_contents && !damage_regions.is_empty() {
+                if let Some(node_batches) = &node_batches {
+                    let mut replay = Vec::new();
+                    for region in damage_regions {
+                        replay.push(GpuBatch::Scissor(*region));
+                        for (_, bounds, batches) in node_batches {
+                            if rect_intersects(*bounds, *region) {
+                                replay.push(GpuBatch::Clip(ClipGeometry::Reset, None));
+                                replay.extend(batches.iter().cloned());
+                            }
                         }
                     }
-                    PaintCommand::Image {
-                        rect,
-                        image,
-                        opacity,
-                    } => {
-                        append_image(
-                            image_batch(&mut batches, *image),
-                            *rect,
-                            *opacity,
-                            render_size,
-                        );
-                    }
-                    // These commands are retained in the IR for validation
-                    // and future scoped GPU state. Node-level state is
-                    // resolved before flattening, so they do not draw by
-                    // themselves. Image resources are handled by the image
-                    // resource backend when it is attached.
-                    PaintCommand::Clip { .. }
-                    | PaintCommand::Transform(_)
-                    | PaintCommand::Opacity(_) => {}
-                    PaintCommand::Clear(_) => {}
-                }
-            }
-            let cached_batches = state.batch_cache.take();
-            let gpu_batches = if let Some((cached_hash, cached_batches)) = cached_batches {
-                if cached_hash == batch_hash {
-                    cached_batches
+                    replay
                 } else {
-                    build_gpu_batches(&self.device, batches)
+                    damage_regions
+                        .iter()
+                        .flat_map(|region| {
+                            std::iter::once(GpuBatch::Scissor(*region))
+                                .chain(gpu_batches.iter().cloned())
+                        })
+                        .collect::<Vec<_>>()
                 }
             } else {
-                build_gpu_batches(&self.device, batches)
+                gpu_batches.clone()
             };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("zui-render clear pass"),
@@ -1635,7 +1957,7 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: if damage.is_some() && state.has_contents {
+                        load: if !damage_regions.is_empty() && state.has_contents {
                             wgpu::LoadOp::Load
                         } else {
                             wgpu::LoadOp::Clear(clear)
@@ -1643,21 +1965,67 @@ impl Renderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &state.stencil_view,
+                    depth_ops: None,
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                }),
                 occlusion_query_set: None,
                 timestamp_writes: None,
                 multiview_mask: None,
             });
             let mut active_clip = None;
-            for batch in &gpu_batches {
-                if let GpuBatch::Clip(clip) = batch {
-                    active_clip = *clip;
+            let mut active_damage = None;
+            for batch in &replay_batches {
+                if let GpuBatch::Scissor(region) = batch {
+                    active_clip = None;
+                    active_damage = Some(*region);
+                    set_scissor(&mut pass, None, state.size, state.scale_factor);
+                    pass.set_pipeline(&state.stencil_pipeline);
+                    pass.set_stencil_reference(0);
+                    pass.set_vertex_buffer(0, state.stencil_reset.slice(..));
+                    pass.draw(0..6, 0..1);
                     continue;
                 }
-                let GpuBatch::Draw(kind, vertex_buffer, count) = batch else {
+                if let GpuBatch::Clip(geometry, mask) = batch {
+                    if let Some((buffer, count)) = mask {
+                        pass.set_pipeline(match geometry {
+                            ClipGeometry::Rounded { .. } => &state.stencil_rounded_pipeline,
+                            _ => &state.stencil_pipeline,
+                        });
+                        pass.set_stencil_reference(1);
+                        pass.set_vertex_buffer(0, buffer.slice(..));
+                        pass.draw(0..*count, 0..1);
+                    } else {
+                        set_scissor(&mut pass, None, state.size, state.scale_factor);
+                        pass.set_pipeline(&state.stencil_pipeline);
+                        pass.set_stencil_reference(0);
+                        pass.set_vertex_buffer(0, state.stencil_reset.slice(..));
+                        pass.draw(0..6, 0..1);
+                    }
+                    active_clip = match geometry {
+                        ClipGeometry::Rect(rect) | ClipGeometry::Rounded { rect, .. } => {
+                            Some(*rect)
+                        }
+                        ClipGeometry::Reset => None,
+                    };
                     continue;
+                }
+                let (kind, draws): (&BatchKind, Vec<(&wgpu::Buffer, u32)>) = match batch {
+                    GpuBatch::Draw(kind, buffer, count) => (kind, vec![(buffer, *count)]),
+                    GpuBatch::DrawGroup(kind, buffers) => (
+                        kind,
+                        buffers
+                            .iter()
+                            .map(|(buffer, count)| (buffer, *count))
+                            .collect(),
+                    ),
+                    _ => continue,
                 };
-                let scissor = intersect_clip(active_clip, damage.filter(|_| state.has_contents));
+                let scissor = intersect_clip(active_clip, active_damage);
                 set_scissor(&mut pass, scissor, state.size, state.scale_factor);
                 pass.set_pipeline(match kind {
                     BatchKind::Rect => &state.pipeline,
@@ -1665,7 +2033,6 @@ impl Renderer {
                     BatchKind::Line => &state.line_pipeline,
                     BatchKind::Image(_) => &state.image_pipeline,
                 });
-                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
                 if let BatchKind::Image(image) = *kind {
                     if let Some(gpu_image) = self.gpu_images.get(&image) {
                         if !self.image_bind_groups.contains_key(&(window, image)) {
@@ -1692,14 +2059,26 @@ impl Renderer {
                         }
                         if let Some(bind_group) = self.image_bind_groups.get(&(window, image)) {
                             pass.set_bind_group(0, bind_group, &[]);
-                            pass.draw(0..*count, 0..1);
+                            for (vertex_buffer, count) in draws {
+                                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                                pass.draw(0..count, 0..1);
+                            }
                         }
                     }
                 } else {
-                    pass.draw(0..*count, 0..1);
+                    for (vertex_buffer, count) in draws {
+                        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                        pass.draw(0..count, 0..1);
+                    }
                 }
             }
-            state.batch_cache = Some((batch_hash, gpu_batches));
+            if let Some(node_batches) = node_batches {
+                for (key, _, batches) in node_batches {
+                    insert_gpu_cache(state, key, batches);
+                }
+            } else {
+                insert_gpu_cache(state, batch_hash, gpu_batches);
+            }
         }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1728,6 +2107,31 @@ impl Renderer {
         Ok(())
     }
 
+    /// Renders a retained node tree. The node can be kept by the UI layer
+    /// between frames; unchanged fingerprints reuse the renderer's GPU batch
+    /// cache while damage regions limit the canvas writes.
+    pub fn render_node_with_damage_regions(
+        &mut self,
+        window: WindowId,
+        node: &RenderNode,
+        damage_regions: &[Rect],
+        clear: Color,
+    ) -> Result<(), RenderError> {
+        let segments = node.flatten_segments();
+        let damage_regions = coalesce_damage_for_segments(damage_regions, &segments);
+        let mut commands = vec![PaintCommand::Clear(clear)];
+        for segment in &segments {
+            commands.extend(segment.commands.iter().cloned());
+        }
+        self.render_commands_with_damage_regions_key(
+            window,
+            &commands,
+            &damage_regions,
+            None,
+            Some(&segments),
+        )
+    }
+
     pub fn device(&self) -> &wgpu::Device {
         &self.device
     }
@@ -1736,50 +2140,113 @@ impl Renderer {
     }
 }
 
-fn build_gpu_batches(device: &wgpu::Device, batches: Vec<RenderBatch>) -> Vec<GpuBatch> {
-    batches
-        .into_iter()
-        .filter_map(|batch| match batch {
-            RenderBatch::Rect(vertices) if !vertices.is_empty() => Some(GpuBatch::Draw(
-                BatchKind::Rect,
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("zui-render rectangles"),
-                    contents: bytemuck::cast_slice(&vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                }),
-                vertices.len() as u32,
-            )),
-            RenderBatch::Rounded(vertices) if !vertices.is_empty() => Some(GpuBatch::Draw(
-                BatchKind::Rounded,
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("zui-render rounded rectangles"),
-                    contents: bytemuck::cast_slice(&vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                }),
-                vertices.len() as u32,
-            )),
-            RenderBatch::Line(vertices) if !vertices.is_empty() => Some(GpuBatch::Draw(
-                BatchKind::Line,
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("zui-render lines"),
-                    contents: bytemuck::cast_slice(&vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                }),
-                vertices.len() as u32,
-            )),
-            RenderBatch::Image { image, vertices } if !vertices.is_empty() => Some(GpuBatch::Draw(
-                BatchKind::Image(image),
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("zui-render images"),
-                    contents: bytemuck::cast_slice(&vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                }),
-                vertices.len() as u32,
-            )),
-            RenderBatch::Clip(clip) => Some(GpuBatch::Clip(clip)),
-            _ => None,
-        })
-        .collect()
+fn build_gpu_batches(
+    device: &wgpu::Device,
+    batches: Vec<RenderBatch>,
+    render_size: PhysicalSize,
+) -> Vec<GpuBatch> {
+    coalesce_gpu_batches(
+        batches
+            .into_iter()
+            .filter_map(|batch| match batch {
+                RenderBatch::Rect(vertices) if !vertices.is_empty() => Some(GpuBatch::Draw(
+                    BatchKind::Rect,
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("zui-render rectangles"),
+                        contents: bytemuck::cast_slice(&vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+                    vertices.len() as u32,
+                )),
+                RenderBatch::Rounded(vertices) if !vertices.is_empty() => Some(GpuBatch::Draw(
+                    BatchKind::Rounded,
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("zui-render rounded rectangles"),
+                        contents: bytemuck::cast_slice(&vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+                    vertices.len() as u32,
+                )),
+                RenderBatch::Line(vertices) if !vertices.is_empty() => Some(GpuBatch::Draw(
+                    BatchKind::Line,
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("zui-render lines"),
+                        contents: bytemuck::cast_slice(&vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+                    vertices.len() as u32,
+                )),
+                RenderBatch::Image { image, vertices } if !vertices.is_empty() => {
+                    Some(GpuBatch::Draw(
+                        BatchKind::Image(image),
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("zui-render images"),
+                            contents: bytemuck::cast_slice(&vertices),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        }),
+                        vertices.len() as u32,
+                    ))
+                }
+                RenderBatch::Clip(geometry) => {
+                    let mask = match geometry {
+                        ClipGeometry::Reset => None,
+                        ClipGeometry::Rect(rect) => {
+                            let mut vertices = Vec::new();
+                            append_rect(&mut vertices, rect, Color::WHITE, render_size);
+                            let buffer =
+                                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                    label: Some("zui-render stencil clip"),
+                                    contents: bytemuck::cast_slice(&vertices),
+                                    usage: wgpu::BufferUsages::VERTEX,
+                                });
+                            Some((buffer, vertices.len() as u32))
+                        }
+                        ClipGeometry::Rounded { rect, radius } => {
+                            let mut vertices = Vec::new();
+                            append_rounded_rect(
+                                &mut vertices,
+                                rect,
+                                radius,
+                                Color::WHITE,
+                                render_size,
+                            );
+                            let buffer =
+                                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                    label: Some("zui-render rounded stencil clip"),
+                                    contents: bytemuck::cast_slice(&vertices),
+                                    usage: wgpu::BufferUsages::VERTEX,
+                                });
+                            Some((buffer, vertices.len() as u32))
+                        }
+                    };
+                    Some(GpuBatch::Clip(geometry, mask))
+                }
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+fn coalesce_gpu_batches(batches: Vec<GpuBatch>) -> Vec<GpuBatch> {
+    let mut result = Vec::with_capacity(batches.len());
+    for batch in batches {
+        match batch {
+            GpuBatch::Draw(kind, buffer, count) => {
+                let merged = match result.last_mut() {
+                    Some(GpuBatch::DrawGroup(group_kind, buffers)) if *group_kind == kind => {
+                        buffers.push((buffer.clone(), count));
+                        true
+                    }
+                    _ => false,
+                };
+                if !merged {
+                    result.push(GpuBatch::DrawGroup(kind, vec![(buffer, count)]));
+                }
+            }
+            other => result.push(other),
+        }
+    }
+    result
 }
 
 fn cached_system_fonts() -> &'static [fontdue::Font] {
@@ -1926,57 +2393,12 @@ fn append_text(
     }
 }
 
-fn command_intersects(command: &PaintCommand, damage: Rect) -> bool {
-    let bounds = match command {
-        PaintCommand::Clear(_) => return true,
-        PaintCommand::Rect { rect, .. } | PaintCommand::RoundedRect { rect, .. } => *rect,
-        PaintCommand::Line {
-            start, end, width, ..
-        } => {
-            let half = width.0 / 2.0;
-            Rect {
-                origin: Point {
-                    x: Dip(start.x.0.min(end.x.0) - half),
-                    y: Dip(start.y.0.min(end.y.0) - half),
-                },
-                size: zui_core::Size {
-                    width: Dip((start.x.0.max(end.x.0) - start.x.0.min(end.x.0)) + width.0),
-                    height: Dip((start.y.0.max(end.y.0) - start.y.0.min(end.y.0)) + width.0),
-                },
-            }
-        }
-        PaintCommand::Text {
-            text,
-            origin,
-            scale,
-            ..
-        } => Rect {
-            origin: *origin,
-            size: zui_core::Size {
-                width: measure_text(text, *scale),
-                height: Dip((*scale).max(1) as f32 * 7.0),
-            },
-        },
-        PaintCommand::Icon { rect, .. } | PaintCommand::Image { rect, .. } => *rect,
-        PaintCommand::Clip { rect } => *rect,
-        PaintCommand::Transform(_) | PaintCommand::Opacity(_) => return true,
-    };
-    let bounds_right = bounds.origin.x.0 + bounds.size.width.0;
-    let bounds_bottom = bounds.origin.y.0 + bounds.size.height.0;
-    let damage_right = damage.origin.x.0 + damage.size.width.0;
-    let damage_bottom = damage.origin.y.0 + damage.size.height.0;
-    bounds.origin.x.0 < damage_right
-        && bounds_right > damage.origin.x.0
-        && bounds.origin.y.0 < damage_bottom
-        && bounds_bottom > damage.origin.y.0
-}
-
-fn resolve_commands(display_list: &DisplayList) -> Vec<PaintCommand> {
-    let mut resolved = Vec::with_capacity(display_list.commands().len());
+fn resolve_commands(commands: &[PaintCommand]) -> Vec<PaintCommand> {
+    let mut resolved = Vec::with_capacity(commands.len());
     let mut transform = Transform::IDENTITY;
     let mut clip = None;
     let mut opacity = 1.0;
-    for command in display_list.commands() {
+    for command in commands {
         match command {
             PaintCommand::Transform(next) => transform = compose_transform(transform, *next),
             PaintCommand::Clip { rect } => {
@@ -2150,7 +2572,7 @@ fn set_scissor(
     pass.set_scissor_rect(x, y, right.saturating_sub(x), bottom.saturating_sub(y));
 }
 
-fn display_list_hash(commands: &[PaintCommand]) -> u64 {
+fn command_list_hash(commands: &[PaintCommand]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     format!("{commands:?}").hash(&mut hasher);
     hasher.finish()
@@ -2327,6 +2749,110 @@ fn create_canvas(
     (texture, view)
 }
 
+fn create_stencil(device: &wgpu::Device, size: PhysicalSize) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("zui-render clip stencil"),
+        size: wgpu::Extent3d {
+            width: size.width.max(1),
+            height: size.height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth24PlusStencil8,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+fn create_stencil_reset_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+    let color = [1.0, 1.0, 1.0, 1.0];
+    let vertices = [
+        RectVertex {
+            position: [-1.0, 1.0],
+            color,
+        },
+        RectVertex {
+            position: [1.0, 1.0],
+            color,
+        },
+        RectVertex {
+            position: [1.0, -1.0],
+            color,
+        },
+        RectVertex {
+            position: [-1.0, 1.0],
+            color,
+        },
+        RectVertex {
+            position: [1.0, -1.0],
+            color,
+        },
+        RectVertex {
+            position: [-1.0, -1.0],
+            color,
+        },
+    ];
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("zui-render stencil reset"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: wgpu::BufferUsages::VERTEX,
+    })
+}
+
+fn stencil_draw_state() -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth24PlusStencil8,
+        depth_write_enabled: Some(false),
+        depth_compare: Some(wgpu::CompareFunction::Always),
+        stencil: wgpu::StencilState {
+            front: wgpu::StencilFaceState {
+                compare: wgpu::CompareFunction::Equal,
+                fail_op: wgpu::StencilOperation::Keep,
+                depth_fail_op: wgpu::StencilOperation::Keep,
+                pass_op: wgpu::StencilOperation::Keep,
+            },
+            back: wgpu::StencilFaceState {
+                compare: wgpu::CompareFunction::Equal,
+                fail_op: wgpu::StencilOperation::Keep,
+                depth_fail_op: wgpu::StencilOperation::Keep,
+                pass_op: wgpu::StencilOperation::Keep,
+            },
+            read_mask: 1,
+            write_mask: 0,
+        },
+        bias: wgpu::DepthBiasState::default(),
+    }
+}
+
+fn stencil_mask_state() -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth24PlusStencil8,
+        depth_write_enabled: Some(false),
+        depth_compare: Some(wgpu::CompareFunction::Always),
+        stencil: wgpu::StencilState {
+            front: wgpu::StencilFaceState {
+                compare: wgpu::CompareFunction::Always,
+                fail_op: wgpu::StencilOperation::Keep,
+                depth_fail_op: wgpu::StencilOperation::Keep,
+                pass_op: wgpu::StencilOperation::Replace,
+            },
+            back: wgpu::StencilFaceState {
+                compare: wgpu::CompareFunction::Always,
+                fail_op: wgpu::StencilOperation::Keep,
+                depth_fail_op: wgpu::StencilOperation::Keep,
+                pass_op: wgpu::StencilOperation::Replace,
+            },
+            read_mask: 0,
+            write_mask: 1,
+        },
+        bias: wgpu::DepthBiasState::default(),
+    }
+}
+
 fn create_blit_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
@@ -2424,6 +2950,58 @@ fn create_blit_bind_group(
     })
 }
 
+fn create_stencil_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("zui-render stencil mask shader"),
+        source: wgpu::ShaderSource::Wgsl(
+            r#"
+            @vertex
+            fn vs(@location(0) position: vec2<f32>, @location(1) color: vec4<f32>) -> @builtin(position) vec4<f32> {
+                return vec4<f32>(position, 0.0, 1.0);
+            }
+
+            @fragment
+            fn fs() -> @location(0) vec4<f32> {
+                return vec4<f32>(0.0);
+            }
+        "#
+            .into(),
+        ),
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("zui-render stencil mask pipeline"),
+        layout: None,
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<RectVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4],
+            }],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::empty(),
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: Some(stencil_mask_state()),
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
 fn create_rect_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
@@ -2473,7 +3051,7 @@ fn create_rect_pipeline(
             })],
         }),
         primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
+        depth_stencil: Some(stencil_draw_state()),
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
         cache: None,
@@ -2569,7 +3147,7 @@ fn create_image_pipeline(
             })],
         }),
         primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
+        depth_stencil: Some(stencil_draw_state()),
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
         cache: None,
@@ -2656,7 +3234,80 @@ fn create_rounded_rect_pipeline(
             })],
         }),
         primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
+        depth_stencil: Some(stencil_draw_state()),
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn create_stencil_rounded_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("zui-render rounded stencil mask shader"),
+        source: wgpu::ShaderSource::Wgsl(
+            r#"
+            struct VertexOutput {
+                @builtin(position) position: vec4<f32>,
+                @location(0) local: vec2<f32>,
+                @location(1) size: vec2<f32>,
+                @location(2) radius: f32,
+            };
+            @vertex
+            fn vs(@location(0) position: vec2<f32>, @location(1) local: vec2<f32>,
+                  @location(2) size: vec2<f32>, @location(3) radius: f32,
+                  @location(4) color: vec4<f32>) -> VertexOutput {
+                var output: VertexOutput;
+                output.position = vec4<f32>(position, 0.0, 1.0);
+                output.local = local;
+                output.size = size;
+                output.radius = radius;
+                return output;
+            }
+            @fragment
+            fn fs(input: VertexOutput) -> @location(0) vec4<f32> {
+                let half_size = input.size * 0.5;
+                let point = input.local - half_size;
+                let rounded = half_size - vec2<f32>(input.radius, input.radius);
+                let q = abs(point) - rounded;
+                let distance = length(max(q, vec2<f32>(0.0, 0.0)))
+                    + min(max(q.x, q.y), 0.0) - input.radius;
+                if distance > 0.0 { discard; }
+                return vec4<f32>(0.0);
+            }
+        "#
+            .into(),
+        ),
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("zui-render rounded stencil mask pipeline"),
+        layout: None,
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<RoundedRectVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![
+                    0 => Float32x2, 1 => Float32x2, 2 => Float32x2, 3 => Float32, 4 => Float32x4,
+                ],
+            }],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::empty(),
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: Some(stencil_mask_state()),
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
         cache: None,
@@ -2749,7 +3400,7 @@ fn create_line_pipeline(
             })],
         }),
         primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
+        depth_stencil: Some(stencil_draw_state()),
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
         cache: None,
@@ -2761,50 +3412,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn display_list_records_clear_command() {
-        let mut list = DisplayList::new();
-        list.clear(Color::BLACK);
-        assert_eq!(list.commands(), &[PaintCommand::Clear(Color::BLACK)]);
-    }
-
-    #[test]
-    fn display_list_clear_starts_a_new_frame() {
-        let mut list = DisplayList::new();
-        list.fill_rect(
-            Rect {
-                origin: Point {
-                    x: Dip(2.0),
-                    y: Dip(3.0),
-                },
-                size: zui_core::Size {
-                    width: Dip(4.0),
-                    height: Dip(5.0),
-                },
-            },
-            Color::WHITE,
-        );
-        list.clear(Color::BLACK);
-        list.text("new frame", Point::default(), Color::WHITE, 1);
-
-        assert_eq!(
-            list.commands(),
-            &[
-                PaintCommand::Clear(Color::BLACK),
-                PaintCommand::Text {
-                    text: "new frame".into(),
-                    origin: Point::default(),
-                    color: Color::WHITE,
-                    scale: 1,
-                },
-            ]
-        );
-    }
-
-    #[test]
     fn noop_device_can_create_gpu_objects() {
         let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let _encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let _pipeline = create_rounded_rect_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let _stencil_pipeline = create_stencil_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let _rounded_stencil_pipeline =
+            create_stencil_rounded_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
         let _line_pipeline = create_line_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
         let _image_pipeline = create_image_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
     }
@@ -2812,15 +3426,110 @@ mod tests {
     #[test]
     fn render_node_flattens_commands_before_children() {
         let mut node = RenderNode::new(Rect::default());
-        node.commands.fill_rect(Rect::default(), Color::WHITE);
+        node.commands.push(PaintCommand::Rect {
+            rect: Rect::default(),
+            color: Color::WHITE,
+        });
         let mut child = RenderNode::new(Rect::default());
-        child.commands.clear(Color::BLACK);
+        child.commands.push(PaintCommand::Clear(Color::BLACK));
         node.add_child(child);
-        let mut list = DisplayList::new();
-        node.flatten_into(&mut list);
-        assert_eq!(list.commands().len(), 2);
-        assert!(matches!(list.commands()[0], PaintCommand::Rect { .. }));
-        assert!(matches!(list.commands()[1], PaintCommand::Clear(_)));
+        let mut commands = Vec::new();
+        node.flatten_into(&mut commands);
+        assert_eq!(commands.len(), 2);
+        assert!(matches!(commands[0], PaintCommand::Rect { .. }));
+        assert!(matches!(commands[1], PaintCommand::Clear(_)));
+    }
+
+    #[test]
+    fn render_node_index_resolves_nested_widget_paths() {
+        let mut root = RenderNode::new(Rect::default());
+        root.source_id = Some(1);
+        let mut child = RenderNode::new(Rect::default());
+        child.source_id = Some(2);
+        let mut grandchild = RenderNode::new(Rect::default());
+        grandchild.source_id = Some(3);
+        child.add_child(grandchild);
+        root.add_child(child);
+
+        let index = root.build_index();
+        assert_eq!(index.path_for(1), Some([].as_slice()));
+        assert_eq!(index.path_for(3), Some([0, 0].as_slice()));
+        assert_eq!(
+            index.node(&root, 3).and_then(|node| node.source_id),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn clean_render_node_subtrees_are_reused_by_source_id() {
+        let mut previous = RenderNode::new(Rect::default());
+        previous.source_id = Some(1);
+        let mut previous_clean = RenderNode::new(Rect::default());
+        previous_clean.source_id = Some(2);
+        previous_clean.commands.push(PaintCommand::Rect {
+            rect: Rect::default(),
+            color: Color::WHITE,
+        });
+        previous.add_child(previous_clean);
+        let mut previous_dirty = RenderNode::new(Rect::default());
+        previous_dirty.source_id = Some(3);
+        previous.add_child(previous_dirty);
+
+        let mut current = previous.clone();
+        current.children[0].commands[0] = PaintCommand::Rect {
+            rect: Rect::default(),
+            color: Color::BLACK,
+        };
+        current.children[1]
+            .commands
+            .push(PaintCommand::Clear(Color::BLACK));
+        let dirty = [3_u64].into_iter().collect();
+        let merged = current.reuse_clean_subtrees(Some(&previous), &dirty, false);
+
+        assert_eq!(
+            merged.children[0].commands[0],
+            previous.children[0].commands[0]
+        );
+        assert_eq!(merged.children[1].commands.len(), 1);
+    }
+
+    #[test]
+    fn shared_segment_damage_is_coalesced_once() {
+        let segments = vec![RenderSegment {
+            key: 1,
+            bounds: Rect {
+                origin: Point {
+                    x: Dip(4.0),
+                    y: Dip(4.0),
+                },
+                size: zui_core::Size {
+                    width: Dip(4.0),
+                    height: Dip(4.0),
+                },
+            },
+            commands: Vec::new(),
+        }];
+        let regions = [
+            Rect {
+                origin: Point::default(),
+                size: zui_core::Size {
+                    width: Dip(6.0),
+                    height: Dip(10.0),
+                },
+            },
+            Rect {
+                origin: Point {
+                    x: Dip(6.0),
+                    y: Dip(0.0),
+                },
+                size: zui_core::Size {
+                    width: Dip(6.0),
+                    height: Dip(10.0),
+                },
+            },
+        ];
+        let merged = coalesce_damage_for_segments(&regions, &segments);
+        assert_eq!(merged.len(), 1);
     }
 
     #[test]
@@ -2828,20 +3537,20 @@ mod tests {
         let mut node = RenderNode::new(Rect::default());
         node.set_transform(Transform::translate(Dip(10.0), Dip(20.0)));
         node.set_opacity(0.5);
-        node.commands.fill_rect(
-            Rect {
+        node.commands.push(PaintCommand::Rect {
+            rect: Rect {
                 origin: Point::default(),
                 size: zui_core::Size {
                     width: Dip(4.0),
                     height: Dip(5.0),
                 },
             },
-            Color::WHITE,
-        );
-        let mut list = DisplayList::new();
-        node.flatten_into(&mut list);
+            color: Color::WHITE,
+        });
+        let mut commands = Vec::new();
+        node.flatten_into(&mut commands);
         assert_eq!(
-            list.commands(),
+            commands.as_slice(),
             &[PaintCommand::Rect {
                 rect: Rect {
                     origin: Point {
@@ -2873,8 +3582,8 @@ mod tests {
                 height: Dip(5.0),
             },
         }));
-        node.commands.fill_rect(
-            Rect {
+        node.commands.push(PaintCommand::Rect {
+            rect: Rect {
                 origin: Point {
                     x: Dip(20.0),
                     y: Dip(20.0),
@@ -2884,12 +3593,12 @@ mod tests {
                     height: Dip(2.0),
                 },
             },
-            Color::WHITE,
-        );
+            color: Color::WHITE,
+        });
         assert!(node.dirty_flags.contains(DirtyFlags::PAINT));
-        let mut list = DisplayList::new();
-        node.flatten_into(&mut list);
-        assert!(list.commands().is_empty());
+        let mut commands = Vec::new();
+        node.flatten_into(&mut commands);
+        assert!(commands.is_empty());
 
         node.clear_dirty();
         assert!(!node.dirty);
@@ -2938,19 +3647,21 @@ mod tests {
 
     #[test]
     fn clip_commands_are_preserved_for_gpu_scissor_segments() {
-        let mut list = DisplayList::new();
-        list.clip(Rect {
-            origin: Point {
-                x: Dip(1.0),
-                y: Dip(2.0),
-            },
-            size: zui_core::Size {
-                width: Dip(10.0),
-                height: Dip(11.0),
+        let mut commands = Vec::new();
+        commands.push(PaintCommand::Clip {
+            rect: Rect {
+                origin: Point {
+                    x: Dip(1.0),
+                    y: Dip(2.0),
+                },
+                size: zui_core::Size {
+                    width: Dip(10.0),
+                    height: Dip(11.0),
+                },
             },
         });
-        list.fill_rect(
-            Rect {
+        commands.push(PaintCommand::Rect {
+            rect: Rect {
                 origin: Point {
                     x: Dip(2.0),
                     y: Dip(3.0),
@@ -2960,9 +3671,9 @@ mod tests {
                     height: Dip(5.0),
                 },
             },
-            Color::WHITE,
-        );
-        let resolved = resolve_commands(&list);
+            color: Color::WHITE,
+        });
+        let resolved = resolve_commands(&commands);
         assert!(matches!(resolved.first(), Some(PaintCommand::Clip { .. })));
         assert!(matches!(resolved.get(1), Some(PaintCommand::Rect { .. })));
     }
@@ -2995,5 +3706,56 @@ mod tests {
         let snapshot = root.clone();
         root.normalize_local_coordinates();
         assert_eq!(root, snapshot);
+    }
+
+    #[test]
+    fn dirty_regions_keep_separate_damage_areas() {
+        let mut regions = DirtyRegionSet::new();
+        regions.add(Rect {
+            origin: Point {
+                x: Dip(1.0),
+                y: Dip(1.0),
+            },
+            size: zui_core::Size {
+                width: Dip(4.0),
+                height: Dip(4.0),
+            },
+        });
+        regions.add(Rect {
+            origin: Point {
+                x: Dip(20.0),
+                y: Dip(20.0),
+            },
+            size: zui_core::Size {
+                width: Dip(4.0),
+                height: Dip(4.0),
+            },
+        });
+        assert_eq!(regions.as_slice().len(), 2);
+        regions.add(Rect {
+            origin: Point {
+                x: Dip(3.0),
+                y: Dip(3.0),
+            },
+            size: zui_core::Size {
+                width: Dip(4.0),
+                height: Dip(4.0),
+            },
+        });
+        assert_eq!(regions.as_slice().len(), 2);
+    }
+
+    #[test]
+    fn render_node_gpu_key_changes_with_subtree() {
+        let mut parent = RenderNode::new(Rect::default());
+        let first = parent.gpu_cache_key();
+        parent.add_child(RenderNode::new(Rect {
+            origin: Point::default(),
+            size: zui_core::Size {
+                width: Dip(4.0),
+                height: Dip(4.0),
+            },
+        }));
+        assert_ne!(first, parent.gpu_cache_key());
     }
 }

@@ -2,7 +2,7 @@ use crate::{
     event::{is_left_press, ActionKind, EventContext, EventResult, UiEvent},
     layout::Constraints,
     theme::Theme,
-    widget::{build_render_node_from_paint, Widget, WidgetId},
+    widget::{build_render_node_with_commands, Widget, WidgetId},
 };
 use zui_core::{Dip, Point, Rect, Size};
 
@@ -12,6 +12,61 @@ pub struct Switch {
     checked: bool,
     bounds: Rect,
     theme: Theme,
+}
+
+impl Switch {
+    fn build_render_commands(&self, ctx: &mut crate::PaintContext<'_>) {
+        let style = &ctx.theme.switch;
+        let track = Rect {
+            origin: Point {
+                x: self.bounds.origin.x,
+                y: Dip(self.bounds.origin.y.0 + (self.bounds.size.height.0 - style.height.0) / 2.0),
+            },
+            size: Size {
+                width: style.width,
+                height: style.height,
+            },
+        };
+        ctx.fill_rounded_rect(
+            track,
+            Dip(style.height.0 / 2.0),
+            if self.checked {
+                style.checked_background
+            } else {
+                style.background
+            },
+        );
+        let knob_margin = (style.height.0 - style.knob_size.0) / 2.0;
+        let knob_x = if self.checked {
+            style.width.0 - style.knob_size.0 - knob_margin
+        } else {
+            knob_margin
+        };
+        ctx.fill_rounded_rect(
+            Rect {
+                origin: Point {
+                    x: Dip(track.origin.x.0 + knob_x),
+                    y: Dip(track.origin.y.0 + (style.height.0 - style.knob_size.0) / 2.0),
+                },
+                size: Size {
+                    width: style.knob_size,
+                    height: style.knob_size,
+                },
+            },
+            Dip(style.knob_size.0 / 2.0),
+            style.knob,
+        );
+        ctx.draw_text(
+            &self.label,
+            Point {
+                x: Dip(track.origin.x.0 + style.width.0 + style.gap.0),
+                y: Dip(self.bounds.origin.y.0
+                    + (self.bounds.size.height.0 - style.font_size as f32 * 7.0) / 2.0),
+            },
+            ctx.theme.text.color,
+            style.font_size,
+        );
+    }
 }
 
 impl Switch {
@@ -87,58 +142,8 @@ impl Widget for Switch {
     }
 
     fn build_render_node(&self, theme: &Theme) -> zui_render::RenderNode {
-        build_render_node_from_paint(self.id, self.bounds, theme, |ctx| self.paint(ctx))
-    }
-    fn paint(&self, ctx: &mut crate::PaintContext<'_>) {
-        let style = &ctx.theme.switch;
-        let track = Rect {
-            origin: Point {
-                x: self.bounds.origin.x,
-                y: Dip(self.bounds.origin.y.0 + (self.bounds.size.height.0 - style.height.0) / 2.0),
-            },
-            size: Size {
-                width: style.width,
-                height: style.height,
-            },
-        };
-        ctx.fill_rounded_rect(
-            track,
-            Dip(style.height.0 / 2.0),
-            if self.checked {
-                style.checked_background
-            } else {
-                style.background
-            },
-        );
-        let knob_margin = (style.height.0 - style.knob_size.0) / 2.0;
-        let knob_x = if self.checked {
-            style.width.0 - style.knob_size.0 - knob_margin
-        } else {
-            knob_margin
-        };
-        ctx.fill_rounded_rect(
-            Rect {
-                origin: Point {
-                    x: Dip(track.origin.x.0 + knob_x),
-                    y: Dip(track.origin.y.0 + (style.height.0 - style.knob_size.0) / 2.0),
-                },
-                size: Size {
-                    width: style.knob_size,
-                    height: style.knob_size,
-                },
-            },
-            Dip(style.knob_size.0 / 2.0),
-            style.knob,
-        );
-        ctx.draw_text(
-            &self.label,
-            Point {
-                x: Dip(track.origin.x.0 + style.width.0 + style.gap.0),
-                y: Dip(self.bounds.origin.y.0
-                    + (self.bounds.size.height.0 - style.font_size as f32 * 7.0) / 2.0),
-            },
-            ctx.theme.text.color,
-            style.font_size,
-        );
+        build_render_node_with_commands(self.id, self.bounds, theme, |ctx| {
+            self.build_render_commands(ctx)
+        })
     }
 }

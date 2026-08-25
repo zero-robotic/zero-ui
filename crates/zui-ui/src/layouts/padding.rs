@@ -1,10 +1,8 @@
-use std::collections::HashSet;
-
 use crate::{
     event::{EventContext, EventResult, UiEvent},
     layout::Constraints,
     theme::Theme,
-    widget::{PaintContext, Widget, WidgetId},
+    widget::{Widget, WidgetId},
 };
 use zui_core::{Dip, Point, Rect, Size};
 use zui_render::RenderNode;
@@ -65,40 +63,10 @@ impl Widget for Padding {
     fn event(&mut self, event: &UiEvent, ctx: &mut EventContext) -> EventResult {
         self.child.event(event, ctx)
     }
-    fn paint(&self, ctx: &mut PaintContext<'_>) {
-        self.child.paint(ctx);
-    }
-    fn build_render_node_with_cache(
-        &self,
-        previous: Option<&RenderNode>,
-        dirty_region: Option<Rect>,
-        theme: &Theme,
-    ) -> RenderNode {
+    fn build_render_node(&self, theme: &Theme) -> RenderNode {
         let mut node = RenderNode::for_widget(self.bounds);
         node.set_source_id(self.id.0);
-        let cached_child = previous.and_then(|node| node.children.first());
-        node.add_child(
-            self.child
-                .build_render_node_with_cache(cached_child, dirty_region, theme),
-        );
-        node
-    }
-    fn build_render_node_with_dirty_widgets(
-        &self,
-        previous: Option<&RenderNode>,
-        dirty_region: Option<Rect>,
-        dirty_widgets: &HashSet<WidgetId>,
-        theme: &Theme,
-    ) -> RenderNode {
-        let mut node = RenderNode::for_widget(self.bounds);
-        node.set_source_id(self.id.0);
-        let cached_child = previous.and_then(|node| node.children.first());
-        node.add_child(self.child.build_render_node_with_dirty_widgets(
-            cached_child,
-            dirty_region,
-            dirty_widgets,
-            theme,
-        ));
+        node.add_child(self.child.build_render_node(theme));
         node
     }
     fn set_theme(&mut self, theme: &Theme) {

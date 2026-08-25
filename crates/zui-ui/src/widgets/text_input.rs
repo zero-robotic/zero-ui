@@ -85,6 +85,60 @@ impl TextInput {
             .map_or(self.text.len(), |character| index + character.len_utf8())
     }
 
+    fn build_render_commands(&self, ctx: &mut crate::PaintContext<'_>) {
+        let style = &ctx.theme.text_input;
+        let text_origin = Point {
+            x: Dip(self.bounds.origin.x.0 + style.padding_x.0),
+            y: Dip(self.bounds.origin.y.0
+                + (self.bounds.size.height.0 - style.font_size as f32 * 7.0) / 2.0),
+        };
+        ctx.fill_rect(
+            self.bounds,
+            if self.focused {
+                style.focused_background
+            } else {
+                style.background
+            },
+        );
+        if let Some((start, end)) = self.selection() {
+            let start_x =
+                text_origin.x.0 + zui_render::measure_text(&self.text[..start], style.font_size).0;
+            let end_x =
+                text_origin.x.0 + zui_render::measure_text(&self.text[..end], style.font_size).0;
+            ctx.fill_rect(
+                Rect {
+                    origin: Point {
+                        x: Dip(start_x),
+                        y: text_origin.y,
+                    },
+                    size: Size {
+                        width: Dip(end_x - start_x),
+                        height: Dip(style.font_size as f32 * 7.0),
+                    },
+                },
+                style.selection_background,
+            );
+        }
+        ctx.draw_text(&self.text, text_origin, style.foreground, style.font_size);
+        if self.focused && ctx.now.duration_since(self.focus_started).as_millis() / 500 % 2 == 0 {
+            let caret_x = text_origin.x.0
+                + zui_render::measure_text(&self.text[..self.cursor], style.font_size).0;
+            ctx.fill_rect(
+                Rect {
+                    origin: Point {
+                        x: Dip(caret_x),
+                        y: Dip(self.bounds.origin.y.0 + (self.bounds.size.height.0 - 26.0) / 2.0),
+                    },
+                    size: Size {
+                        width: Dip(2.0),
+                        height: Dip(26.0),
+                    },
+                },
+                style.caret_color,
+            );
+        }
+    }
+
     fn delete_selection(&mut self) -> bool {
         let Some((start, end)) = self.selection() else {
             return false;
@@ -173,7 +227,7 @@ impl Widget for TextInput {
             if self.pointer_selecting {
                 self.cursor = self.cursor_at_x(point.x, &self.theme.text_input);
                 self.reset_blink();
-                ctx.invalidate(self.bounds);
+                self.invalidate(ctx, self.bounds);
                 return EventResult::RequestRedraw;
             }
         }
@@ -205,7 +259,7 @@ impl Widget for TextInput {
                 if focus_changed {
                     ctx.emit(self.id, ActionKind::FocusRequested);
                 }
-                ctx.invalidate(self.bounds);
+                self.invalidate(ctx, self.bounds);
                 return EventResult::RequestRedraw;
             }
         }
@@ -294,7 +348,7 @@ impl Widget for TextInput {
         if changed {
             ctx.emit(self.id, ActionKind::TextChanged);
         }
-        ctx.invalidate(self.bounds);
+        self.invalidate(ctx, self.bounds);
         EventResult::RequestRedraw
     }
 
@@ -303,61 +357,8 @@ impl Widget for TextInput {
     }
 
     fn build_render_node(&self, theme: &Theme) -> zui_render::RenderNode {
-        crate::widget::build_render_node_from_paint(self.id, self.bounds, theme, |ctx| {
-            self.paint(ctx)
+        crate::widget::build_render_node_with_commands(self.id, self.bounds, theme, |ctx| {
+            self.build_render_commands(ctx)
         })
-    }
-    fn paint(&self, ctx: &mut crate::PaintContext<'_>) {
-        let style = &ctx.theme.text_input;
-        let text_origin = Point {
-            x: Dip(self.bounds.origin.x.0 + style.padding_x.0),
-            y: Dip(self.bounds.origin.y.0
-                + (self.bounds.size.height.0 - style.font_size as f32 * 7.0) / 2.0),
-        };
-        ctx.fill_rect(
-            self.bounds,
-            if self.focused {
-                style.focused_background
-            } else {
-                style.background
-            },
-        );
-        if let Some((start, end)) = self.selection() {
-            let start_x =
-                text_origin.x.0 + zui_render::measure_text(&self.text[..start], style.font_size).0;
-            let end_x =
-                text_origin.x.0 + zui_render::measure_text(&self.text[..end], style.font_size).0;
-            ctx.fill_rect(
-                Rect {
-                    origin: Point {
-                        x: Dip(start_x),
-                        y: text_origin.y,
-                    },
-                    size: Size {
-                        width: Dip(end_x - start_x),
-                        height: Dip(style.font_size as f32 * 7.0),
-                    },
-                },
-                style.selection_background,
-            );
-        }
-        ctx.draw_text(&self.text, text_origin, style.foreground, style.font_size);
-        if self.focused && ctx.now.duration_since(self.focus_started).as_millis() / 500 % 2 == 0 {
-            let caret_x = text_origin.x.0
-                + zui_render::measure_text(&self.text[..self.cursor], style.font_size).0;
-            ctx.fill_rect(
-                Rect {
-                    origin: Point {
-                        x: Dip(caret_x),
-                        y: Dip(self.bounds.origin.y.0 + (self.bounds.size.height.0 - 26.0) / 2.0),
-                    },
-                    size: Size {
-                        width: Dip(2.0),
-                        height: Dip(26.0),
-                    },
-                },
-                style.caret_color,
-            );
-        }
     }
 }

@@ -28,8 +28,8 @@ pub use widgets::{
     Button, Checkbox, Divider, DividerAxis, Icon, IconButton, IconName, Switch, Text, TextInput,
 };
 pub use zui_render::{
-    DirtyFlags, IconPath, ImageId, ImageResource, LineSegment, RenderNode, RenderNodeBuilder,
-    ResourceCache, Transform,
+    DirtyFlags, DirtyRegionSet, IconPath, ImageId, ImageResource, LineSegment, RenderNode,
+    RenderNodeBuilder, RenderNodeIndex, ResourceCache, Transform,
 };
 
 #[cfg(test)]

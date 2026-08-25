@@ -2,7 +2,7 @@ use crate::{
     event::{is_left_press, ActionKind, EventContext, EventResult, UiEvent},
     layout::Constraints,
     theme::Theme,
-    widget::{build_render_node_from_paint, Widget, WidgetId},
+    widget::{build_render_node_with_commands, Widget, WidgetId},
 };
 use zui_core::{Dip, Point, Rect, Size};
 use zui_platform::InputEvent;
@@ -27,6 +27,29 @@ impl Button {
     }
     pub fn label(&self) -> &str {
         &self.label
+    }
+
+    fn build_render_commands(&self, ctx: &mut crate::PaintContext<'_>) {
+        let style = &ctx.theme.button;
+        ctx.fill_rounded_rect(
+            self.bounds,
+            style.radius,
+            if self.hovered {
+                style.hover_background
+            } else {
+                style.background
+            },
+        );
+        ctx.draw_text(
+            &self.label,
+            Point {
+                x: Dip(self.bounds.origin.x.0 + style.padding_x.0),
+                y: Dip(self.bounds.origin.y.0
+                    + (self.bounds.size.height.0 - style.font_size as f32 * 7.0) / 2.0),
+            },
+            style.foreground,
+            style.font_size,
+        );
     }
 }
 
@@ -56,7 +79,7 @@ impl Widget for Button {
             let hovered = self.bounds.contains(point);
             if hovered != self.hovered {
                 self.hovered = hovered;
-                ctx.invalidate(self.bounds);
+                self.invalidate(ctx, self.bounds);
                 return EventResult::RequestRedraw;
             }
         }
@@ -66,7 +89,7 @@ impl Widget for Button {
                 .is_some_and(|point| self.bounds.contains(point));
         if clicked {
             ctx.emit(self.id, ActionKind::Clicked);
-            ctx.invalidate(self.bounds);
+            self.invalidate(ctx, self.bounds);
             EventResult::RequestRedraw
         } else {
             EventResult::Ignored
@@ -76,28 +99,8 @@ impl Widget for Button {
         self.theme = theme.clone();
     }
     fn build_render_node(&self, theme: &Theme) -> zui_render::RenderNode {
-        build_render_node_from_paint(self.id, self.bounds, theme, |ctx| self.paint(ctx))
-    }
-    fn paint(&self, ctx: &mut crate::PaintContext<'_>) {
-        let style = &ctx.theme.button;
-        ctx.fill_rounded_rect(
-            self.bounds,
-            style.radius,
-            if self.hovered {
-                style.hover_background
-            } else {
-                style.background
-            },
-        );
-        ctx.draw_text(
-            &self.label,
-            Point {
-                x: Dip(self.bounds.origin.x.0 + style.padding_x.0),
-                y: Dip(self.bounds.origin.y.0
-                    + (self.bounds.size.height.0 - style.font_size as f32 * 7.0) / 2.0),
-            },
-            style.foreground,
-            style.font_size,
-        );
+        build_render_node_with_commands(self.id, self.bounds, theme, |ctx| {
+            self.build_render_commands(ctx)
+        })
     }
 }

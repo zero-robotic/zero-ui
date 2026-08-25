@@ -2,7 +2,7 @@ use crate::{
     event::{EventContext, EventResult, UiEvent},
     layout::Constraints,
     theme::Theme,
-    widget::{build_render_node_from_paint, Widget, WidgetId},
+    widget::{build_render_node_with_commands, Widget, WidgetId},
 };
 use zui_core::{Color, Dip, Point, Rect, Size};
 use zui_render::{IconPath, LineSegment};
@@ -40,6 +40,16 @@ impl Icon {
     pub fn name(&self) -> IconName {
         self.name
     }
+
+    fn build_render_commands(&self, ctx: &mut crate::PaintContext<'_>) {
+        build_icon_commands(
+            ctx,
+            self.name,
+            self.bounds,
+            ctx.theme.icon.color,
+            ctx.theme.icon.stroke_width,
+        );
+    }
 }
 
 impl Widget for Icon {
@@ -67,20 +77,13 @@ impl Widget for Icon {
         self.theme = theme.clone();
     }
     fn build_render_node(&self, theme: &Theme) -> zui_render::RenderNode {
-        build_render_node_from_paint(self.id, self.bounds, theme, |ctx| self.paint(ctx))
-    }
-    fn paint(&self, ctx: &mut crate::PaintContext<'_>) {
-        paint_icon(
-            ctx,
-            self.name,
-            self.bounds,
-            ctx.theme.icon.color,
-            ctx.theme.icon.stroke_width,
-        );
+        build_render_node_with_commands(self.id, self.bounds, theme, |ctx| {
+            self.build_render_commands(ctx)
+        })
     }
 }
 
-pub(crate) fn paint_icon(
+pub(crate) fn build_icon_commands(
     ctx: &mut crate::PaintContext<'_>,
     name: IconName,
     bounds: Rect,
