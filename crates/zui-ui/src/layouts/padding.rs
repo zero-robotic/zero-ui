@@ -43,6 +43,9 @@ impl Widget for Padding {
             size: child_size,
         });
     }
+    fn next_redraw(&self) -> Option<std::time::Instant> {
+        self.child.next_redraw()
+    }
     fn measure(&mut self, constraints: Constraints) -> Size {
         let inset = self.amount.0 * 2.0;
         let child_size = self.child.measure(Constraints::loose(Size {

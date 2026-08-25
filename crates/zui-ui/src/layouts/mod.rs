@@ -76,6 +76,12 @@ impl Widget for Layout {
         let mut context = LayoutContext::new(&mut self.children, Constraints::tight(bounds.size));
         self.strategy.arrange(&mut context, bounds);
     }
+    fn next_redraw(&self) -> Option<std::time::Instant> {
+        self.children
+            .iter()
+            .filter_map(|child| child.next_redraw())
+            .min()
+    }
     fn event(&mut self, event: &UiEvent, ctx: &mut EventContext) -> EventResult {
         for child in self.children.iter_mut().rev() {
             match child.event(event, ctx) {

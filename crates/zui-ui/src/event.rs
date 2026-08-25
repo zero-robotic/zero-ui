@@ -48,6 +48,7 @@ pub struct Action {
 #[derive(Default)]
 pub struct EventContext {
     actions: Vec<Action>,
+    dirty_region: Option<zui_core::Rect>,
 }
 
 impl EventContext {
@@ -62,6 +63,32 @@ impl EventContext {
     }
     pub fn take_actions(&mut self) -> Vec<Action> {
         std::mem::take(&mut self.actions)
+    }
+    pub fn invalidate(&mut self, region: zui_core::Rect) {
+        self.dirty_region = Some(match self.dirty_region {
+            Some(current) => union_rect(current, region),
+            None => region,
+        });
+    }
+    pub fn take_dirty_region(&mut self) -> Option<zui_core::Rect> {
+        self.dirty_region.take()
+    }
+}
+
+fn union_rect(a: zui_core::Rect, b: zui_core::Rect) -> zui_core::Rect {
+    let left = a.origin.x.0.min(b.origin.x.0);
+    let top = a.origin.y.0.min(b.origin.y.0);
+    let right = (a.origin.x.0 + a.size.width.0).max(b.origin.x.0 + b.size.width.0);
+    let bottom = (a.origin.y.0 + a.size.height.0).max(b.origin.y.0 + b.size.height.0);
+    zui_core::Rect {
+        origin: zui_core::Point {
+            x: zui_core::Dip(left),
+            y: zui_core::Dip(top),
+        },
+        size: zui_core::Size {
+            width: zui_core::Dip(right - left),
+            height: zui_core::Dip(bottom - top),
+        },
     }
 }
 

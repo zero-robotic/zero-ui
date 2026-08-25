@@ -46,6 +46,9 @@ impl Widget for SizedBox {
             size: bounds.size,
         });
     }
+    fn next_redraw(&self) -> Option<std::time::Instant> {
+        self.child.next_redraw()
+    }
     fn measure(&mut self, constraints: Constraints) -> Size {
         let fixed_width = self.width.map(|width| {
             Dip(width

@@ -106,7 +106,7 @@ mod tests {
     }
 
     #[test]
-    fn text_input_accepts_character_key_events() {
+    fn text_input_accepts_committed_text_events() {
         let mut input = TextInput::new();
         input.set_bounds(Rect {
             origin: Point {
@@ -129,14 +129,10 @@ mod tests {
                 state: KeyState::Pressed,
             },
         );
-        let key = UiEvent::input(InputEvent::Keyboard {
-            key: zui_platform::KeyCode::Character('a'),
-            state: KeyState::Pressed,
-            modifiers: Default::default(),
-        });
+        let text = UiEvent::input(InputEvent::Text("a".into()));
         let mut context = EventContext::new();
         input.event(&focus, &mut context);
-        input.event(&key, &mut context);
+        input.event(&text, &mut context);
         assert_eq!(input.text(), "a");
     }
 

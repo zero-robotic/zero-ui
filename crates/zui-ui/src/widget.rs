@@ -53,6 +53,9 @@ pub trait Widget {
     fn flex_factor(&self) -> Option<f32> {
         None
     }
+    fn next_redraw(&self) -> Option<Instant> {
+        None
+    }
     fn set_bounds(&mut self, bounds: Rect) {
         self.arrange(bounds);
     }

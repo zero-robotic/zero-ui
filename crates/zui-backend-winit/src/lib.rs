@@ -1,8 +1,9 @@
 //! Ordinary application-window backend built on winit.
 
+use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Ime, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::raw_window_handle::{
     HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle,
@@ -67,7 +68,9 @@ struct Runner<'a> {
     options: Option<WindowOptions>,
     host: Option<WinitHost>,
     on_window: &'a mut dyn FnMut(&WinitHost),
-    handler: &'a mut dyn FnMut(PlatformEvent),
+    handler: &'a mut dyn FnMut(PlatformEvent) -> Option<Instant>,
+    redraw_at: Option<Instant>,
+    ime_composing: bool,
 }
 
 impl ApplicationHandler for Runner<'_> {
@@ -111,76 +114,134 @@ impl ApplicationHandler for Runner<'_> {
         _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        let Some(host) = self.host.as_mut() else {
+        if self.host.is_none() {
             return;
-        };
-        match event {
+        }
+        let redraw_at = match event {
             WindowEvent::CloseRequested => {
-                (self.handler)(PlatformEvent::CloseRequested(host.id));
+                let id = self.host.as_ref().expect("host exists").id;
+                (self.handler)(PlatformEvent::CloseRequested(id));
                 event_loop.exit();
+                None
             }
-            WindowEvent::RedrawRequested => (self.handler)(PlatformEvent::RedrawRequested(host.id)),
+            WindowEvent::RedrawRequested => {
+                let id = self.host.as_ref().expect("host exists").id;
+                (self.handler)(PlatformEvent::RedrawRequested(id));
+                None
+            }
             WindowEvent::Resized(size) => {
+                let host = self.host.as_mut().expect("host exists");
                 host.size = Size {
                     width: Dip(size.width as f32 / host.scale_factor.0 as f32),
                     height: Dip(size.height as f32 / host.scale_factor.0 as f32),
                 };
-                (self.handler)(PlatformEvent::WindowResized {
+                let request_redraw = (self.handler)(PlatformEvent::WindowResized {
                     window: host.id,
                     size: host.size,
                     scale_factor: host.scale_factor,
                 });
-                host.window.request_redraw();
+                request_redraw
             }
             WindowEvent::CursorMoved { position, .. } => {
-                (self.handler)(PlatformEvent::Input {
-                    window: host.id,
+                let id = self.host.as_ref().expect("host exists").id;
+                let scale_factor = self.host.as_ref().expect("host exists").scale_factor.0;
+                let request_redraw = (self.handler)(PlatformEvent::Input {
+                    window: id,
                     event: InputEvent::CursorMoved {
                         position: Point {
-                            x: Dip(position.x as f32),
-                            y: Dip(position.y as f32),
+                            x: Dip(position.x as f32 / scale_factor as f32),
+                            y: Dip(position.y as f32 / scale_factor as f32),
                         },
                     },
                 });
-                host.window.request_redraw();
+                request_redraw
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                (self.handler)(PlatformEvent::Input {
-                    window: host.id,
+                let id = self.host.as_ref().expect("host exists").id;
+                let request_redraw = (self.handler)(PlatformEvent::Input {
+                    window: id,
                     event: InputEvent::MouseInput {
                         button: map_button(button),
                         state: map_state(state),
                     },
                 });
-                host.window.request_redraw();
+                request_redraw
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                let key = map_key(&event.logical_key);
-                (self.handler)(PlatformEvent::Input {
-                    window: host.id,
-                    event: InputEvent::Keyboard {
-                        key,
-                        state: map_state(event.state),
-                        modifiers: Default::default(),
-                    },
-                });
-                host.window.request_redraw();
-            }
-            WindowEvent::Ime(Ime::Commit(text)) => {
-                if !text.is_empty() {
+                if self.ime_composing {
+                    None
+                } else {
+                    let key = map_key(&event.logical_key);
+                    let id = self.host.as_ref().expect("host exists").id;
                     (self.handler)(PlatformEvent::Input {
-                        window: host.id,
-                        event: InputEvent::Text(text),
-                    });
-                    host.window.request_redraw();
+                        window: id,
+                        event: InputEvent::Keyboard {
+                            key,
+                            state: map_state(event.state),
+                            modifiers: Default::default(),
+                        },
+                    })
                 }
             }
-            _ => {}
-        }
+            WindowEvent::Ime(ime) => match ime {
+                Ime::Enabled | Ime::Disabled => {
+                    self.ime_composing = false;
+                    None
+                }
+                Ime::Preedit(text, _) => {
+                    self.ime_composing = !text.is_empty();
+                    None
+                }
+                Ime::Commit(text) if !text.is_empty() => {
+                    self.ime_composing = false;
+                    let id = self.host.as_ref().expect("host exists").id;
+                    (self.handler)(PlatformEvent::Input {
+                        window: id,
+                        event: InputEvent::Text(text),
+                    })
+                }
+                Ime::Commit(_) => {
+                    self.ime_composing = false;
+                    None
+                }
+            },
+            _ => None,
+        };
+        self.schedule_redraw(redraw_at);
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         (self.handler)(PlatformEvent::AboutToWait);
+        if let Some(deadline) = self.redraw_at {
+            if deadline <= Instant::now() {
+                self.redraw_at = None;
+                if let Some(host) = self.host.as_ref() {
+                    host.window.request_redraw();
+                }
+            } else {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+            }
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
+        }
+    }
+}
+
+impl Runner<'_> {
+    fn schedule_redraw(&mut self, deadline: Option<Instant>) {
+        let Some(deadline) = deadline else {
+            return;
+        };
+        if deadline <= Instant::now() {
+            if let Some(host) = self.host.as_ref() {
+                host.window.request_redraw();
+            }
+        } else {
+            self.redraw_at = Some(
+                self.redraw_at
+                    .map_or(deadline, |current| current.min(deadline)),
+            );
+        }
     }
 }
 
@@ -192,7 +253,9 @@ impl Backend for WinitBackend {
         ))
     }
     fn run(self, handler: &mut dyn FnMut(PlatformEvent)) -> Result<(), PlatformError> {
-        let mut on_window = |_host: &WinitHost| {};
+        let mut on_window = |host: &WinitHost| {
+            let _ = host.request_redraw();
+        };
         self.run_with_options(WindowOptions::default(), &mut on_window, handler)
     }
 }
@@ -201,10 +264,37 @@ impl WinitBackend {
     /// Run the event loop and expose the created host to the composition root.
     /// The host is only valid for the duration of the callback and event loop.
     pub fn run_with_options(
-        mut self,
+        self,
         options: WindowOptions,
         on_window: &mut dyn FnMut(&WinitHost),
         handler: &mut dyn FnMut(PlatformEvent),
+    ) -> Result<(), PlatformError> {
+        let mut handler_with_redraw = |event| {
+            let request_redraw = matches!(
+                event,
+                PlatformEvent::Input { .. } | PlatformEvent::WindowResized { .. }
+            );
+            handler(event);
+            request_redraw.then(Instant::now)
+        };
+        self.run_with_options_and_schedule(options, on_window, &mut handler_with_redraw)
+    }
+
+    pub fn run_with_options_and_redraw(
+        self,
+        options: WindowOptions,
+        on_window: &mut dyn FnMut(&WinitHost),
+        handler: &mut dyn FnMut(PlatformEvent) -> bool,
+    ) -> Result<(), PlatformError> {
+        let mut handler_with_schedule = |event| handler(event).then(Instant::now);
+        self.run_with_options_and_schedule(options, on_window, &mut handler_with_schedule)
+    }
+
+    pub fn run_with_options_and_schedule(
+        mut self,
+        options: WindowOptions,
+        on_window: &mut dyn FnMut(&WinitHost),
+        handler: &mut dyn FnMut(PlatformEvent) -> Option<Instant>,
     ) -> Result<(), PlatformError> {
         let event_loop = self
             .event_loop
@@ -215,6 +305,8 @@ impl WinitBackend {
             host: None,
             on_window,
             handler,
+            redraw_at: None,
+            ime_composing: false,
         };
         event_loop
             .run_app(&mut runner)

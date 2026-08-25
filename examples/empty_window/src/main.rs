@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::time::Instant;
 
 use zui_backend_winit::WinitBackend;
 use zui_core::{Dip, PhysicalSize, Point};
@@ -31,7 +32,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut on_window = |host: &zui_backend_winit::WinitHost| {
         let size = host.scale_factor().to_physical(host.size());
-        ui.borrow_mut().layout(Constraints::loose(host.size()));
+        let mut tree = ui.borrow_mut();
+        tree.layout(Constraints::loose(host.size()));
+        tree.request_paint(None);
+        drop(tree);
         renderer
             .borrow_mut()
             .attach_surface(host.id(), host, size, host.scale_factor())
@@ -42,10 +46,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut handler = |event: PlatformEvent| match event {
         PlatformEvent::RedrawRequested(window) => {
+            if !ui.borrow().needs_redraw() {
+                if ui.borrow().next_redraw().is_some() {
+                    ui.borrow_mut().request_paint(None);
+                } else {
+                    return None;
+                }
+            }
             let mut commands = display_list.borrow_mut();
             commands.clear(background);
+            let damage = ui.borrow().dirty_region();
             ui.borrow().paint(&mut commands);
-            if let Err(error) = renderer.borrow_mut().render_frame(window, &commands) {
+            if let Err(error) = renderer
+                .borrow_mut()
+                .render_frame_with_damage(window, &commands, damage)
+            {
                 match error {
                     RenderError::SurfaceLost => {
                         eprintln!("render surface lost; waiting for resize")
@@ -55,6 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 ui.borrow_mut().mark_clean();
             }
+            ui.borrow().next_redraw()
         }
         PlatformEvent::WindowResized {
             window,
@@ -69,6 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .resize(window, physical, scale_factor)
                     .expect("failed to resize render surface");
             }
+            Some(Instant::now())
         }
         PlatformEvent::Input { window, event } => {
             if let InputEvent::CursorMoved { position } = &event {
@@ -83,16 +100,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 _ => UiEvent::input(event),
             };
-            let (_, actions) = ui.borrow_mut().event(&ui_event);
+            let (result, actions) = ui.borrow_mut().event(&ui_event);
             for action in actions {
                 println!("UI action: {:?}", action);
             }
+            (result == zui_ui::EventResult::RequestRedraw).then(Instant::now)
         }
-        PlatformEvent::CloseRequested(window) => renderer.borrow_mut().detach_surface(window),
-        _ => {}
+        PlatformEvent::CloseRequested(window) => {
+            renderer.borrow_mut().detach_surface(window);
+            None
+        }
+        _ => None,
     };
 
-    WinitBackend::new()?.run_with_options(
+    WinitBackend::new()?.run_with_options_and_schedule(
         WindowOptions {
             title: "zero-ui empty window".into(),
             ..WindowOptions::default()

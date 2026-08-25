@@ -56,6 +56,7 @@ impl Widget for Button {
             let hovered = self.bounds.contains(point);
             if hovered != self.hovered {
                 self.hovered = hovered;
+                ctx.invalidate(self.bounds);
                 return EventResult::RequestRedraw;
             }
         }
@@ -65,6 +66,7 @@ impl Widget for Button {
                 .is_some_and(|point| self.bounds.contains(point));
         if clicked {
             ctx.emit(self.id, ActionKind::Clicked);
+            ctx.invalidate(self.bounds);
             EventResult::RequestRedraw
         } else {
             EventResult::Ignored

@@ -66,6 +66,9 @@ impl Widget for Align {
             size: child_size,
         });
     }
+    fn next_redraw(&self) -> Option<std::time::Instant> {
+        self.child.next_redraw()
+    }
     fn measure(&mut self, constraints: Constraints) -> Size {
         let child_size = self.child.measure(Constraints::loose(constraints.max));
         let size = constraints.constrain(child_size);

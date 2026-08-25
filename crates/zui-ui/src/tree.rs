@@ -44,7 +44,7 @@ impl WidgetTree {
         let mut ctx = EventContext::new();
         let result = self.root.event(event, &mut ctx);
         if result == EventResult::RequestRedraw {
-            self.request_paint(None);
+            self.request_paint(ctx.take_dirty_region());
         }
         (result, ctx.take_actions())
     }
@@ -78,6 +78,9 @@ impl WidgetTree {
     }
     pub fn needs_redraw(&self) -> bool {
         self.layout_dirty || self.paint_dirty
+    }
+    pub fn next_redraw(&self) -> Option<std::time::Instant> {
+        self.root.next_redraw()
     }
     pub fn dirty_region(&self) -> Option<Rect> {
         self.dirty_region

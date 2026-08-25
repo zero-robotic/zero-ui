@@ -4,7 +4,7 @@ use crate::{
     theme::Theme,
     widget::{Widget, WidgetId},
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use zui_core::{Dip, Point, Rect, Size};
 use zui_platform::{InputEvent, KeyCode, KeyState};
 
@@ -65,6 +65,14 @@ impl Widget for TextInput {
         self.bounds.size = size;
         size
     }
+    fn next_redraw(&self) -> Option<Instant> {
+        if !self.focused {
+            return None;
+        }
+        let elapsed = self.focus_started.elapsed();
+        let interval = Duration::from_millis(500);
+        Some(self.focus_started + interval * (elapsed.as_millis() as u32 / 500 + 1))
+    }
     fn event(&mut self, event: &UiEvent, ctx: &mut EventContext) -> EventResult {
         if let Some(point) = event.position {
             if self.bounds.contains(point)
@@ -76,9 +84,13 @@ impl Widget for TextInput {
                     }
                 )
             {
+                let focus_changed = !self.focused;
                 self.focused = true;
                 self.focus_started = Instant::now();
-                ctx.emit(self.id, ActionKind::FocusRequested);
+                if focus_changed {
+                    ctx.emit(self.id, ActionKind::FocusRequested);
+                }
+                ctx.invalidate(self.bounds);
                 return EventResult::RequestRedraw;
             }
         }
@@ -89,6 +101,7 @@ impl Widget for TextInput {
             InputEvent::Text(text) => {
                 self.text.push_str(text);
                 ctx.emit(self.id, ActionKind::TextChanged);
+                ctx.invalidate(self.bounds);
                 EventResult::RequestRedraw
             }
             InputEvent::Keyboard {
@@ -98,6 +111,7 @@ impl Widget for TextInput {
             } => {
                 self.text.push(*character);
                 ctx.emit(self.id, ActionKind::TextChanged);
+                ctx.invalidate(self.bounds);
                 EventResult::RequestRedraw
             }
             InputEvent::Keyboard {
@@ -107,6 +121,7 @@ impl Widget for TextInput {
             } => {
                 self.text.pop();
                 ctx.emit(self.id, ActionKind::TextChanged);
+                ctx.invalidate(self.bounds);
                 EventResult::RequestRedraw
             }
             _ => EventResult::Ignored,

@@ -4,7 +4,7 @@
 //! drawing data; `Renderer` owns the GPU and the per-window swap-chain surfaces.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use wgpu::util::DeviceExt;
 use zui_core::{Color, Dip, PhysicalSize, Point, Rect, ScaleFactor, WindowId};
@@ -13,12 +13,22 @@ use zui_platform::spi::RawWindowHandleProvider;
 pub use wgpu;
 
 static SYSTEM_FONTS: OnceLock<Vec<fontdue::Font>> = OnceLock::new();
+static TEXT_MEASURE_CACHE: OnceLock<Mutex<HashMap<(String, u32), Dip>>> = OnceLock::new();
 
 /// Measures text using the same system font used by the renderer.
 pub fn measure_text(text: &str, scale: u32) -> Dip {
+    let scale = scale.max(1);
+    let cache = TEXT_MEASURE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(width) = cache
+        .lock()
+        .expect("text measure cache poisoned")
+        .get(&(text.to_owned(), scale))
+    {
+        return *width;
+    }
     let fonts = cached_system_fonts();
-    if !fonts.is_empty() {
-        let size = (scale.max(1) * 7) as f32;
+    let width = if !fonts.is_empty() {
+        let size = (scale * 7) as f32;
         Dip(text
             .chars()
             .map(|character| {
@@ -30,8 +40,13 @@ pub fn measure_text(text: &str, scale: u32) -> Dip {
             })
             .sum())
     } else {
-        Dip(text.chars().count() as f32 * 6.0 * scale.max(1) as f32)
-    }
+        Dip(text.chars().count() as f32 * 6.0 * scale as f32)
+    };
+    cache
+        .lock()
+        .expect("text measure cache poisoned")
+        .insert((text.to_owned(), scale), width);
+    width
 }
 
 #[derive(Debug)]
@@ -87,6 +102,7 @@ impl DisplayList {
         Self::default()
     }
     pub fn clear(&mut self, color: Color) {
+        self.commands.clear();
         self.commands.push(PaintCommand::Clear(color));
     }
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
@@ -116,6 +132,13 @@ struct SurfaceState {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     size: PhysicalSize,
+    pipeline: wgpu::RenderPipeline,
+    canvas: wgpu::Texture,
+    canvas_view: wgpu::TextureView,
+    blit_pipeline: wgpu::RenderPipeline,
+    blit_bind_group: wgpu::BindGroup,
+    scale_factor: ScaleFactor,
+    has_contents: bool,
 }
 
 #[repr(C)]
@@ -133,11 +156,18 @@ pub struct Renderer {
     surfaces: HashMap<WindowId, SurfaceState>,
     fonts: &'static [fontdue::Font],
     glyph_cache: HashMap<(usize, char, u32), CachedGlyph>,
+    font_cache: HashMap<char, Option<usize>>,
 }
 
 struct CachedGlyph {
     metrics: fontdue::Metrics,
-    bitmap: Vec<u8>,
+    pixels: Vec<CachedGlyphPixel>,
+}
+
+struct CachedGlyphPixel {
+    x: u16,
+    y: u16,
+    alpha: f32,
 }
 
 impl Renderer {
@@ -166,6 +196,7 @@ impl Renderer {
             surfaces: HashMap::new(),
             fonts: cached_system_fonts(),
             glyph_cache: HashMap::new(),
+            font_cache: HashMap::new(),
         })
     }
 
@@ -200,15 +231,25 @@ impl Renderer {
             .get_default_config(&self.adapter, size.width.max(1), size.height.max(1))
             .ok_or_else(|| RenderError::Surface("adapter cannot present to this surface".into()))?;
         surface.configure(&self.device, &config);
+        let pipeline = create_rect_pipeline(&self.device, config.format);
+        let (canvas, canvas_view) = create_canvas(&self.device, size, config.format);
+        let blit_pipeline = create_blit_pipeline(&self.device, config.format);
+        let blit_bind_group = create_blit_bind_group(&self.device, &blit_pipeline, &canvas_view);
         self.surfaces.insert(
             window,
             SurfaceState {
                 surface,
                 config,
                 size,
+                pipeline,
+                canvas,
+                canvas_view,
+                blit_pipeline,
+                blit_bind_group,
+                scale_factor,
+                has_contents: false,
             },
         );
-        let _ = scale_factor;
         Ok(())
     }
 
@@ -219,7 +260,7 @@ impl Renderer {
         window: WindowId,
         host: &W,
         size: PhysicalSize,
-        _scale_factor: ScaleFactor,
+        scale_factor: ScaleFactor,
     ) -> Result<(), RenderError> {
         let target = unsafe {
             wgpu::SurfaceTargetUnsafe::from_display_and_window(host, host)
@@ -231,12 +272,23 @@ impl Renderer {
             .get_default_config(&self.adapter, size.width.max(1), size.height.max(1))
             .ok_or_else(|| RenderError::Surface("adapter cannot present to this surface".into()))?;
         surface.configure(&self.device, &config);
+        let pipeline = create_rect_pipeline(&self.device, config.format);
+        let (canvas, canvas_view) = create_canvas(&self.device, size, config.format);
+        let blit_pipeline = create_blit_pipeline(&self.device, config.format);
+        let blit_bind_group = create_blit_bind_group(&self.device, &blit_pipeline, &canvas_view);
         self.surfaces.insert(
             window,
             SurfaceState {
                 surface,
                 config,
                 size,
+                pipeline,
+                canvas,
+                canvas_view,
+                blit_pipeline,
+                blit_bind_group,
+                scale_factor,
+                has_contents: false,
             },
         );
         Ok(())
@@ -260,6 +312,12 @@ impl Renderer {
         state.config.width = size.width;
         state.config.height = size.height;
         state.surface.configure(&self.device, &state.config);
+        let (canvas, canvas_view) = create_canvas(&self.device, size, state.config.format);
+        state.canvas = canvas;
+        state.canvas_view = canvas_view;
+        state.blit_bind_group =
+            create_blit_bind_group(&self.device, &state.blit_pipeline, &state.canvas_view);
+        state.has_contents = false;
         Ok(())
     }
 
@@ -272,9 +330,18 @@ impl Renderer {
         window: WindowId,
         display_list: &DisplayList,
     ) -> Result<(), RenderError> {
+        self.render_frame_with_damage(window, display_list, None)
+    }
+
+    pub fn render_frame_with_damage(
+        &mut self,
+        window: WindowId,
+        display_list: &DisplayList,
+        damage: Option<Rect>,
+    ) -> Result<(), RenderError> {
         let state = self
             .surfaces
-            .get(&window)
+            .get_mut(&window)
             .ok_or(RenderError::SurfaceNotAttached(window))?;
         let frame = match state.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
@@ -318,18 +385,28 @@ impl Renderer {
                 label: Some("zui-render frame"),
             });
         {
+            let scale = state.scale_factor.0.max(1.0);
+            let render_size = PhysicalSize {
+                width: (state.size.width as f64 / scale).round().max(1.0) as u32,
+                height: (state.size.height as f64 / scale).round().max(1.0) as u32,
+            };
             let mut rects = Vec::new();
             for command in display_list.commands() {
+                if let Some(damage) = damage.filter(|_| state.has_contents) {
+                    if !command_intersects(command, damage) {
+                        continue;
+                    }
+                }
                 match command {
                     PaintCommand::FillRect { rect, color } => {
-                        append_rect(&mut rects, *rect, *color, state.size);
+                        append_rect(&mut rects, *rect, *color, render_size);
                     }
                     PaintCommand::FillRoundedRect {
                         rect,
                         radius,
                         color,
                     } => {
-                        append_rounded_rect(&mut rects, *rect, *radius, *color, state.size);
+                        append_rounded_rect(&mut rects, *rect, *radius, *color, render_size);
                     }
                     PaintCommand::Text {
                         text,
@@ -341,11 +418,12 @@ impl Renderer {
                             &mut rects,
                             self.fonts,
                             &mut self.glyph_cache,
+                            &mut self.font_cache,
                             text,
                             *origin,
                             *color,
                             *scale,
-                            state.size,
+                            render_size,
                         );
                     }
                     PaintCommand::Clear(_) => {}
@@ -363,15 +441,18 @@ impl Renderer {
                         }),
                 )
             };
-            let pipeline = create_rect_pipeline(&self.device, state.config.format);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("zui-render clear pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: &state.canvas_view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear),
+                        load: if damage.is_some() && state.has_contents {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(clear)
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -380,12 +461,46 @@ impl Renderer {
                 timestamp_writes: None,
                 multiview_mask: None,
             });
+            if let Some(damage) = damage.filter(|_| state.has_contents) {
+                let scale = state.scale_factor.0 as f32;
+                let x = (damage.origin.x.0 * scale).max(0.0) as u32;
+                let y = (damage.origin.y.0 * scale).max(0.0) as u32;
+                let right = ((damage.origin.x.0 + damage.size.width.0) * scale)
+                    .min(state.size.width as f32)
+                    .max(x as f32) as u32;
+                let bottom = ((damage.origin.y.0 + damage.size.height.0) * scale)
+                    .min(state.size.height as f32)
+                    .max(y as f32) as u32;
+                pass.set_scissor_rect(x, y, right.saturating_sub(x), bottom.saturating_sub(y));
+            }
             if let Some(vertex_buffer) = vertex_buffer {
-                pass.set_pipeline(&pipeline);
+                pass.set_pipeline(&state.pipeline);
                 pass.set_vertex_buffer(0, vertex_buffer.slice(..));
                 pass.draw(0..rects.len() as u32, 0..1);
             }
         }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("zui-render canvas composite pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&state.blit_pipeline);
+            pass.set_bind_group(0, &state.blit_bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        state.has_contents = true;
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
         Ok(())
@@ -432,6 +547,7 @@ fn append_text(
     vertices: &mut Vec<RectVertex>,
     fonts: &[fontdue::Font],
     glyph_cache: &mut HashMap<(usize, char, u32), CachedGlyph>,
+    font_cache: &mut HashMap<char, Option<usize>>,
     text: &str,
     origin: Point,
     color: Color,
@@ -443,49 +559,61 @@ fn append_text(
         let baseline = origin.y.0 + font_size * 0.8;
         let mut x = origin.x.0;
         for character in text.chars() {
-            let Some((font_id, font)) = fonts
-                .iter()
-                .enumerate()
-                .find(|(_, font)| font.lookup_glyph_index(character) != 0)
-            else {
+            let font_id = *font_cache.entry(character).or_insert_with(|| {
+                fonts
+                    .iter()
+                    .enumerate()
+                    .find(|(_, font)| font.lookup_glyph_index(character) != 0)
+                    .map(|(font_id, _)| font_id)
+            });
+            let Some(font_id) = font_id else {
                 x += font_size;
                 continue;
             };
+            let font = &fonts[font_id];
             let glyph = glyph_cache
                 .entry((font_id, character, scale.max(1)))
                 .or_insert_with(|| {
                     let (metrics, bitmap) = font.rasterize(character, font_size);
-                    CachedGlyph { metrics, bitmap }
+                    let mut pixels = Vec::new();
+                    for row in 0..metrics.height {
+                        for column in 0..metrics.width {
+                            let alpha = bitmap[row * metrics.width + column] as f32 / 255.0;
+                            if alpha > 0.01 {
+                                pixels.push(CachedGlyphPixel {
+                                    x: column as u16,
+                                    y: row as u16,
+                                    alpha,
+                                });
+                            }
+                        }
+                    }
+                    CachedGlyph { metrics, pixels }
                 });
             let metrics = glyph.metrics;
             // Fontdue reports glyph bounds relative to the baseline. Keeping
             // one baseline for the complete run prevents punctuation and
             // lowercase glyphs from drifting vertically.
             let top = baseline - metrics.height as f32 - metrics.ymin as f32;
-            for row in 0..metrics.height {
-                for column in 0..metrics.width {
-                    let alpha = glyph.bitmap[row * metrics.width + column] as f32 / 255.0;
-                    if alpha > 0.01 {
-                        append_rect(
-                            vertices,
-                            Rect {
-                                origin: Point {
-                                    x: Dip(x + column as f32),
-                                    y: Dip(top + row as f32),
-                                },
-                                size: zui_core::Size {
-                                    width: Dip(1.0),
-                                    height: Dip(1.0),
-                                },
-                            },
-                            Color {
-                                a: color.a * alpha,
-                                ..color
-                            },
-                            size,
-                        );
-                    }
-                }
+            for pixel in &glyph.pixels {
+                append_rect(
+                    vertices,
+                    Rect {
+                        origin: Point {
+                            x: Dip(x + pixel.x as f32),
+                            y: Dip(top + pixel.y as f32),
+                        },
+                        size: zui_core::Size {
+                            width: Dip(1.0),
+                            height: Dip(1.0),
+                        },
+                    },
+                    Color {
+                        a: color.a * pixel.alpha,
+                        ..color
+                    },
+                    size,
+                );
             }
             x += metrics.advance_width;
         }
@@ -517,6 +645,33 @@ fn append_text(
         }
         x += 6.0 * scale as f32;
     }
+}
+
+fn command_intersects(command: &PaintCommand, damage: Rect) -> bool {
+    let bounds = match command {
+        PaintCommand::Clear(_) => return true,
+        PaintCommand::FillRect { rect, .. } | PaintCommand::FillRoundedRect { rect, .. } => *rect,
+        PaintCommand::Text {
+            text,
+            origin,
+            scale,
+            ..
+        } => Rect {
+            origin: *origin,
+            size: zui_core::Size {
+                width: measure_text(text, *scale),
+                height: Dip((*scale).max(1) as f32 * 7.0),
+            },
+        },
+    };
+    let bounds_right = bounds.origin.x.0 + bounds.size.width.0;
+    let bounds_bottom = bounds.origin.y.0 + bounds.size.height.0;
+    let damage_right = damage.origin.x.0 + damage.size.width.0;
+    let damage_bottom = damage.origin.y.0 + damage.size.height.0;
+    bounds.origin.x.0 < damage_right
+        && bounds_right > damage.origin.x.0
+        && bounds.origin.y.0 < damage_bottom
+        && bounds_bottom > damage.origin.y.0
 }
 
 fn append_rect(vertices: &mut Vec<RectVertex>, rect: Rect, color: Color, size: PhysicalSize) {
@@ -751,6 +906,126 @@ fn glyph_rows(character: char) -> [u8; 7] {
     }
 }
 
+fn create_canvas(
+    device: &wgpu::Device,
+    size: PhysicalSize,
+    format: wgpu::TextureFormat,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("zui-render canvas"),
+        size: wgpu::Extent3d {
+            width: size.width.max(1),
+            height: size.height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+fn create_blit_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("zui-render canvas blit shader"),
+        source: wgpu::ShaderSource::Wgsl(
+            r#"
+            @group(0) @binding(0) var canvas: texture_2d<f32>;
+            @group(0) @binding(1) var canvas_sampler: sampler;
+
+            struct VertexOutput {
+                @builtin(position) position: vec4<f32>,
+                @location(0) uv: vec2<f32>,
+            };
+
+            @vertex
+            fn vs(@builtin(vertex_index) index: u32) -> VertexOutput {
+                var positions = array<vec2<f32>, 3>(
+                    vec2<f32>(-1.0, -1.0),
+                    vec2<f32>(3.0, -1.0),
+                    vec2<f32>(-1.0, 3.0)
+                );
+                var uvs = array<vec2<f32>, 3>(
+                    vec2<f32>(0.0, 1.0),
+                    vec2<f32>(2.0, 1.0),
+                    vec2<f32>(0.0, -1.0)
+                );
+                var output: VertexOutput;
+                output.position = vec4<f32>(positions[index], 0.0, 1.0);
+                output.uv = uvs[index];
+                return output;
+            }
+
+            @fragment
+            fn fs(input: VertexOutput) -> @location(0) vec4<f32> {
+                return textureSample(canvas, canvas_sampler, input.uv);
+            }
+        "#
+            .into(),
+        ),
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("zui-render canvas blit pipeline"),
+        layout: None,
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn create_blit_bind_group(
+    device: &wgpu::Device,
+    pipeline: &wgpu::RenderPipeline,
+    canvas_view: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    let layout = pipeline.get_bind_group_layout(0);
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("zui-render canvas sampler"),
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    });
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("zui-render canvas bind group"),
+        layout: &layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(canvas_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    })
+}
+
 fn create_rect_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
@@ -816,6 +1091,27 @@ mod tests {
         let mut list = DisplayList::new();
         list.clear(Color::BLACK);
         assert_eq!(list.commands(), &[PaintCommand::Clear(Color::BLACK)]);
+    }
+
+    #[test]
+    fn display_list_clear_starts_a_new_frame() {
+        let mut list = DisplayList::new();
+        list.fill_rect(Rect::default(), Color::WHITE);
+        list.clear(Color::BLACK);
+        list.text("new frame", Point::default(), Color::WHITE, 1);
+
+        assert_eq!(
+            list.commands(),
+            &[
+                PaintCommand::Clear(Color::BLACK),
+                PaintCommand::Text {
+                    text: "new frame".into(),
+                    origin: Point::default(),
+                    color: Color::WHITE,
+                    scale: 1,
+                },
+            ]
+        );
     }
 
     #[test]
