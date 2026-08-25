@@ -155,7 +155,7 @@ pub struct Renderer {
     pub(crate) queue: wgpu::Queue,
     surfaces: HashMap<WindowId, SurfaceState>,
     fonts: &'static [fontdue::Font],
-    glyph_cache: HashMap<(usize, char, u32), CachedGlyph>,
+    glyph_cache: HashMap<(usize, char, u32, u32), CachedGlyph>,
     font_cache: HashMap<char, Option<usize>>,
 }
 
@@ -424,6 +424,7 @@ impl Renderer {
                             *color,
                             *scale,
                             render_size,
+                            state.scale_factor.0 as f32,
                         );
                     }
                     PaintCommand::Clear(_) => {}
@@ -522,11 +523,13 @@ fn load_system_fonts() -> Vec<fontdue::Font> {
     let candidates = [
         std::env::var("ZUI_FONT_PATH").ok(),
         std::env::var("ZUI_LATIN_FONT_PATH").ok(),
+        Some("/System/Library/Fonts/SFNS.ttf".into()),
+        Some("/System/Library/Fonts/SFNSRounded.ttf".into()),
+        Some("/System/Library/Fonts/Hiragino Sans GB.ttc".into()),
         Some("/System/Library/Fonts/Supplemental/Verdana.ttf".into()),
         Some("/System/Library/Fonts/Supplemental/Tahoma.ttf".into()),
         Some("/System/Library/Fonts/Supplemental/Arial.ttf".into()),
         Some("/System/Library/Fonts/Supplemental/Arial Unicode.ttf".into()),
-        Some("/System/Library/Fonts/SFNS.ttf".into()),
         Some("/System/Library/Fonts/Supplemental/NISC18030.ttf".into()),
         Some("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".into()),
         std::env::var("ZUI_CJK_FONT_PATH").ok(),
@@ -546,17 +549,20 @@ fn load_system_fonts() -> Vec<fontdue::Font> {
 fn append_text(
     vertices: &mut Vec<RectVertex>,
     fonts: &[fontdue::Font],
-    glyph_cache: &mut HashMap<(usize, char, u32), CachedGlyph>,
+    glyph_cache: &mut HashMap<(usize, char, u32, u32), CachedGlyph>,
     font_cache: &mut HashMap<char, Option<usize>>,
     text: &str,
     origin: Point,
     color: Color,
     scale: u32,
     size: PhysicalSize,
+    scale_factor: f32,
 ) {
     if !fonts.is_empty() {
-        let font_size = (scale.max(1) * 7) as f32;
-        let baseline = origin.y.0 + font_size * 0.8;
+        let scale_factor = scale_factor.max(1.0);
+        let logical_font_size = (scale.max(1) * 7) as f32;
+        let font_size = logical_font_size * scale_factor;
+        let baseline = (origin.y.0 + logical_font_size * 0.8) * scale_factor;
         let mut x = origin.x.0;
         for character in text.chars() {
             let font_id = *font_cache.entry(character).or_insert_with(|| {
@@ -572,7 +578,12 @@ fn append_text(
             };
             let font = &fonts[font_id];
             let glyph = glyph_cache
-                .entry((font_id, character, scale.max(1)))
+                .entry((
+                    font_id,
+                    character,
+                    scale.max(1),
+                    (scale_factor * 100.0).round() as u32,
+                ))
                 .or_insert_with(|| {
                     let (metrics, bitmap) = font.rasterize(character, font_size);
                     let mut pixels = Vec::new();
@@ -600,12 +611,12 @@ fn append_text(
                     vertices,
                     Rect {
                         origin: Point {
-                            x: Dip(x + pixel.x as f32),
-                            y: Dip(top + pixel.y as f32),
+                            x: Dip((x * scale_factor + pixel.x as f32) / scale_factor),
+                            y: Dip((top + pixel.y as f32) / scale_factor),
                         },
                         size: zui_core::Size {
-                            width: Dip(1.0),
-                            height: Dip(1.0),
+                            width: Dip(1.0 / scale_factor),
+                            height: Dip(1.0 / scale_factor),
                         },
                     },
                     Color {
@@ -615,11 +626,12 @@ fn append_text(
                     size,
                 );
             }
-            x += metrics.advance_width;
+            x += metrics.advance_width / scale_factor;
         }
         return;
     }
 
+    let scale = scale.max(1) as f32;
     let mut x = origin.x.0;
     for character in text.chars() {
         for (row, bits) in glyph_rows(character).iter().enumerate() {
@@ -643,7 +655,7 @@ fn append_text(
                 }
             }
         }
-        x += 6.0 * scale as f32;
+        x += 6.0 * scale;
     }
 }
 
