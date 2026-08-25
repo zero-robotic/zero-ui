@@ -19,11 +19,14 @@ pub use layouts::{
 };
 pub use semantics::{SemanticRole, SemanticsNode};
 pub use theme::{
-    ButtonStyle, CheckboxStyle, SwitchStyle, TextInputStyle, TextStyle, Theme, ThemeToken,
+    ButtonStyle, CheckboxStyle, IconButtonStyle, IconStyle, SwitchStyle, TextInputStyle, TextStyle,
+    Theme, ThemeToken,
 };
 pub use tree::WidgetTree;
 pub use widget::{PaintContext, Widget, WidgetId};
-pub use widgets::{Button, Checkbox, Divider, DividerAxis, Switch, Text, TextInput};
+pub use widgets::{
+    Button, Checkbox, Divider, DividerAxis, Icon, IconButton, IconName, Switch, Text, TextInput,
+};
 
 #[cfg(test)]
 mod tests {

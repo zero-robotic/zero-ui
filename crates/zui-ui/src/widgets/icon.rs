@@ -1,0 +1,135 @@
+use crate::{
+    event::{EventContext, EventResult, UiEvent},
+    layout::Constraints,
+    theme::Theme,
+    widget::{Widget, WidgetId},
+};
+use zui_core::{Color, Dip, Point, Rect, Size};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconName {
+    Check,
+    Close,
+    Menu,
+    Minus,
+    Pause,
+    Play,
+    Plus,
+    ArrowLeft,
+    ArrowRight,
+}
+
+pub struct Icon {
+    id: WidgetId,
+    name: IconName,
+    bounds: Rect,
+    theme: Theme,
+}
+
+impl Icon {
+    pub fn new(name: IconName) -> Self {
+        Self {
+            id: WidgetId::new(),
+            name,
+            bounds: Rect::default(),
+            theme: Theme::default(),
+        }
+    }
+
+    pub fn name(&self) -> IconName {
+        self.name
+    }
+}
+
+impl Widget for Icon {
+    fn id(&self) -> WidgetId {
+        self.id
+    }
+    fn bounds(&self) -> Rect {
+        self.bounds
+    }
+    fn arrange(&mut self, bounds: Rect) {
+        self.bounds = bounds;
+    }
+    fn measure(&mut self, constraints: Constraints) -> Size {
+        let size = constraints.constrain(Size {
+            width: self.theme.icon.size,
+            height: self.theme.icon.size,
+        });
+        self.bounds.size = size;
+        size
+    }
+    fn event(&mut self, _event: &UiEvent, _ctx: &mut EventContext) -> EventResult {
+        EventResult::Ignored
+    }
+    fn set_theme(&mut self, theme: &Theme) {
+        self.theme = theme.clone();
+    }
+    fn paint(&self, ctx: &mut crate::PaintContext<'_>) {
+        paint_icon(
+            ctx,
+            self.name,
+            self.bounds,
+            ctx.theme.icon.color,
+            ctx.theme.icon.stroke_width,
+        );
+    }
+}
+
+pub(crate) fn paint_icon(
+    ctx: &mut crate::PaintContext<'_>,
+    name: IconName,
+    bounds: Rect,
+    color: Color,
+    stroke: Dip,
+) {
+    let x = bounds.origin.x.0;
+    let y = bounds.origin.y.0;
+    let size = bounds.size.width.0.min(bounds.size.height.0);
+    let point = |px: f32, py: f32| Point {
+        x: Dip(x + px * size),
+        y: Dip(y + py * size),
+    };
+    let line = |ctx: &mut crate::PaintContext<'_>, a: Point, b: Point| {
+        ctx.draw_line(a, b, stroke, color);
+    };
+    match name {
+        IconName::Check => {
+            line(ctx, point(0.18, 0.52), point(0.42, 0.76));
+            line(ctx, point(0.42, 0.76), point(0.84, 0.24));
+        }
+        IconName::Close => {
+            line(ctx, point(0.22, 0.22), point(0.78, 0.78));
+            line(ctx, point(0.78, 0.22), point(0.22, 0.78));
+        }
+        IconName::Menu => {
+            line(ctx, point(0.18, 0.25), point(0.82, 0.25));
+            line(ctx, point(0.18, 0.50), point(0.82, 0.50));
+            line(ctx, point(0.18, 0.75), point(0.82, 0.75));
+        }
+        IconName::Minus => line(ctx, point(0.20, 0.50), point(0.80, 0.50)),
+        IconName::Plus => {
+            line(ctx, point(0.20, 0.50), point(0.80, 0.50));
+            line(ctx, point(0.50, 0.20), point(0.50, 0.80));
+        }
+        IconName::ArrowLeft => {
+            line(ctx, point(0.20, 0.50), point(0.78, 0.50));
+            line(ctx, point(0.20, 0.50), point(0.45, 0.25));
+            line(ctx, point(0.20, 0.50), point(0.45, 0.75));
+        }
+        IconName::ArrowRight => {
+            line(ctx, point(0.22, 0.50), point(0.80, 0.50));
+            line(ctx, point(0.80, 0.50), point(0.55, 0.25));
+            line(ctx, point(0.80, 0.50), point(0.55, 0.75));
+        }
+        IconName::Play => {
+            line(ctx, point(0.35, 0.22), point(0.72, 0.50));
+            line(ctx, point(0.72, 0.50), point(0.35, 0.78));
+            line(ctx, point(0.35, 0.78), point(0.35, 0.22));
+        }
+        IconName::Pause => {
+            line(ctx, point(0.35, 0.22), point(0.35, 0.78));
+            line(ctx, point(0.65, 0.22), point(0.65, 0.78));
+        }
+    }
+}

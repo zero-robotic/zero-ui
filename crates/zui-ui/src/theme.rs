@@ -22,6 +22,8 @@ pub struct Theme {
     pub button: ButtonStyle,
     pub checkbox: CheckboxStyle,
     pub switch: SwitchStyle,
+    pub icon: IconStyle,
+    pub icon_button: IconButtonStyle,
     pub text_input: TextInputStyle,
 }
 
@@ -63,6 +65,24 @@ pub struct SwitchStyle {
     pub knob: Color,
     pub gap: Dip,
     pub font_size: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct IconStyle {
+    pub size: Dip,
+    pub color: Color,
+    pub stroke_width: Dip,
+}
+
+#[derive(Clone, Debug)]
+pub struct IconButtonStyle {
+    pub size: Dip,
+    pub radius: Dip,
+    pub background: Color,
+    pub hover_background: Color,
+    pub foreground: Color,
+    pub icon_size: Dip,
+    pub stroke_width: Dip,
 }
 
 #[derive(Clone, Debug)]
@@ -143,6 +163,25 @@ impl Default for Theme {
                 gap: Dip(8.0),
                 font_size: 3,
             },
+            icon: IconStyle {
+                size: Dip(24.0),
+                color: Color::WHITE,
+                stroke_width: Dip(2.0),
+            },
+            icon_button: IconButtonStyle {
+                size: Dip(40.0),
+                radius: Dip(8.0),
+                background: Color {
+                    r: 0.28,
+                    g: 0.32,
+                    b: 0.4,
+                    a: 1.0,
+                },
+                hover_background: accent,
+                foreground: Color::WHITE,
+                icon_size: Dip(22.0),
+                stroke_width: Dip(2.0),
+            },
             text_input: TextInputStyle {
                 width: Dip(280.0),
                 height: Dip(40.0),
@@ -195,6 +234,8 @@ struct ThemeConfig {
     button: Option<ButtonConfig>,
     checkbox: Option<CheckboxConfig>,
     switch: Option<SwitchConfig>,
+    icon: Option<IconConfig>,
+    icon_button: Option<IconButtonConfig>,
     text_input: Option<TextInputConfig>,
 }
 
@@ -236,6 +277,24 @@ struct SwitchConfig {
     knob: Option<String>,
     gap: Option<f32>,
     font_size: Option<u32>,
+}
+
+#[derive(Default, Deserialize)]
+struct IconConfig {
+    size: Option<f32>,
+    color: Option<String>,
+    stroke_width: Option<f32>,
+}
+
+#[derive(Default, Deserialize)]
+struct IconButtonConfig {
+    size: Option<f32>,
+    radius: Option<f32>,
+    background: Option<String>,
+    hover_background: Option<String>,
+    foreground: Option<String>,
+    icon_size: Option<f32>,
+    stroke_width: Option<f32>,
 }
 
 #[derive(Default, Deserialize)]
@@ -372,6 +431,40 @@ impl ThemeConfig {
             }
             if let Some(value) = config.font_size {
                 theme.switch.font_size = value;
+            }
+        }
+        if let Some(config) = self.icon {
+            if let Some(value) = config.size {
+                theme.icon.size = Dip(value);
+            }
+            if let Some(value) = config.color {
+                theme.icon.color = parse_color(&value)?;
+            }
+            if let Some(value) = config.stroke_width {
+                theme.icon.stroke_width = Dip(value);
+            }
+        }
+        if let Some(config) = self.icon_button {
+            if let Some(value) = config.size {
+                theme.icon_button.size = Dip(value);
+            }
+            if let Some(value) = config.radius {
+                theme.icon_button.radius = Dip(value);
+            }
+            if let Some(value) = config.background {
+                theme.icon_button.background = parse_color(&value)?;
+            }
+            if let Some(value) = config.hover_background {
+                theme.icon_button.hover_background = parse_color(&value)?;
+            }
+            if let Some(value) = config.foreground {
+                theme.icon_button.foreground = parse_color(&value)?;
+            }
+            if let Some(value) = config.icon_size {
+                theme.icon_button.icon_size = Dip(value);
+            }
+            if let Some(value) = config.stroke_width {
+                theme.icon_button.stroke_width = Dip(value);
             }
         }
         Ok(theme)
