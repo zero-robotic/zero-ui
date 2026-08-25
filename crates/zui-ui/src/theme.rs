@@ -74,6 +74,7 @@ pub struct TextInputStyle {
     pub focused_background: Color,
     pub foreground: Color,
     pub caret_color: Color,
+    pub selection_background: Color,
     pub font_size: u32,
 }
 
@@ -160,6 +161,12 @@ impl Default for Theme {
                 },
                 foreground: Color::BLACK,
                 caret_color: Color::BLACK,
+                selection_background: Color {
+                    r: 0.45,
+                    g: 0.65,
+                    b: 0.9,
+                    a: 1.0,
+                },
                 font_size: 3,
             },
         }
@@ -240,6 +247,7 @@ struct TextInputConfig {
     focused_background: Option<String>,
     foreground: Option<String>,
     caret_color: Option<String>,
+    selection_background: Option<String>,
     font_size: Option<u32>,
 }
 
@@ -309,6 +317,9 @@ impl ThemeConfig {
             }
             if let Some(value) = config.caret_color {
                 theme.text_input.caret_color = parse_color(&value)?;
+            }
+            if let Some(value) = config.selection_background {
+                theme.text_input.selection_background = parse_color(&value)?;
             }
             if let Some(value) = config.font_size {
                 theme.text_input.font_size = value;

@@ -46,6 +46,8 @@ pub enum KeyCode {
     ArrowDown,
     ArrowLeft,
     ArrowRight,
+    Home,
+    End,
     Character(char),
     Unknown,
 }

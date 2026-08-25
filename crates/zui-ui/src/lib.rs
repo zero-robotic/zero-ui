@@ -29,7 +29,7 @@ pub use widgets::{Button, Checkbox, Divider, DividerAxis, Switch, Text, TextInpu
 mod tests {
     use super::*;
     use zui_core::{Dip, Point, Rect, Size};
-    use zui_platform::{InputEvent, KeyState, MouseButton};
+    use zui_platform::{InputEvent, KeyCode, KeyState, MouseButton};
 
     #[test]
     fn row_lays_out_children_with_spacing() {
@@ -204,6 +204,32 @@ mod tests {
         input.event(&focus, &mut context);
         input.event(&text, &mut context);
         assert_eq!(input.text(), "a");
+    }
+
+    #[test]
+    fn text_input_replaces_selected_text() {
+        let mut input = TextInput::with_text("hello");
+        input.set_bounds(Rect {
+            origin: Point::default(),
+            size: Size {
+                width: Dip(200.0),
+                height: Dip(32.0),
+            },
+        });
+        input.set_focused(true);
+        let select_all = UiEvent::input(InputEvent::Keyboard {
+            key: KeyCode::Character('a'),
+            state: KeyState::Pressed,
+            modifiers: zui_platform::Modifiers {
+                control: true,
+                ..Default::default()
+            },
+        });
+        let replace = UiEvent::input(InputEvent::Text("x".into()));
+        let mut context = EventContext::new();
+        input.event(&select_all, &mut context);
+        input.event(&replace, &mut context);
+        assert_eq!(input.text(), "x");
     }
 
     #[test]

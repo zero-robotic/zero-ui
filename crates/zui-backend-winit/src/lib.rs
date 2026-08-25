@@ -13,7 +13,8 @@ use winit::window::{Window, WindowAttributes};
 use zui_core::{Dip, Id, Point, ScaleFactor, Size, WindowId};
 use zui_platform::spi::RawWindowHandleProvider;
 use zui_platform::{
-    Backend, Host, InputEvent, KeyCode, KeyState, PlatformError, PlatformEvent, WindowOptions,
+    Backend, Host, InputEvent, KeyCode, KeyState, Modifiers as UiModifiers, PlatformError,
+    PlatformEvent, WindowOptions,
 };
 
 pub struct WinitBackend {
@@ -73,6 +74,7 @@ struct Runner<'a> {
     redraw_at: Option<Instant>,
     ime_composing: bool,
     ime_cursor_position: Option<PhysicalPosition<f64>>,
+    modifiers: UiModifiers,
 }
 
 impl ApplicationHandler for Runner<'_> {
@@ -173,6 +175,16 @@ impl ApplicationHandler for Runner<'_> {
                 });
                 request_redraw
             }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                let state = modifiers.state();
+                self.modifiers = UiModifiers {
+                    shift: state.shift_key(),
+                    control: state.control_key(),
+                    alt: state.alt_key(),
+                    logo: state.super_key(),
+                };
+                None
+            }
             WindowEvent::MouseInput { state, button, .. } => {
                 let id = self.host.as_ref().expect("host exists").id;
                 if matches!(state, ElementState::Pressed) {
@@ -211,7 +223,7 @@ impl ApplicationHandler for Runner<'_> {
                         event: InputEvent::Keyboard {
                             key,
                             state: map_state(event.state),
-                            modifiers: Default::default(),
+                            modifiers: self.modifiers,
                         },
                     })
                 }
@@ -341,6 +353,7 @@ impl WinitBackend {
             redraw_at: None,
             ime_composing: false,
             ime_cursor_position: None,
+            modifiers: UiModifiers::default(),
         };
         event_loop
             .run_app(&mut runner)
@@ -374,6 +387,8 @@ fn map_key(key: &Key) -> KeyCode {
         Key::Named(NamedKey::ArrowDown) => KeyCode::ArrowDown,
         Key::Named(NamedKey::ArrowLeft) => KeyCode::ArrowLeft,
         Key::Named(NamedKey::ArrowRight) => KeyCode::ArrowRight,
+        Key::Named(NamedKey::Home) => KeyCode::Home,
+        Key::Named(NamedKey::End) => KeyCode::End,
         Key::Character(text) => text
             .chars()
             .next()

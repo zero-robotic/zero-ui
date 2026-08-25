@@ -24,4 +24,5 @@ background = "#d1d8e5"
 focused_background = "#f0f4ff"
 foreground = "#111111"
 caret_color = "#111111"
+selection_background = "#8db8ee"
 font_size = 3
