@@ -66,15 +66,19 @@ impl WidgetTree {
     }
     pub fn paint(&mut self, display_list: &mut DisplayList) {
         if self.render_node.is_none() {
-            self.render_node = Some(self.root.build_render_node(&self.theme));
+            let mut node = self.root.build_render_node(&self.theme);
+            node.normalize_local_coordinates();
+            self.render_node = Some(node);
         } else if self.paint_dirty {
             let previous = self.render_node.take();
-            self.render_node = Some(self.root.build_render_node_with_dirty_widgets(
+            let mut node = self.root.build_render_node_with_dirty_widgets(
                 previous.as_ref(),
                 self.dirty_region,
                 &self.dirty_widget_ids,
                 &self.theme,
-            ));
+            );
+            node.normalize_local_coordinates();
+            self.render_node = Some(node);
         }
         self.render_node
             .as_ref()
@@ -82,7 +86,9 @@ impl WidgetTree {
             .flatten_into(display_list);
     }
     pub fn build_render_node(&self) -> zui_render::RenderNode {
-        self.root.build_render_node(&self.theme)
+        let mut node = self.root.build_render_node(&self.theme);
+        node.normalize_local_coordinates();
+        node
     }
     pub fn theme(&self) -> &Theme {
         &self.theme

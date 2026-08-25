@@ -100,7 +100,7 @@ impl Widget for Layout {
         }
     }
     fn build_render_node(&self, theme: &Theme) -> RenderNode {
-        let mut node = RenderNode::new(self.bounds);
+        let mut node = RenderNode::for_widget(self.bounds);
         node.set_source_id(self.id.0);
         for child in &self.children {
             node.add_child(child.build_render_node(theme));
@@ -113,7 +113,7 @@ impl Widget for Layout {
         dirty_region: Option<Rect>,
         theme: &Theme,
     ) -> RenderNode {
-        let mut node = RenderNode::new(self.bounds);
+        let mut node = RenderNode::for_widget(self.bounds);
         node.set_source_id(self.id.0);
         for (index, child) in self.children.iter().enumerate() {
             let cached_child = previous.and_then(|node| node.children.get(index));
@@ -128,7 +128,7 @@ impl Widget for Layout {
         dirty_widgets: &HashSet<WidgetId>,
         theme: &Theme,
     ) -> RenderNode {
-        let mut node = RenderNode::new(self.bounds);
+        let mut node = RenderNode::for_widget(self.bounds);
         node.set_source_id(self.id.0);
         for (index, child) in self.children.iter().enumerate() {
             let cached_child = previous.and_then(|node| node.children.get(index));

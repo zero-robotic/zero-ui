@@ -90,7 +90,7 @@ impl Widget for Align {
         dirty_region: Option<Rect>,
         theme: &Theme,
     ) -> RenderNode {
-        let mut node = RenderNode::new(self.bounds);
+        let mut node = RenderNode::for_widget(self.bounds);
         node.set_source_id(self.id.0);
         let cached_child = previous.and_then(|node| node.children.first());
         node.add_child(
@@ -106,7 +106,7 @@ impl Widget for Align {
         dirty_widgets: &HashSet<WidgetId>,
         theme: &Theme,
     ) -> RenderNode {
-        let mut node = RenderNode::new(self.bounds);
+        let mut node = RenderNode::for_widget(self.bounds);
         node.set_source_id(self.id.0);
         let cached_child = previous.and_then(|node| node.children.first());
         node.add_child(self.child.build_render_node_with_dirty_widgets(

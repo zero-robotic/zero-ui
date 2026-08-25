@@ -28,6 +28,22 @@ pub struct PaintContext<'a> {
     pub theme: &'a Theme,
     origin: Point,
 }
+
+pub(crate) fn build_render_node_from_paint(
+    id: WidgetId,
+    bounds: Rect,
+    theme: &Theme,
+    paint: impl FnOnce(&mut PaintContext<'_>),
+) -> RenderNode {
+    let mut builder = RenderNodeBuilder::for_widget(bounds);
+    builder.source_id(id.0);
+    paint(&mut PaintContext::new_at(
+        builder.commands_mut(),
+        theme,
+        bounds.origin,
+    ));
+    builder.finish()
+}
 impl<'a> PaintContext<'a> {
     pub fn new(display_list: &'a mut DisplayList, theme: &'a Theme) -> Self {
         Self {
@@ -125,15 +141,7 @@ pub trait Widget {
     fn paint(&self, _ctx: &mut PaintContext<'_>) {}
 
     fn build_render_node(&self, theme: &Theme) -> RenderNode {
-        let bounds = self.bounds();
-        let mut builder = RenderNodeBuilder::for_widget(bounds);
-        builder.source_id(self.id().0);
-        self.paint(&mut PaintContext::new_at(
-            builder.commands_mut(),
-            theme,
-            bounds.origin,
-        ));
-        builder.finish()
+        build_render_node_from_paint(self.id(), self.bounds(), theme, |ctx| self.paint(ctx))
     }
 
     fn build_render_node_with_cache(
@@ -143,6 +151,13 @@ pub trait Widget {
         theme: &Theme,
     ) -> RenderNode {
         if let (Some(previous), Some(dirty_region)) = (previous, dirty_region) {
+            // A standalone node does not know its parent's world transform.
+            // Do not make a local-vs-world intersection decision for an
+            // already-normalized cached node; rebuilding it is conservative
+            // and avoids stale rendering in nested layouts.
+            if previous.coordinates_normalized {
+                return self.build_render_node(theme);
+            }
             if !rect_intersects(previous.world_bounds(), dirty_region) {
                 return previous.clone();
             }

@@ -571,6 +571,9 @@ pub struct RenderNode {
     pub opacity: f32,
     pub commands: DisplayList,
     pub children: Vec<Self>,
+    /// `false` while the node still stores an absolute placement transform.
+    /// Cached nodes remain `true` when a parent subtree is rebuilt.
+    pub coordinates_normalized: bool,
     pub dirty_flags: DirtyFlags,
     /// Compatibility view for callers that only need to know if a node is dirty.
     pub dirty: bool,
@@ -587,10 +590,20 @@ impl RenderNode {
             opacity: 1.0,
             commands: DisplayList::new(),
             children: Vec::new(),
+            coordinates_normalized: false,
             dirty_flags: DirtyFlags::LAYOUT.union(DirtyFlags::PAINT),
             dirty: true,
             dirty_region: None,
         }
+    }
+
+    pub fn for_widget(bounds: Rect) -> Self {
+        let mut node = Self::new(Rect {
+            origin: Point::default(),
+            size: bounds.size,
+        });
+        node.transform = Transform::translate(bounds.origin.x, bounds.origin.y);
+        node
     }
 
     pub fn add_child(&mut self, child: Self) {
@@ -646,6 +659,30 @@ impl RenderNode {
 
     pub fn world_bounds(&self) -> Rect {
         self.transform.rect(self.local_bounds)
+    }
+
+    /// Converts a tree whose nodes were arranged in window coordinates into
+    /// local bounds plus transforms relative to the immediate parent.
+    pub fn normalize_local_coordinates(&mut self) {
+        self.normalize_from(Point::default());
+    }
+
+    fn normalize_from(&mut self, parent_world_origin: Point) {
+        let world_origin = if self.coordinates_normalized {
+            Point {
+                x: Dip(parent_world_origin.x.0 + self.transform.matrix[4]),
+                y: Dip(parent_world_origin.y.0 + self.transform.matrix[5]),
+            }
+        } else {
+            let world_origin = self.transform.point(Point::default());
+            self.transform.matrix[4] -= parent_world_origin.x.0;
+            self.transform.matrix[5] -= parent_world_origin.y.0;
+            self.coordinates_normalized = true;
+            world_origin
+        };
+        for child in &mut self.children {
+            child.normalize_from(world_origin);
+        }
     }
 
     pub fn set_clip(&mut self, clip: Option<Rect>) {
@@ -2928,5 +2965,35 @@ mod tests {
         let resolved = resolve_commands(&list);
         assert!(matches!(resolved.first(), Some(PaintCommand::Clip { .. })));
         assert!(matches!(resolved.get(1), Some(PaintCommand::Rect { .. })));
+    }
+
+    #[test]
+    fn normalizing_nested_cached_nodes_is_idempotent() {
+        let mut root = RenderNode::for_widget(Rect {
+            origin: Point {
+                x: Dip(10.0),
+                y: Dip(20.0),
+            },
+            size: zui_core::Size {
+                width: Dip(100.0),
+                height: Dip(80.0),
+            },
+        });
+        root.add_child(RenderNode::for_widget(Rect {
+            origin: Point {
+                x: Dip(30.0),
+                y: Dip(50.0),
+            },
+            size: zui_core::Size {
+                width: Dip(20.0),
+                height: Dip(10.0),
+            },
+        }));
+        root.normalize_local_coordinates();
+        assert_eq!(root.transform.matrix[4], 10.0);
+        assert_eq!(root.children[0].transform.matrix[4], 20.0);
+        let snapshot = root.clone();
+        root.normalize_local_coordinates();
+        assert_eq!(root, snapshot);
     }
 }

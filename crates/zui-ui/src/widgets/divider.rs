@@ -2,7 +2,7 @@ use crate::{
     event::{EventContext, EventResult, UiEvent},
     layout::Constraints,
     theme::Theme,
-    widget::{PaintContext, Widget, WidgetId},
+    widget::{build_render_node_from_paint, PaintContext, Widget, WidgetId},
 };
 use zui_core::{Color, Dip, Rect, Size};
 
@@ -75,6 +75,9 @@ impl Widget for Divider {
     }
     fn event(&mut self, _event: &UiEvent, _ctx: &mut EventContext) -> EventResult {
         EventResult::Ignored
+    }
+    fn build_render_node(&self, theme: &Theme) -> zui_render::RenderNode {
+        build_render_node_from_paint(self.id, self.bounds, theme, |ctx| self.paint(ctx))
     }
     fn paint(&self, ctx: &mut PaintContext<'_>) {
         ctx.fill_rect(self.bounds, self.color);

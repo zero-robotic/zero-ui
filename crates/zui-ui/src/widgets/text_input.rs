@@ -302,6 +302,11 @@ impl Widget for TextInput {
         self.theme = theme.clone();
     }
 
+    fn build_render_node(&self, theme: &Theme) -> zui_render::RenderNode {
+        crate::widget::build_render_node_from_paint(self.id, self.bounds, theme, |ctx| {
+            self.paint(ctx)
+        })
+    }
     fn paint(&self, ctx: &mut crate::PaintContext<'_>) {
         let style = &ctx.theme.text_input;
         let text_origin = Point {
