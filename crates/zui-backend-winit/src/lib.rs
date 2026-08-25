@@ -2,6 +2,7 @@
 
 use std::time::Instant;
 use winit::application::ApplicationHandler;
+use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
@@ -71,6 +72,7 @@ struct Runner<'a> {
     handler: &'a mut dyn FnMut(PlatformEvent) -> Option<Instant>,
     redraw_at: Option<Instant>,
     ime_composing: bool,
+    ime_cursor_position: Option<PhysicalPosition<f64>>,
 }
 
 impl ApplicationHandler for Runner<'_> {
@@ -144,6 +146,21 @@ impl ApplicationHandler for Runner<'_> {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let id = self.host.as_ref().expect("host exists").id;
+                self.ime_cursor_position = Some(position);
+                if !self.ime_composing {
+                    if let Some(host) = self.host.as_ref() {
+                        host.window.set_ime_cursor_area(
+                            PhysicalPosition::new(
+                                position.x.round() as i32,
+                                position.y.round() as i32,
+                            ),
+                            PhysicalSize::new(
+                                1,
+                                (host.scale_factor.0 * 26.0).round().max(1.0) as u32,
+                            ),
+                        );
+                    }
+                }
                 let scale_factor = self.host.as_ref().expect("host exists").scale_factor.0;
                 let request_redraw = (self.handler)(PlatformEvent::Input {
                     window: id,
@@ -158,6 +175,22 @@ impl ApplicationHandler for Runner<'_> {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let id = self.host.as_ref().expect("host exists").id;
+                if matches!(state, ElementState::Pressed) {
+                    if let (Some(host), Some(position)) =
+                        (self.host.as_ref(), self.ime_cursor_position)
+                    {
+                        host.window.set_ime_cursor_area(
+                            PhysicalPosition::new(
+                                position.x.round() as i32,
+                                position.y.round() as i32,
+                            ),
+                            PhysicalSize::new(
+                                1,
+                                (host.scale_factor.0 * 26.0).round().max(1.0) as u32,
+                            ),
+                        );
+                    }
+                }
                 let request_redraw = (self.handler)(PlatformEvent::Input {
                     window: id,
                     event: InputEvent::MouseInput {
@@ -307,6 +340,7 @@ impl WinitBackend {
             handler,
             redraw_at: None,
             ime_composing: false,
+            ime_cursor_position: None,
         };
         event_loop
             .run_app(&mut runner)
