@@ -20,6 +20,7 @@ pub struct Theme {
     pub spacing: Dip,
     pub text: TextStyle,
     pub button: ButtonStyle,
+    pub checkbox: CheckboxStyle,
     pub text_input: TextInputStyle,
 }
 
@@ -36,6 +37,17 @@ pub struct ButtonStyle {
     pub radius: Dip,
     pub background: Color,
     pub hover_background: Color,
+    pub foreground: Color,
+    pub font_size: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct CheckboxStyle {
+    pub size: Dip,
+    pub gap: Dip,
+    pub radius: Dip,
+    pub background: Color,
+    pub checked_background: Color,
     pub foreground: Color,
     pub font_size: u32,
 }
@@ -88,6 +100,20 @@ impl Default for Theme {
                 foreground: Color::WHITE,
                 font_size: 3,
             },
+            checkbox: CheckboxStyle {
+                size: Dip(22.0),
+                gap: Dip(8.0),
+                radius: Dip(4.0),
+                background: Color {
+                    r: 0.82,
+                    g: 0.85,
+                    b: 0.9,
+                    a: 1.0,
+                },
+                checked_background: accent,
+                foreground: Color::WHITE,
+                font_size: 2,
+            },
             text_input: TextInputStyle {
                 width: Dip(280.0),
                 height: Dip(40.0),
@@ -132,6 +158,7 @@ struct ThemeConfig {
     spacing: Option<f32>,
     text: Option<TextConfig>,
     button: Option<ButtonConfig>,
+    checkbox: Option<CheckboxConfig>,
     text_input: Option<TextInputConfig>,
 }
 
@@ -148,6 +175,17 @@ struct ButtonConfig {
     radius: Option<f32>,
     background: Option<String>,
     hover_background: Option<String>,
+    foreground: Option<String>,
+    font_size: Option<u32>,
+}
+
+#[derive(Default, Deserialize)]
+struct CheckboxConfig {
+    size: Option<f32>,
+    gap: Option<f32>,
+    radius: Option<f32>,
+    background: Option<String>,
+    checked_background: Option<String>,
     foreground: Option<String>,
     font_size: Option<u32>,
 }
@@ -233,6 +271,29 @@ impl ThemeConfig {
             }
             if let Some(value) = config.font_size {
                 theme.text_input.font_size = value;
+            }
+        }
+        if let Some(config) = self.checkbox {
+            if let Some(value) = config.size {
+                theme.checkbox.size = Dip(value);
+            }
+            if let Some(value) = config.gap {
+                theme.checkbox.gap = Dip(value);
+            }
+            if let Some(value) = config.radius {
+                theme.checkbox.radius = Dip(value);
+            }
+            if let Some(value) = config.background {
+                theme.checkbox.background = parse_color(&value)?;
+            }
+            if let Some(value) = config.checked_background {
+                theme.checkbox.checked_background = parse_color(&value)?;
+            }
+            if let Some(value) = config.foreground {
+                theme.checkbox.foreground = parse_color(&value)?;
+            }
+            if let Some(value) = config.font_size {
+                theme.checkbox.font_size = value;
             }
         }
         Ok(theme)

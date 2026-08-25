@@ -35,6 +35,7 @@ pub enum EventResult {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionKind {
     Clicked,
+    CheckedChanged,
     FocusRequested,
     TextChanged,
 }

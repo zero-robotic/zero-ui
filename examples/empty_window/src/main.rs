@@ -6,7 +6,8 @@ use zui_core::{Dip, PhysicalSize, Point};
 use zui_platform::{Host, InputEvent, PlatformEvent, WindowOptions};
 use zui_render::{DisplayList, RenderError, Renderer};
 use zui_ui::{
-    Button, ColumnLayout, Constraints, Layout, Padding, Text, TextInput, Theme, UiEvent, WidgetTree,
+    Button, Checkbox, ColumnLayout, Constraints, Layout, Padding, Text, TextInput, Theme, UiEvent,
+    WidgetTree,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,6 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Layout::new(ColumnLayout::new().spacing(Dip(8.0)))
             .child(Text::new("zero-ui controls"))
             .child(Button::new("开始语音"))
+            .child(Checkbox::new("启用语音识别"))
             .child(TextInput::new()),
         Dip(16.0),
     ));
