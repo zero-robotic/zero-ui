@@ -21,6 +21,7 @@ pub struct Theme {
     pub text: TextStyle,
     pub button: ButtonStyle,
     pub checkbox: CheckboxStyle,
+    pub switch: SwitchStyle,
     pub text_input: TextInputStyle,
 }
 
@@ -49,6 +50,18 @@ pub struct CheckboxStyle {
     pub background: Color,
     pub checked_background: Color,
     pub foreground: Color,
+    pub font_size: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct SwitchStyle {
+    pub width: Dip,
+    pub height: Dip,
+    pub knob_size: Dip,
+    pub background: Color,
+    pub checked_background: Color,
+    pub knob: Color,
+    pub gap: Dip,
     pub font_size: u32,
 }
 
@@ -114,6 +127,21 @@ impl Default for Theme {
                 foreground: Color::WHITE,
                 font_size: 2,
             },
+            switch: SwitchStyle {
+                width: Dip(42.0),
+                height: Dip(24.0),
+                knob_size: Dip(18.0),
+                background: Color {
+                    r: 0.45,
+                    g: 0.48,
+                    b: 0.55,
+                    a: 1.0,
+                },
+                checked_background: accent,
+                knob: Color::WHITE,
+                gap: Dip(8.0),
+                font_size: 3,
+            },
             text_input: TextInputStyle {
                 width: Dip(280.0),
                 height: Dip(40.0),
@@ -159,6 +187,7 @@ struct ThemeConfig {
     text: Option<TextConfig>,
     button: Option<ButtonConfig>,
     checkbox: Option<CheckboxConfig>,
+    switch: Option<SwitchConfig>,
     text_input: Option<TextInputConfig>,
 }
 
@@ -187,6 +216,18 @@ struct CheckboxConfig {
     background: Option<String>,
     checked_background: Option<String>,
     foreground: Option<String>,
+    font_size: Option<u32>,
+}
+
+#[derive(Default, Deserialize)]
+struct SwitchConfig {
+    width: Option<f32>,
+    height: Option<f32>,
+    knob_size: Option<f32>,
+    background: Option<String>,
+    checked_background: Option<String>,
+    knob: Option<String>,
+    gap: Option<f32>,
     font_size: Option<u32>,
 }
 
@@ -294,6 +335,32 @@ impl ThemeConfig {
             }
             if let Some(value) = config.font_size {
                 theme.checkbox.font_size = value;
+            }
+        }
+        if let Some(config) = self.switch {
+            if let Some(value) = config.width {
+                theme.switch.width = Dip(value);
+            }
+            if let Some(value) = config.height {
+                theme.switch.height = Dip(value);
+            }
+            if let Some(value) = config.knob_size {
+                theme.switch.knob_size = Dip(value);
+            }
+            if let Some(value) = config.background {
+                theme.switch.background = parse_color(&value)?;
+            }
+            if let Some(value) = config.checked_background {
+                theme.switch.checked_background = parse_color(&value)?;
+            }
+            if let Some(value) = config.knob {
+                theme.switch.knob = parse_color(&value)?;
+            }
+            if let Some(value) = config.gap {
+                theme.switch.gap = Dip(value);
+            }
+            if let Some(value) = config.font_size {
+                theme.switch.font_size = value;
             }
         }
         Ok(theme)

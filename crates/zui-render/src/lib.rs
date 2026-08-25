@@ -84,6 +84,12 @@ pub enum PaintCommand {
         radius: Dip,
         color: Color,
     },
+    Line {
+        start: Point,
+        end: Point,
+        width: Dip,
+        color: Color,
+    },
     Text {
         text: String,
         origin: Point,
@@ -115,6 +121,14 @@ impl DisplayList {
             color,
         });
     }
+    pub fn line(&mut self, start: Point, end: Point, width: Dip, color: Color) {
+        self.commands.push(PaintCommand::Line {
+            start,
+            end,
+            width,
+            color,
+        });
+    }
     pub fn text(&mut self, text: impl Into<String>, origin: Point, color: Color, scale: u32) {
         self.commands.push(PaintCommand::Text {
             text: text.into(),
@@ -133,6 +147,8 @@ struct SurfaceState {
     config: wgpu::SurfaceConfiguration,
     size: PhysicalSize,
     pipeline: wgpu::RenderPipeline,
+    rounded_pipeline: wgpu::RenderPipeline,
+    line_pipeline: wgpu::RenderPipeline,
     canvas: wgpu::Texture,
     canvas_view: wgpu::TextureView,
     blit_pipeline: wgpu::RenderPipeline,
@@ -145,6 +161,27 @@ struct SurfaceState {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct RectVertex {
     position: [f32; 2],
+    color: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct RoundedRectVertex {
+    position: [f32; 2],
+    local: [f32; 2],
+    size: [f32; 2],
+    radius: f32,
+    color: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct LineVertex {
+    position: [f32; 2],
+    point: [f32; 2],
+    start: [f32; 2],
+    end: [f32; 2],
+    width: f32,
     color: [f32; 4],
 }
 
@@ -232,6 +269,8 @@ impl Renderer {
             .ok_or_else(|| RenderError::Surface("adapter cannot present to this surface".into()))?;
         surface.configure(&self.device, &config);
         let pipeline = create_rect_pipeline(&self.device, config.format);
+        let rounded_pipeline = create_rounded_rect_pipeline(&self.device, config.format);
+        let line_pipeline = create_line_pipeline(&self.device, config.format);
         let (canvas, canvas_view) = create_canvas(&self.device, size, config.format);
         let blit_pipeline = create_blit_pipeline(&self.device, config.format);
         let blit_bind_group = create_blit_bind_group(&self.device, &blit_pipeline, &canvas_view);
@@ -242,6 +281,8 @@ impl Renderer {
                 config,
                 size,
                 pipeline,
+                rounded_pipeline,
+                line_pipeline,
                 canvas,
                 canvas_view,
                 blit_pipeline,
@@ -273,6 +314,8 @@ impl Renderer {
             .ok_or_else(|| RenderError::Surface("adapter cannot present to this surface".into()))?;
         surface.configure(&self.device, &config);
         let pipeline = create_rect_pipeline(&self.device, config.format);
+        let rounded_pipeline = create_rounded_rect_pipeline(&self.device, config.format);
+        let line_pipeline = create_line_pipeline(&self.device, config.format);
         let (canvas, canvas_view) = create_canvas(&self.device, size, config.format);
         let blit_pipeline = create_blit_pipeline(&self.device, config.format);
         let blit_bind_group = create_blit_bind_group(&self.device, &blit_pipeline, &canvas_view);
@@ -283,6 +326,8 @@ impl Renderer {
                 config,
                 size,
                 pipeline,
+                rounded_pipeline,
+                line_pipeline,
                 canvas,
                 canvas_view,
                 blit_pipeline,
@@ -371,6 +416,7 @@ impl Renderer {
                 }),
                 PaintCommand::FillRect { .. } => None,
                 PaintCommand::FillRoundedRect { .. } => None,
+                PaintCommand::Line { .. } => None,
                 PaintCommand::Text { .. } => None,
             })
             .unwrap_or(wgpu::Color {
@@ -391,6 +437,8 @@ impl Renderer {
                 height: (state.size.height as f64 / scale).round().max(1.0) as u32,
             };
             let mut rects = Vec::new();
+            let mut rounded_rects = Vec::new();
+            let mut lines = Vec::new();
             for command in display_list.commands() {
                 if let Some(damage) = damage.filter(|_| state.has_contents) {
                     if !command_intersects(command, damage) {
@@ -406,7 +454,21 @@ impl Renderer {
                         radius,
                         color,
                     } => {
-                        append_rounded_rect(&mut rects, *rect, *radius, *color, render_size);
+                        append_rounded_rect(
+                            &mut rounded_rects,
+                            *rect,
+                            *radius,
+                            *color,
+                            render_size,
+                        );
+                    }
+                    PaintCommand::Line {
+                        start,
+                        end,
+                        width,
+                        color,
+                    } => {
+                        append_line(&mut lines, *start, *end, *width, *color, render_size);
                     }
                     PaintCommand::Text {
                         text,
@@ -442,6 +504,30 @@ impl Renderer {
                         }),
                 )
             };
+            let rounded_vertex_buffer = if rounded_rects.is_empty() {
+                None
+            } else {
+                Some(
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("zui-render rounded rectangles"),
+                            contents: bytemuck::cast_slice(&rounded_rects),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        }),
+                )
+            };
+            let line_vertex_buffer = if lines.is_empty() {
+                None
+            } else {
+                Some(
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("zui-render lines"),
+                            contents: bytemuck::cast_slice(&lines),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        }),
+                )
+            };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("zui-render clear pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -473,6 +559,16 @@ impl Renderer {
                     .min(state.size.height as f32)
                     .max(y as f32) as u32;
                 pass.set_scissor_rect(x, y, right.saturating_sub(x), bottom.saturating_sub(y));
+            }
+            if let Some(vertex_buffer) = rounded_vertex_buffer {
+                pass.set_pipeline(&state.rounded_pipeline);
+                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                pass.draw(0..rounded_rects.len() as u32, 0..1);
+            }
+            if let Some(vertex_buffer) = line_vertex_buffer {
+                pass.set_pipeline(&state.line_pipeline);
+                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                pass.draw(0..lines.len() as u32, 0..1);
             }
             if let Some(vertex_buffer) = vertex_buffer {
                 pass.set_pipeline(&state.pipeline);
@@ -663,6 +759,21 @@ fn command_intersects(command: &PaintCommand, damage: Rect) -> bool {
     let bounds = match command {
         PaintCommand::Clear(_) => return true,
         PaintCommand::FillRect { rect, .. } | PaintCommand::FillRoundedRect { rect, .. } => *rect,
+        PaintCommand::Line {
+            start, end, width, ..
+        } => {
+            let half = width.0 / 2.0;
+            Rect {
+                origin: Point {
+                    x: Dip(start.x.0.min(end.x.0) - half),
+                    y: Dip(start.y.0.min(end.y.0) - half),
+                },
+                size: zui_core::Size {
+                    width: Dip((start.x.0.max(end.x.0) - start.x.0.min(end.x.0)) + width.0),
+                    height: Dip((start.y.0.max(end.y.0) - start.y.0.min(end.y.0)) + width.0),
+                },
+            }
+        }
         PaintCommand::Text {
             text,
             origin,
@@ -720,8 +831,64 @@ fn append_rect(vertices: &mut Vec<RectVertex>, rect: Rect, color: Color, size: P
     ]);
 }
 
+fn append_line(
+    vertices: &mut Vec<LineVertex>,
+    start: Point,
+    end: Point,
+    width: Dip,
+    color: Color,
+    size: PhysicalSize,
+) {
+    let dx = end.x.0 - start.x.0;
+    let dy = end.y.0 - start.y.0;
+    let length = (dx * dx + dy * dy).sqrt();
+    if length <= f32::EPSILON || width.0 <= 0.0 {
+        return;
+    }
+    let padding = width.0 / 2.0 + 1.0;
+    let nx = -dy / length * padding;
+    let ny = dx / length * padding;
+    let points = [
+        Point {
+            x: Dip(start.x.0 + nx),
+            y: Dip(start.y.0 + ny),
+        },
+        Point {
+            x: Dip(end.x.0 + nx),
+            y: Dip(end.y.0 + ny),
+        },
+        Point {
+            x: Dip(end.x.0 - nx),
+            y: Dip(end.y.0 - ny),
+        },
+        Point {
+            x: Dip(start.x.0 - nx),
+            y: Dip(start.y.0 - ny),
+        },
+    ];
+    let to_vertex = |point: Point| LineVertex {
+        position: [
+            point.x.0 / size.width.max(1) as f32 * 2.0 - 1.0,
+            1.0 - point.y.0 / size.height.max(1) as f32 * 2.0,
+        ],
+        point: [point.x.0, point.y.0],
+        start: [start.x.0, start.y.0],
+        end: [end.x.0, end.y.0],
+        width: width.0,
+        color: [color.r, color.g, color.b, color.a],
+    };
+    vertices.extend([
+        to_vertex(points[0]),
+        to_vertex(points[1]),
+        to_vertex(points[2]),
+        to_vertex(points[0]),
+        to_vertex(points[2]),
+        to_vertex(points[3]),
+    ]);
+}
+
 fn append_rounded_rect(
-    vertices: &mut Vec<RectVertex>,
+    vertices: &mut Vec<RoundedRectVertex>,
     rect: Rect,
     radius: Dip,
     color: Color,
@@ -729,79 +896,29 @@ fn append_rounded_rect(
 ) {
     let radius = radius
         .0
+        .max(0.0)
         .min(rect.size.width.0 / 2.0)
         .min(rect.size.height.0 / 2.0);
-    if radius <= 0.0 {
-        append_rect(vertices, rect, color, size);
-        return;
-    }
-
-    let center = Point {
-        x: Dip(rect.origin.x.0 + rect.size.width.0 / 2.0),
-        y: Dip(rect.origin.y.0 + rect.size.height.0 / 2.0),
-    };
-    let corners = [
-        (
-            rect.origin.x.0 + radius,
-            rect.origin.y.0 + radius,
-            std::f32::consts::PI,
-        ),
-        (
-            rect.origin.x.0 + rect.size.width.0 - radius,
-            rect.origin.y.0 + radius,
-            1.5 * std::f32::consts::PI,
-        ),
-        (
-            rect.origin.x.0 + rect.size.width.0 - radius,
-            rect.origin.y.0 + rect.size.height.0 - radius,
-            0.0,
-        ),
-        (
-            rect.origin.x.0 + radius,
-            rect.origin.y.0 + rect.size.height.0 - radius,
-            0.5 * std::f32::consts::PI,
-        ),
-    ];
-    let mut points = Vec::with_capacity(20);
-    for (cx, cy, start) in corners {
-        for step in 0..=4 {
-            let angle = start + step as f32 * std::f32::consts::FRAC_PI_2 / 4.0;
-            points.push(Point {
-                x: Dip(cx + radius * angle.cos()),
-                y: Dip(cy + radius * angle.sin()),
-            });
-        }
-    }
+    let left = rect.origin.x.0 / size.width.max(1) as f32 * 2.0 - 1.0;
+    let right = (rect.origin.x.0 + rect.size.width.0) / size.width.max(1) as f32 * 2.0 - 1.0;
+    let top = 1.0 - rect.origin.y.0 / size.height.max(1) as f32 * 2.0;
+    let bottom = 1.0 - (rect.origin.y.0 + rect.size.height.0) / size.height.max(1) as f32 * 2.0;
     let color = [color.r, color.g, color.b, color.a];
-    for pair in points.windows(2) {
-        append_triangle(vertices, center, pair[0], pair[1], color, size);
-    }
-    append_triangle(
-        vertices,
-        center,
-        *points.last().unwrap(),
-        points[0],
-        color,
-        size,
-    );
-}
-
-fn append_triangle(
-    vertices: &mut Vec<RectVertex>,
-    a: Point,
-    b: Point,
-    c: Point,
-    color: [f32; 4],
-    size: PhysicalSize,
-) {
-    let to_vertex = |point: Point| RectVertex {
-        position: [
-            point.x.0 / size.width.max(1) as f32 * 2.0 - 1.0,
-            1.0 - point.y.0 / size.height.max(1) as f32 * 2.0,
-        ],
+    let make_vertex = |position: [f32; 2], local: [f32; 2]| RoundedRectVertex {
+        position,
+        local,
+        size: [rect.size.width.0, rect.size.height.0],
+        radius,
         color,
     };
-    vertices.extend([to_vertex(a), to_vertex(b), to_vertex(c)]);
+    vertices.extend([
+        make_vertex([left, top], [0.0, 0.0]),
+        make_vertex([right, top], [rect.size.width.0, 0.0]),
+        make_vertex([right, bottom], [rect.size.width.0, rect.size.height.0]),
+        make_vertex([left, top], [0.0, 0.0]),
+        make_vertex([right, bottom], [rect.size.width.0, rect.size.height.0]),
+        make_vertex([left, bottom], [0.0, rect.size.height.0]),
+    ]);
 }
 
 fn glyph_rows(character: char) -> [u8; 7] {
@@ -1094,6 +1211,186 @@ fn create_rect_pipeline(
     })
 }
 
+fn create_rounded_rect_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("zui-render rounded rectangle SDF shader"),
+        source: wgpu::ShaderSource::Wgsl(
+            r#"
+            struct VertexOutput {
+                @builtin(position) position: vec4<f32>,
+                @location(0) local: vec2<f32>,
+                @location(1) size: vec2<f32>,
+                @location(2) radius: f32,
+                @location(3) color: vec4<f32>,
+            };
+
+            @vertex
+            fn vs(
+                @location(0) position: vec2<f32>,
+                @location(1) local: vec2<f32>,
+                @location(2) size: vec2<f32>,
+                @location(3) radius: f32,
+                @location(4) color: vec4<f32>,
+            ) -> VertexOutput {
+                var output: VertexOutput;
+                output.position = vec4<f32>(position, 0.0, 1.0);
+                output.local = local;
+                output.size = size;
+                output.radius = radius;
+                output.color = color;
+                return output;
+            }
+
+            @fragment
+            fn fs(input: VertexOutput) -> @location(0) vec4<f32> {
+                let half_size = input.size * 0.5;
+                let point = input.local - half_size;
+                let rounded = half_size - vec2<f32>(input.radius, input.radius);
+                let q = abs(point) - rounded;
+                let distance = length(max(q, vec2<f32>(0.0, 0.0)))
+                    + min(max(q.x, q.y), 0.0)
+                    - input.radius;
+                let antialias = max(fwidth(distance), 0.0001);
+                let alpha = 1.0 - smoothstep(-antialias, antialias, distance);
+                return vec4<f32>(input.color.rgb, input.color.a * alpha);
+            }
+        "#
+            .into(),
+        ),
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("zui-render rounded rectangle SDF pipeline"),
+        layout: None,
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<RoundedRectVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![
+                    0 => Float32x2,
+                    1 => Float32x2,
+                    2 => Float32x2,
+                    3 => Float32,
+                    4 => Float32x4,
+                ],
+            }],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn create_line_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("zui-render antialiased line shader"),
+        source: wgpu::ShaderSource::Wgsl(
+            r#"
+            struct VertexOutput {
+                @builtin(position) position: vec4<f32>,
+                @location(0) point: vec2<f32>,
+                @location(1) start: vec2<f32>,
+                @location(2) end: vec2<f32>,
+                @location(3) width: f32,
+                @location(4) color: vec4<f32>,
+            };
+
+            @vertex
+            fn vs(
+                @location(0) position: vec2<f32>,
+                @location(1) point: vec2<f32>,
+                @location(2) start: vec2<f32>,
+                @location(3) end: vec2<f32>,
+                @location(4) width: f32,
+                @location(5) color: vec4<f32>,
+            ) -> VertexOutput {
+                var output: VertexOutput;
+                output.position = vec4<f32>(position, 0.0, 1.0);
+                output.point = point;
+                output.start = start;
+                output.end = end;
+                output.width = width;
+                output.color = color;
+                return output;
+            }
+
+            @fragment
+            fn fs(input: VertexOutput) -> @location(0) vec4<f32> {
+                let segment = input.end - input.start;
+                let segment_length = max(dot(segment, segment), 0.0001);
+                let projection = clamp(
+                    dot(input.point - input.start, segment) / segment_length,
+                    0.0,
+                    1.0,
+                );
+                let nearest = input.start + segment * projection;
+                let line_distance = distance(input.point, nearest) - input.width * 0.5;
+                let antialias = max(fwidth(line_distance), 0.0001);
+                let alpha = 1.0 - smoothstep(-antialias, antialias, line_distance);
+                return vec4<f32>(input.color.rgb, input.color.a * alpha);
+            }
+        "#
+            .into(),
+        ),
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("zui-render antialiased line pipeline"),
+        layout: None,
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<LineVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![
+                    0 => Float32x2,
+                    1 => Float32x2,
+                    2 => Float32x2,
+                    3 => Float32x2,
+                    4 => Float32,
+                    5 => Float32x4,
+                ],
+            }],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1130,5 +1427,7 @@ mod tests {
     fn noop_device_can_create_gpu_objects() {
         let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let _encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let _pipeline = create_rounded_rect_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let _line_pipeline = create_line_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
     }
 }

@@ -6,7 +6,7 @@ use crate::{
 };
 use zui_core::{Dip, Point, Rect, Size};
 
-pub struct Checkbox {
+pub struct Switch {
     id: WidgetId,
     label: String,
     checked: bool,
@@ -14,7 +14,7 @@ pub struct Checkbox {
     theme: Theme,
 }
 
-impl Checkbox {
+impl Switch {
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             id: WidgetId::new(),
@@ -43,7 +43,7 @@ impl Checkbox {
     }
 }
 
-impl Widget for Checkbox {
+impl Widget for Switch {
     fn id(&self) -> WidgetId {
         self.id
     }
@@ -57,11 +57,11 @@ impl Widget for Checkbox {
     }
 
     fn measure(&mut self, constraints: Constraints) -> Size {
-        let style = &self.theme.checkbox;
+        let style = &self.theme.switch;
         let label_width = zui_render::measure_text(&self.label, style.font_size).0;
         let size = constraints.constrain(Size {
-            width: Dip(style.size.0 + style.gap.0 + label_width),
-            height: Dip(style.size.0.max(style.font_size as f32 * 7.0)),
+            width: Dip(style.width.0 + style.gap.0 + label_width),
+            height: Dip(style.height.0.max(style.font_size as f32 * 7.0)),
         });
         self.bounds.size = size;
         size
@@ -75,7 +75,7 @@ impl Widget for Checkbox {
         {
             self.checked = !self.checked;
             ctx.emit(self.id, ActionKind::CheckedChanged);
-            ctx.invalidate(self.bounds);
+            ctx.request_full_redraw();
             EventResult::RequestRedraw
         } else {
             EventResult::Ignored
@@ -87,64 +87,50 @@ impl Widget for Checkbox {
     }
 
     fn paint(&self, ctx: &mut crate::PaintContext<'_>) {
-        let style = &ctx.theme.checkbox;
-        let box_rect = Rect {
-            origin: self.bounds.origin,
+        let style = &ctx.theme.switch;
+        let track = Rect {
+            origin: Point {
+                x: self.bounds.origin.x,
+                y: Dip(self.bounds.origin.y.0 + (self.bounds.size.height.0 - style.height.0) / 2.0),
+            },
             size: Size {
-                width: style.size,
-                height: style.size,
+                width: style.width,
+                height: style.height,
             },
         };
         ctx.fill_rounded_rect(
-            box_rect,
-            style.radius,
+            track,
+            Dip(style.height.0 / 2.0),
             if self.checked {
                 style.checked_background
             } else {
                 style.background
             },
         );
-        if self.checked {
-            let x = box_rect.origin.x.0;
-            let y = box_rect.origin.y.0;
-            let s = style.size.0;
-            let left = Point {
-                x: Dip(x + s * 0.23),
-                y: Dip(y + s * 0.52),
-            };
-            let middle = Point {
-                x: Dip(x + s * 0.43),
-                y: Dip(y + s * 0.72),
-            };
-            let right = Point {
-                x: Dip(x + s * 0.80),
-                y: Dip(y + s * 0.28),
-            };
-            let stroke = Dip((s * 0.10).max(1.5));
-            let cap_radius = Dip(stroke.0 / 2.0);
-            for point in [left, middle, right] {
-                ctx.fill_rounded_rect(
-                    Rect {
-                        origin: Point {
-                            x: Dip(point.x.0 - cap_radius.0),
-                            y: Dip(point.y.0 - cap_radius.0),
-                        },
-                        size: Size {
-                            width: stroke,
-                            height: stroke,
-                        },
-                    },
-                    cap_radius,
-                    style.foreground,
-                );
-            }
-            ctx.draw_line(left, middle, stroke, style.foreground);
-            ctx.draw_line(middle, right, stroke, style.foreground);
-        }
+        let knob_margin = (style.height.0 - style.knob_size.0) / 2.0;
+        let knob_x = if self.checked {
+            style.width.0 - style.knob_size.0 - knob_margin
+        } else {
+            knob_margin
+        };
+        ctx.fill_rounded_rect(
+            Rect {
+                origin: Point {
+                    x: Dip(track.origin.x.0 + knob_x),
+                    y: Dip(track.origin.y.0 + (style.height.0 - style.knob_size.0) / 2.0),
+                },
+                size: Size {
+                    width: style.knob_size,
+                    height: style.knob_size,
+                },
+            },
+            Dip(style.knob_size.0 / 2.0),
+            style.knob,
+        );
         ctx.draw_text(
             &self.label,
             Point {
-                x: Dip(box_rect.origin.x.0 + style.size.0 + style.gap.0),
+                x: Dip(track.origin.x.0 + style.width.0 + style.gap.0),
                 y: Dip(self.bounds.origin.y.0
                     + (self.bounds.size.height.0 - style.font_size as f32 * 7.0) / 2.0),
             },

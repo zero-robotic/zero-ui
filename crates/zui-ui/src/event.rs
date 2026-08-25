@@ -50,6 +50,7 @@ pub struct Action {
 pub struct EventContext {
     actions: Vec<Action>,
     dirty_region: Option<zui_core::Rect>,
+    full_redraw: bool,
 }
 
 impl EventContext {
@@ -70,6 +71,12 @@ impl EventContext {
             Some(current) => union_rect(current, region),
             None => region,
         });
+    }
+    pub fn request_full_redraw(&mut self) {
+        self.full_redraw = true;
+    }
+    pub fn requires_full_redraw(&self) -> bool {
+        self.full_redraw
     }
     pub fn take_dirty_region(&mut self) -> Option<zui_core::Rect> {
         self.dirty_region.take()

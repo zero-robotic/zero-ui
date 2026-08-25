@@ -44,7 +44,12 @@ impl WidgetTree {
         let mut ctx = EventContext::new();
         let result = self.root.event(event, &mut ctx);
         if result == EventResult::RequestRedraw {
-            self.request_paint(ctx.take_dirty_region());
+            let region = if ctx.requires_full_redraw() {
+                None
+            } else {
+                ctx.take_dirty_region()
+            };
+            self.request_paint(region);
         }
         (result, ctx.take_actions())
     }

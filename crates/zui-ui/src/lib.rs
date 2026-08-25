@@ -18,10 +18,12 @@ pub use layouts::{
     Padding, RowLayout, SizedBox, Spacer, StackLayout, WrapLayout,
 };
 pub use semantics::{SemanticRole, SemanticsNode};
-pub use theme::{ButtonStyle, CheckboxStyle, TextInputStyle, TextStyle, Theme, ThemeToken};
+pub use theme::{
+    ButtonStyle, CheckboxStyle, SwitchStyle, TextInputStyle, TextStyle, Theme, ThemeToken,
+};
 pub use tree::WidgetTree;
 pub use widget::{PaintContext, Widget, WidgetId};
-pub use widgets::{Button, Checkbox, Divider, DividerAxis, Text, TextInput};
+pub use widgets::{Button, Checkbox, Divider, DividerAxis, Switch, Text, TextInput};
 
 #[cfg(test)]
 mod tests {
@@ -105,6 +107,40 @@ mod tests {
             EventResult::RequestRedraw
         );
         assert!(checkbox.is_checked());
+        assert_eq!(context.actions()[0].kind, ActionKind::CheckedChanged);
+    }
+
+    #[test]
+    fn switch_toggles_and_emits_checked_changed_action() {
+        let mut switch = Switch::new("Automatic");
+        switch.set_bounds(Rect {
+            origin: Point {
+                x: Dip(10.0),
+                y: Dip(10.0),
+            },
+            size: Size {
+                width: Dip(140.0),
+                height: Dip(30.0),
+            },
+        });
+        let event = UiEvent::pointer(
+            None,
+            Point {
+                x: Dip(20.0),
+                y: Dip(20.0),
+            },
+            InputEvent::MouseInput {
+                button: MouseButton::Left,
+                state: KeyState::Pressed,
+            },
+        );
+        let mut context = EventContext::new();
+
+        assert_eq!(
+            switch.event(&event, &mut context),
+            EventResult::RequestRedraw
+        );
+        assert!(switch.is_checked());
         assert_eq!(context.actions()[0].kind, ActionKind::CheckedChanged);
     }
 
