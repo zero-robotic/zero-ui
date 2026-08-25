@@ -4,7 +4,7 @@ use crate::{
     event::{Action, EventContext, EventResult, UiEvent},
     layout::Constraints,
     theme::Theme,
-    widget::Widget,
+    widget::{RenderBuildContext, Widget},
 };
 use zui_core::Rect;
 use zui_render::{DirtyRegionSet, RenderNodeIndex};
@@ -50,6 +50,7 @@ impl WidgetTree {
         self.render_node = None;
         self.render_index = RenderNodeIndex::default();
         self.dirty_regions.clear();
+        self.full_rebuild = true;
         size
     }
     pub fn event(&mut self, event: &UiEvent) -> (EventResult, Vec<Action>) {
@@ -71,19 +72,27 @@ impl WidgetTree {
     }
     pub fn render_node_cached(&mut self) -> &zui_render::RenderNode {
         if self.render_node.is_none() {
-            let mut node = self.root.build_render_node(&self.theme);
+            let mut context = RenderBuildContext::new(None, &[], true, &self.theme);
+            let mut node = self.root.build_render_node_incremental(&mut context);
             node.normalize_local_coordinates();
             self.render_index = node.build_index();
             self.render_node = Some(node);
         } else if self.paint_dirty {
             let previous = self.render_node.take();
-            let mut node = self.root.build_render_node(&self.theme);
-            node.normalize_local_coordinates();
-            node = node.reuse_clean_subtrees(
+            let dirty_paths = self
+                .dirty_widget_ids
+                .iter()
+                .filter_map(|source_id| self.render_index.path_for(*source_id))
+                .map(|path| path.to_vec())
+                .collect::<Vec<_>>();
+            let mut context = RenderBuildContext::new(
                 previous.as_ref(),
-                &self.dirty_widget_ids,
+                &dirty_paths,
                 self.full_rebuild,
+                &self.theme,
             );
+            let mut node = self.root.build_render_node_incremental(&mut context);
+            node.normalize_local_coordinates();
             self.render_index = node.build_index();
             self.render_node = Some(node);
         }

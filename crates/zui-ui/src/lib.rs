@@ -23,13 +23,14 @@ pub use theme::{
     Theme, ThemeToken,
 };
 pub use tree::WidgetTree;
-pub use widget::{PaintContext, Widget, WidgetId};
+pub use widget::{PaintContext, RenderBuildContext, Widget, WidgetId};
 pub use widgets::{
     Button, Checkbox, Divider, DividerAxis, Icon, IconButton, IconName, Switch, Text, TextInput,
 };
 pub use zui_render::{
-    DirtyFlags, DirtyRegionSet, IconPath, ImageId, ImageResource, LineSegment, RenderNode,
-    RenderNodeBuilder, RenderNodeIndex, ResourceCache, Transform,
+    ClipShape, DirtyFlags, DirtyRegionSet, DirtyState, IconPath, ImageId, ImageResource,
+    LineSegment, RenderNode, RenderNodeBuilder, RenderNodeIndex, ResourceCache, ResourceManager,
+    Transform,
 };
 
 #[cfg(test)]

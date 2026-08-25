@@ -2,7 +2,7 @@ use crate::{
     event::{EventContext, EventResult, UiEvent},
     layout::Constraints,
     theme::Theme,
-    widget::{Widget, WidgetId},
+    widget::{RenderBuildContext, Widget, WidgetId},
 };
 use zui_core::{Rect, Size};
 use zui_render::RenderNode;
@@ -97,6 +97,20 @@ impl Widget for Layout {
         node.set_source_id(self.id.0);
         for child in &self.children {
             node.add_child(child.build_render_node(theme));
+        }
+        node
+    }
+    fn build_render_node_incremental(&self, context: &mut RenderBuildContext<'_>) -> RenderNode {
+        if !context.subtree_is_dirty(self.id) {
+            if let Some(previous) = context.previous() {
+                return previous.clone();
+            }
+        }
+        let mut node = RenderNode::for_widget(self.bounds);
+        node.set_source_id(self.id.0);
+        for (index, child) in self.children.iter().enumerate() {
+            let mut child_context = context.child(index);
+            node.add_child(child.build_render_node_incremental(&mut child_context));
         }
         node
     }

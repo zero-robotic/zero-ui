@@ -2,7 +2,7 @@ use crate::{
     event::{EventContext, EventResult, UiEvent},
     layout::Constraints,
     theme::Theme,
-    widget::{Widget, WidgetId},
+    widget::{RenderBuildContext, Widget, WidgetId},
 };
 use zui_core::{Dip, Point, Rect, Size};
 use zui_render::RenderNode;
@@ -83,6 +83,18 @@ impl Widget for Align {
         let mut node = RenderNode::for_widget(self.bounds);
         node.set_source_id(self.id.0);
         node.add_child(self.child.build_render_node(theme));
+        node
+    }
+    fn build_render_node_incremental(&self, context: &mut RenderBuildContext<'_>) -> RenderNode {
+        if !context.subtree_is_dirty(self.id) {
+            if let Some(previous) = context.previous() {
+                return previous.clone();
+            }
+        }
+        let mut node = RenderNode::for_widget(self.bounds);
+        node.set_source_id(self.id.0);
+        let mut child_context = context.child(0);
+        node.add_child(self.child.build_render_node_incremental(&mut child_context));
         node
     }
     fn set_theme(&mut self, theme: &Theme) {

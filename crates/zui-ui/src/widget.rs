@@ -2,7 +2,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use zui_core::{Color, Point, Rect, Size};
-use zui_render::{IconPath, ImageId, PaintCommand, RenderNode, RenderNodeBuilder, Transform};
+use zui_render::{
+    ClipShape, IconPath, ImageId, PaintCommand, RenderNode, RenderNodeBuilder, Transform,
+};
 
 use crate::{
     event::{EventContext, EventResult, UiEvent},
@@ -26,6 +28,56 @@ pub struct PaintContext<'a> {
     pub now: Instant,
     pub theme: &'a Theme,
     origin: Point,
+}
+
+pub struct RenderBuildContext<'a> {
+    previous: Option<&'a RenderNode>,
+    dirty_paths: Vec<Vec<usize>>,
+    force_rebuild: bool,
+    theme: &'a Theme,
+}
+
+impl<'a> RenderBuildContext<'a> {
+    pub fn new(
+        previous: Option<&'a RenderNode>,
+        dirty_paths: &[Vec<usize>],
+        force_rebuild: bool,
+        theme: &'a Theme,
+    ) -> Self {
+        Self {
+            previous,
+            dirty_paths: dirty_paths.to_vec(),
+            force_rebuild,
+            theme,
+        }
+    }
+
+    pub fn theme(&self) -> &'a Theme {
+        self.theme
+    }
+
+    pub fn previous(&self) -> Option<&'a RenderNode> {
+        self.previous
+    }
+
+    pub fn child(&self, index: usize) -> Self {
+        Self {
+            previous: self.previous.and_then(|node| node.children.get(index)),
+            dirty_paths: self
+                .dirty_paths
+                .iter()
+                .filter_map(|path| {
+                    (path.first().copied() == Some(index)).then(|| path[1..].to_vec())
+                })
+                .collect(),
+            force_rebuild: self.force_rebuild,
+            theme: self.theme,
+        }
+    }
+
+    pub fn subtree_is_dirty(&self, _id: WidgetId) -> bool {
+        self.force_rebuild || !self.dirty_paths.is_empty()
+    }
 }
 
 pub(crate) fn build_render_node_with_commands(
@@ -127,7 +179,29 @@ impl<'a> PaintContext<'a> {
     }
     pub fn push_clip(&mut self, rect: Rect) {
         self.commands.push(PaintCommand::Clip {
-            rect: self.local_rect(rect),
+            shape: ClipShape::Rect(self.local_rect(rect)),
+        });
+    }
+    pub fn push_rounded_clip(&mut self, rect: Rect, radius: zui_core::Dip) {
+        self.commands.push(PaintCommand::Clip {
+            shape: ClipShape::RoundedRect {
+                rect: self.local_rect(rect),
+                radius,
+            },
+        });
+    }
+    pub fn push_path_clip(&mut self, path: IconPath) {
+        let path = IconPath::new(
+            path.segments
+                .into_iter()
+                .map(|segment| zui_render::LineSegment {
+                    start: self.local_point(segment.start),
+                    end: self.local_point(segment.end),
+                })
+                .collect::<Vec<_>>(),
+        );
+        self.commands.push(PaintCommand::Clip {
+            shape: ClipShape::Path { path },
         });
     }
     pub fn push_transform(&mut self, transform: Transform) {
@@ -167,4 +241,12 @@ pub trait Widget {
     }
     fn set_theme(&mut self, _theme: &Theme) {}
     fn build_render_node(&self, theme: &Theme) -> RenderNode;
+    fn build_render_node_incremental(&self, context: &mut RenderBuildContext<'_>) -> RenderNode {
+        if !context.subtree_is_dirty(self.id()) {
+            if let Some(previous) = context.previous() {
+                return previous.clone();
+            }
+        }
+        self.build_render_node(context.theme())
+    }
 }

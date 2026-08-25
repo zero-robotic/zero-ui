@@ -110,6 +110,12 @@ impl ApplicationHandler for Runner<'_> {
         let host = self.host.as_ref().expect("host was just installed");
         (self.handler)(PlatformEvent::WindowCreated(id));
         (self.on_window)(host);
+        // The application callback may attach a renderer and request the
+        // first frame. Keep a backend-owned request as well: on some window
+        // systems a redraw requested while the window is being resumed can be
+        // coalesced before the callback returns, leaving the window blank
+        // until the first input event.
+        host.window.request_redraw();
     }
 
     fn window_event(
