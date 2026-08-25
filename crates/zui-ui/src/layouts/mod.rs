@@ -5,6 +5,7 @@ use crate::{
     widget::{PaintContext, Widget, WidgetId},
 };
 use zui_core::{Rect, Size};
+use zui_render::RenderNode;
 
 mod align;
 mod column;
@@ -95,6 +96,26 @@ impl Widget for Layout {
         for child in &self.children {
             child.paint(ctx);
         }
+    }
+    fn build_render_node(&self, theme: &Theme) -> RenderNode {
+        let mut node = RenderNode::new(self.bounds);
+        for child in &self.children {
+            node.add_child(child.build_render_node(theme));
+        }
+        node
+    }
+    fn build_render_node_with_cache(
+        &self,
+        previous: Option<&RenderNode>,
+        dirty_region: Option<Rect>,
+        theme: &Theme,
+    ) -> RenderNode {
+        let mut node = RenderNode::new(self.bounds);
+        for (index, child) in self.children.iter().enumerate() {
+            let cached_child = previous.and_then(|node| node.children.get(index));
+            node.add_child(child.build_render_node_with_cache(cached_child, dirty_region, theme));
+        }
+        node
     }
     fn set_theme(&mut self, theme: &Theme) {
         for child in &mut self.children {

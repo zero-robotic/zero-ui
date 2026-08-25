@@ -5,6 +5,7 @@ use crate::{
     widget::{Widget, WidgetId},
 };
 use zui_core::{Color, Dip, Point, Rect, Size};
+use zui_render::{IconPath, LineSegment};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IconName {
@@ -90,46 +91,48 @@ pub(crate) fn paint_icon(
         x: Dip(x + px * size),
         y: Dip(y + py * size),
     };
-    let line = |ctx: &mut crate::PaintContext<'_>, a: Point, b: Point| {
-        ctx.draw_line(a, b, stroke, color);
+    let mut segments = Vec::new();
+    let mut line = |a: Point, b: Point| {
+        segments.push(LineSegment { start: a, end: b });
     };
     match name {
         IconName::Check => {
-            line(ctx, point(0.18, 0.52), point(0.42, 0.76));
-            line(ctx, point(0.42, 0.76), point(0.84, 0.24));
+            line(point(0.18, 0.52), point(0.42, 0.76));
+            line(point(0.42, 0.76), point(0.84, 0.24));
         }
         IconName::Close => {
-            line(ctx, point(0.22, 0.22), point(0.78, 0.78));
-            line(ctx, point(0.78, 0.22), point(0.22, 0.78));
+            line(point(0.22, 0.22), point(0.78, 0.78));
+            line(point(0.78, 0.22), point(0.22, 0.78));
         }
         IconName::Menu => {
-            line(ctx, point(0.18, 0.25), point(0.82, 0.25));
-            line(ctx, point(0.18, 0.50), point(0.82, 0.50));
-            line(ctx, point(0.18, 0.75), point(0.82, 0.75));
+            line(point(0.18, 0.25), point(0.82, 0.25));
+            line(point(0.18, 0.50), point(0.82, 0.50));
+            line(point(0.18, 0.75), point(0.82, 0.75));
         }
-        IconName::Minus => line(ctx, point(0.20, 0.50), point(0.80, 0.50)),
+        IconName::Minus => line(point(0.20, 0.50), point(0.80, 0.50)),
         IconName::Plus => {
-            line(ctx, point(0.20, 0.50), point(0.80, 0.50));
-            line(ctx, point(0.50, 0.20), point(0.50, 0.80));
+            line(point(0.20, 0.50), point(0.80, 0.50));
+            line(point(0.50, 0.20), point(0.50, 0.80));
         }
         IconName::ArrowLeft => {
-            line(ctx, point(0.20, 0.50), point(0.78, 0.50));
-            line(ctx, point(0.20, 0.50), point(0.45, 0.25));
-            line(ctx, point(0.20, 0.50), point(0.45, 0.75));
+            line(point(0.20, 0.50), point(0.78, 0.50));
+            line(point(0.20, 0.50), point(0.45, 0.25));
+            line(point(0.20, 0.50), point(0.45, 0.75));
         }
         IconName::ArrowRight => {
-            line(ctx, point(0.22, 0.50), point(0.80, 0.50));
-            line(ctx, point(0.80, 0.50), point(0.55, 0.25));
-            line(ctx, point(0.80, 0.50), point(0.55, 0.75));
+            line(point(0.22, 0.50), point(0.80, 0.50));
+            line(point(0.80, 0.50), point(0.55, 0.25));
+            line(point(0.80, 0.50), point(0.55, 0.75));
         }
         IconName::Play => {
-            line(ctx, point(0.35, 0.22), point(0.72, 0.50));
-            line(ctx, point(0.72, 0.50), point(0.35, 0.78));
-            line(ctx, point(0.35, 0.78), point(0.35, 0.22));
+            line(point(0.35, 0.22), point(0.72, 0.50));
+            line(point(0.72, 0.50), point(0.35, 0.78));
+            line(point(0.35, 0.78), point(0.35, 0.22));
         }
         IconName::Pause => {
-            line(ctx, point(0.35, 0.22), point(0.35, 0.78));
-            line(ctx, point(0.65, 0.22), point(0.65, 0.78));
+            line(point(0.35, 0.22), point(0.35, 0.78));
+            line(point(0.65, 0.22), point(0.65, 0.78));
         }
     }
+    ctx.draw_icon(bounds, IconPath::new(segments), color, stroke);
 }

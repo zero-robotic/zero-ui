@@ -2,7 +2,7 @@ use crate::{
     event::{Action, EventContext, EventResult, UiEvent},
     layout::Constraints,
     theme::Theme,
-    widget::{PaintContext, Widget},
+    widget::Widget,
 };
 use zui_core::Rect;
 use zui_render::DisplayList;
@@ -10,6 +10,7 @@ use zui_render::DisplayList;
 pub struct WidgetTree {
     root: Box<dyn Widget>,
     theme: Theme,
+    render_node: Option<zui_render::RenderNode>,
     layout_dirty: bool,
     paint_dirty: bool,
     dirty_region: Option<Rect>,
@@ -20,6 +21,7 @@ impl WidgetTree {
         Self {
             root: Box::new(root),
             theme: Theme::default(),
+            render_node: None,
             layout_dirty: true,
             paint_dirty: true,
             dirty_region: None,
@@ -37,6 +39,7 @@ impl WidgetTree {
         self.arrange(zui_core::Rect { origin, size });
         self.layout_dirty = false;
         self.paint_dirty = true;
+        self.render_node = None;
         self.dirty_region = None;
         size
     }
@@ -53,9 +56,24 @@ impl WidgetTree {
         }
         (result, ctx.take_actions())
     }
-    pub fn paint(&self, display_list: &mut DisplayList) {
-        self.root
-            .paint(&mut PaintContext::new(display_list, &self.theme));
+    pub fn paint(&mut self, display_list: &mut DisplayList) {
+        if self.render_node.is_none() {
+            self.render_node = Some(self.root.build_render_node(&self.theme));
+        } else if self.paint_dirty {
+            let previous = self.render_node.take();
+            self.render_node = Some(self.root.build_render_node_with_cache(
+                previous.as_ref(),
+                self.dirty_region,
+                &self.theme,
+            ));
+        }
+        self.render_node
+            .as_ref()
+            .expect("render node was just built")
+            .flatten_into(display_list);
+    }
+    pub fn build_render_node(&self) -> zui_render::RenderNode {
+        self.root.build_render_node(&self.theme)
     }
     pub fn theme(&self) -> &Theme {
         &self.theme
@@ -68,6 +86,7 @@ impl WidgetTree {
     pub fn request_layout(&mut self) {
         self.layout_dirty = true;
         self.paint_dirty = true;
+        self.render_node = None;
         self.dirty_region = None;
     }
     pub fn request_paint(&mut self, region: Option<Rect>) {

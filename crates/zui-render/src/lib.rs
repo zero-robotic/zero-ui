@@ -56,6 +56,8 @@ pub enum RenderError {
     Surface(String),
     SurfaceNotAttached(WindowId),
     SurfaceLost,
+    InvalidCommand(String),
+    MissingImage(ImageId),
 }
 
 impl std::fmt::Display for RenderError {
@@ -66,6 +68,8 @@ impl std::fmt::Display for RenderError {
             Self::Surface(message) => write!(f, "surface error: {message}"),
             Self::SurfaceNotAttached(id) => write!(f, "surface {id:?} is not attached"),
             Self::SurfaceLost => write!(f, "surface was lost or outdated"),
+            Self::InvalidCommand(message) => write!(f, "invalid paint command: {message}"),
+            Self::MissingImage(id) => write!(f, "image resource {id:?} is not registered"),
         }
     }
 }
@@ -75,11 +79,11 @@ impl std::error::Error for RenderError {}
 #[derive(Clone, Debug, PartialEq)]
 pub enum PaintCommand {
     Clear(Color),
-    FillRect {
+    Rect {
         rect: Rect,
         color: Color,
     },
-    FillRoundedRect {
+    RoundedRect {
         rect: Rect,
         radius: Dip,
         color: Color,
@@ -96,6 +100,381 @@ pub enum PaintCommand {
         color: Color,
         scale: u32,
     },
+    Icon {
+        rect: Rect,
+        path: IconPath,
+        color: Color,
+        stroke: Dip,
+    },
+    Image {
+        rect: Rect,
+        image: ImageId,
+        opacity: f32,
+    },
+    Clip {
+        rect: Rect,
+    },
+    Transform(Transform),
+    Opacity(f32),
+}
+
+impl PaintCommand {
+    pub fn bounds(&self) -> Option<Rect> {
+        match self {
+            Self::Clear(_) | Self::Transform(_) | Self::Opacity(_) => None,
+            Self::Rect { rect, .. }
+            | Self::RoundedRect { rect, .. }
+            | Self::Image { rect, .. }
+            | Self::Clip { rect } => Some(*rect),
+            Self::Line {
+                start, end, width, ..
+            } => Some(line_bounds(*start, *end, *width)),
+            Self::Text {
+                text,
+                origin,
+                scale,
+                ..
+            } => Some(Rect {
+                origin: *origin,
+                size: zui_core::Size {
+                    width: measure_text(text, *scale),
+                    height: Dip((*scale).max(1) as f32 * 7.0),
+                },
+            }),
+            Self::Icon { rect, .. } => Some(*rect),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), RenderError> {
+        match self {
+            Self::Clear(color) => validate_color(*color),
+            Self::Rect { rect, color } => {
+                validate_rect(*rect)?;
+                validate_color(*color)
+            }
+            Self::RoundedRect {
+                rect,
+                radius,
+                color,
+            } => {
+                validate_rect(*rect)?;
+                if !radius.0.is_finite() || radius.0 < 0.0 {
+                    return Err(RenderError::InvalidCommand(
+                        "rounded radius must be finite and non-negative".into(),
+                    ));
+                }
+                validate_color(*color)
+            }
+            Self::Line {
+                start,
+                end,
+                width,
+                color,
+            } => {
+                if !point_is_finite(*start)
+                    || !point_is_finite(*end)
+                    || !width.0.is_finite()
+                    || width.0 <= 0.0
+                {
+                    return Err(RenderError::InvalidCommand(
+                        "line geometry is invalid".into(),
+                    ));
+                }
+                validate_color(*color)
+            }
+            Self::Text {
+                origin,
+                scale,
+                color,
+                ..
+            } => {
+                if !point_is_finite(*origin) || *scale == 0 {
+                    return Err(RenderError::InvalidCommand(
+                        "text geometry is invalid".into(),
+                    ));
+                }
+                validate_color(*color)
+            }
+            Self::Icon {
+                rect,
+                path,
+                stroke,
+                color,
+            } => {
+                validate_rect(*rect)?;
+                if !stroke.0.is_finite()
+                    || stroke.0 <= 0.0
+                    || path.segments.iter().any(|segment| {
+                        !point_is_finite(segment.start) || !point_is_finite(segment.end)
+                    })
+                {
+                    return Err(RenderError::InvalidCommand(
+                        "icon geometry is invalid".into(),
+                    ));
+                }
+                validate_color(*color)
+            }
+            Self::Image { rect, opacity, .. } => {
+                validate_rect(*rect)?;
+                if !opacity.is_finite() || !(0.0..=1.0).contains(opacity) {
+                    return Err(RenderError::InvalidCommand(
+                        "image opacity is outside 0..=1".into(),
+                    ));
+                }
+                Ok(())
+            }
+            Self::Clip { rect } => validate_rect(*rect),
+            Self::Transform(transform) => {
+                if transform.matrix.iter().all(|value| value.is_finite()) {
+                    Ok(())
+                } else {
+                    Err(RenderError::InvalidCommand(
+                        "transform contains a non-finite value".into(),
+                    ))
+                }
+            }
+            Self::Opacity(value) => {
+                if value.is_finite() && (0.0..=1.0).contains(value) {
+                    Ok(())
+                } else {
+                    Err(RenderError::InvalidCommand(
+                        "opacity is outside 0..=1".into(),
+                    ))
+                }
+            }
+        }
+    }
+
+    pub fn is_draw_command(&self) -> bool {
+        !matches!(
+            self,
+            Self::Clear(_) | Self::Clip { .. } | Self::Transform(_) | Self::Opacity(_)
+        )
+    }
+}
+
+fn point_is_finite(point: Point) -> bool {
+    point.x.0.is_finite() && point.y.0.is_finite()
+}
+fn validate_color(color: Color) -> Result<(), RenderError> {
+    if [color.r, color.g, color.b, color.a]
+        .iter()
+        .all(|value| value.is_finite() && (0.0..=1.0).contains(value))
+    {
+        Ok(())
+    } else {
+        Err(RenderError::InvalidCommand("color is invalid".into()))
+    }
+}
+fn validate_rect(rect: Rect) -> Result<(), RenderError> {
+    if point_is_finite(rect.origin)
+        && rect.size.width.0.is_finite()
+        && rect.size.height.0.is_finite()
+        && rect.size.width.0 >= 0.0
+        && rect.size.height.0 >= 0.0
+    {
+        Ok(())
+    } else {
+        Err(RenderError::InvalidCommand(
+            "rect geometry is invalid".into(),
+        ))
+    }
+}
+fn line_bounds(start: Point, end: Point, width: Dip) -> Rect {
+    let half = width.0 / 2.0;
+    Rect {
+        origin: Point {
+            x: Dip(start.x.0.min(end.x.0) - half),
+            y: Dip(start.y.0.min(end.y.0) - half),
+        },
+        size: zui_core::Size {
+            width: Dip((start.x.0.max(end.x.0) - start.x.0.min(end.x.0)) + width.0),
+            height: Dip((start.y.0.max(end.y.0) - start.y.0.min(end.y.0)) + width.0),
+        },
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LineSegment {
+    pub start: Point,
+    pub end: Point,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct IconPath {
+    pub segments: Vec<LineSegment>,
+}
+
+impl IconPath {
+    pub fn new(segments: impl Into<Vec<LineSegment>>) -> Self {
+        Self {
+            segments: segments.into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ImageId(pub u64);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageResource {
+    pub width: u32,
+    pub height: u32,
+    pub rgba8: Vec<u8>,
+}
+
+impl ImageResource {
+    pub fn new(width: u32, height: u32, rgba8: Vec<u8>) -> Result<Self, RenderError> {
+        let expected = width as usize * height as usize * 4;
+        if width == 0 || height == 0 || rgba8.len() != expected {
+            return Err(RenderError::InvalidCommand(
+                "image dimensions do not match RGBA8 data".into(),
+            ));
+        }
+        Ok(Self {
+            width,
+            height,
+            rgba8,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ResourceCache {
+    images: HashMap<ImageId, ImageResource>,
+}
+
+impl ResourceCache {
+    pub fn register_image(&mut self, id: ImageId, image: ImageResource) {
+        self.images.insert(id, image);
+    }
+
+    pub fn remove_image(&mut self, id: ImageId) -> Option<ImageResource> {
+        self.images.remove(&id)
+    }
+
+    pub fn image(&self, id: ImageId) -> Option<&ImageResource> {
+        self.images.get(&id)
+    }
+
+    pub fn contains_image(&self, id: ImageId) -> bool {
+        self.images.contains_key(&id)
+    }
+}
+
+/// A compact affine transform used by retained render nodes.
+///
+/// The renderer currently consumes axis-aligned primitives, so transformed
+/// rectangles are represented by their axis-aligned bounds. Keeping the
+/// transform here still gives containers a stable API for translation,
+/// scaling and rotation without leaking GPU details into widgets.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transform {
+    pub matrix: [f32; 6],
+}
+
+impl Transform {
+    pub const IDENTITY: Self = Self {
+        matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+    };
+
+    pub const fn identity() -> Self {
+        Self::IDENTITY
+    }
+
+    pub const fn translate(x: Dip, y: Dip) -> Self {
+        Self {
+            matrix: [1.0, 0.0, 0.0, 1.0, x.0, y.0],
+        }
+    }
+
+    pub const fn scale(x: f32, y: f32) -> Self {
+        Self {
+            matrix: [x, 0.0, 0.0, y, 0.0, 0.0],
+        }
+    }
+
+    fn point(self, point: Point) -> Point {
+        let [a, b, c, d, tx, ty] = self.matrix;
+        Point {
+            x: Dip(a * point.x.0 + c * point.y.0 + tx),
+            y: Dip(b * point.x.0 + d * point.y.0 + ty),
+        }
+    }
+
+    fn rect(self, rect: Rect) -> Rect {
+        let corners = [
+            rect.origin,
+            Point {
+                x: Dip(rect.origin.x.0 + rect.size.width.0),
+                y: rect.origin.y,
+            },
+            Point {
+                x: rect.origin.x,
+                y: Dip(rect.origin.y.0 + rect.size.height.0),
+            },
+            Point {
+                x: Dip(rect.origin.x.0 + rect.size.width.0),
+                y: Dip(rect.origin.y.0 + rect.size.height.0),
+            },
+        ];
+        let transformed = corners.map(|corner| self.point(corner));
+        let left = transformed
+            .iter()
+            .map(|point| point.x.0)
+            .fold(f32::INFINITY, f32::min);
+        let top = transformed
+            .iter()
+            .map(|point| point.y.0)
+            .fold(f32::INFINITY, f32::min);
+        let right = transformed
+            .iter()
+            .map(|point| point.x.0)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let bottom = transformed
+            .iter()
+            .map(|point| point.y.0)
+            .fold(f32::NEG_INFINITY, f32::max);
+        Rect {
+            origin: Point {
+                x: Dip(left),
+                y: Dip(top),
+            },
+            size: zui_core::Size {
+                width: Dip(right - left),
+                height: Dip(bottom - top),
+            },
+        }
+    }
+}
+
+impl Default for Transform {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DirtyFlags(u8);
+
+impl DirtyFlags {
+    pub const LAYOUT: Self = Self(1 << 0);
+    pub const PAINT: Self = Self(1 << 1);
+    pub const CHILDREN: Self = Self(1 << 2);
+    pub const RESOURCES: Self = Self(1 << 3);
+
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -112,10 +491,10 @@ impl DisplayList {
         self.commands.push(PaintCommand::Clear(color));
     }
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
-        self.commands.push(PaintCommand::FillRect { rect, color });
+        self.commands.push(PaintCommand::Rect { rect, color });
     }
     pub fn fill_rounded_rect(&mut self, rect: Rect, radius: Dip, color: Color) {
-        self.commands.push(PaintCommand::FillRoundedRect {
+        self.commands.push(PaintCommand::RoundedRect {
             rect,
             radius,
             color,
@@ -137,8 +516,476 @@ impl DisplayList {
             scale: scale.max(1),
         });
     }
+    pub fn icon(&mut self, rect: Rect, path: IconPath, color: Color, stroke: Dip) {
+        self.commands.push(PaintCommand::Icon {
+            rect,
+            path,
+            color,
+            stroke,
+        });
+    }
+    pub fn image(&mut self, rect: Rect, image: ImageId, opacity: f32) {
+        self.commands.push(PaintCommand::Image {
+            rect,
+            image,
+            opacity: opacity.clamp(0.0, 1.0),
+        });
+    }
+    pub fn clip(&mut self, rect: Rect) {
+        self.commands.push(PaintCommand::Clip { rect });
+    }
+    pub fn transform(&mut self, transform: Transform) {
+        self.commands.push(PaintCommand::Transform(transform));
+    }
+    pub fn opacity(&mut self, opacity: f32) {
+        self.commands
+            .push(PaintCommand::Opacity(opacity.clamp(0.0, 1.0)));
+    }
     pub fn commands(&self) -> &[PaintCommand] {
         &self.commands
+    }
+
+    pub fn validate(&self) -> Result<(), RenderError> {
+        self.commands.iter().try_for_each(PaintCommand::validate)
+    }
+
+    pub fn append(&mut self, other: &mut Self) {
+        self.commands.append(&mut other.commands);
+    }
+}
+
+/// Retained intermediate representation between widgets and the renderer.
+///
+/// The current renderer still consumes a flattened `DisplayList`; keeping the
+/// node tree here allows caching, clipping and partial rebuilds to be added
+/// without changing widget painting APIs again.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RenderNode {
+    /// Bounds in the node's local coordinate system.
+    pub local_bounds: Rect,
+    /// Kept as a compatibility alias while widgets migrate to local bounds.
+    pub bounds: Rect,
+    pub transform: Transform,
+    pub clip: Option<Rect>,
+    pub opacity: f32,
+    pub commands: DisplayList,
+    pub children: Vec<Self>,
+    pub dirty_flags: DirtyFlags,
+    /// Compatibility view for callers that only need to know if a node is dirty.
+    pub dirty: bool,
+    pub dirty_region: Option<Rect>,
+}
+
+impl RenderNode {
+    pub fn new(bounds: Rect) -> Self {
+        Self {
+            local_bounds: bounds,
+            bounds,
+            transform: Transform::IDENTITY,
+            clip: None,
+            opacity: 1.0,
+            commands: DisplayList::new(),
+            children: Vec::new(),
+            dirty_flags: DirtyFlags::LAYOUT.union(DirtyFlags::PAINT),
+            dirty: true,
+            dirty_region: None,
+        }
+    }
+
+    pub fn add_child(&mut self, child: Self) {
+        self.children.push(child);
+        self.mark_dirty(DirtyFlags::CHILDREN);
+    }
+
+    pub fn child_mut(&mut self, index: usize) -> Option<&mut Self> {
+        self.children.get_mut(index)
+    }
+
+    /// Marks a descendant as dirty and records the corresponding parent
+    /// invalidation. This is the explicit propagation point for retained
+    /// trees whose children are stored by value.
+    pub fn mark_child_dirty(&mut self, index: usize, flags: DirtyFlags, region: Option<Rect>) {
+        if let Some(child) = self.children.get_mut(index) {
+            match region {
+                Some(region) => child.mark_dirty_region(region),
+                None => child.mark_dirty(flags),
+            }
+            self.mark_dirty(DirtyFlags::CHILDREN);
+            if let Some(region) = region {
+                self.mark_dirty_region(region);
+            }
+        }
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.dirty || !self.dirty_flags.is_empty() || self.children.iter().any(Self::is_dirty)
+    }
+
+    pub fn accumulated_dirty_region(&self) -> Option<Rect> {
+        let mut region = self.dirty_region;
+        for child in &self.children {
+            if let Some(child_region) = child.accumulated_dirty_region() {
+                region = Some(match region {
+                    Some(region) => union_rect(region, child_region),
+                    None => child_region,
+                });
+            }
+        }
+        region
+    }
+
+    pub fn set_transform(&mut self, transform: Transform) {
+        self.transform = transform;
+        self.mark_dirty(DirtyFlags::PAINT);
+    }
+
+    pub fn set_clip(&mut self, clip: Option<Rect>) {
+        self.clip = clip;
+        self.mark_dirty(DirtyFlags::PAINT);
+    }
+
+    pub fn set_opacity(&mut self, opacity: f32) {
+        self.opacity = opacity.clamp(0.0, 1.0);
+        self.mark_dirty(DirtyFlags::PAINT);
+    }
+
+    pub fn mark_dirty(&mut self, flags: DirtyFlags) {
+        self.dirty_flags = self.dirty_flags.union(flags);
+        self.dirty = true;
+    }
+
+    pub fn mark_dirty_region(&mut self, region: Rect) {
+        self.mark_dirty(DirtyFlags::PAINT);
+        self.dirty_region = Some(match self.dirty_region {
+            Some(current) => union_rect(current, region),
+            None => region,
+        });
+    }
+
+    pub fn clear_dirty(&mut self) {
+        self.dirty_flags = DirtyFlags::empty();
+        self.dirty = false;
+        self.dirty_region = None;
+        for child in &mut self.children {
+            child.clear_dirty();
+        }
+    }
+
+    pub fn flatten_into(&self, display_list: &mut DisplayList) {
+        self.flatten_with_state(display_list, Transform::IDENTITY, None, 1.0);
+    }
+
+    fn flatten_with_state(
+        &self,
+        display_list: &mut DisplayList,
+        parent_transform: Transform,
+        parent_clip: Option<Rect>,
+        parent_opacity: f32,
+    ) {
+        let transform = compose_transform(parent_transform, self.transform);
+        let clip = intersect_clip(parent_clip, self.clip.map(|clip| transform.rect(clip)));
+        let opacity = parent_opacity * self.opacity;
+        for command in self.commands.commands() {
+            if let Some(command) = transform_command(command, transform, clip, opacity) {
+                display_list.commands.push(command);
+            }
+        }
+        for child in &self.children {
+            child.flatten_with_state(display_list, transform, clip, opacity);
+        }
+    }
+}
+
+fn compose_transform(parent: Transform, child: Transform) -> Transform {
+    // General affine multiplication: parent * child.
+    let [a, b, c, d, tx, ty] = parent.matrix;
+    let [e, f, g, h, ux, uy] = child.matrix;
+    Transform {
+        matrix: [
+            a * e + c * f,
+            b * e + d * f,
+            a * g + c * h,
+            b * g + d * h,
+            a * ux + c * uy + tx,
+            b * ux + d * uy + ty,
+        ],
+    }
+}
+
+fn intersect_clip(parent: Option<Rect>, child: Option<Rect>) -> Option<Rect> {
+    match (parent, child) {
+        (Some(a), Some(b)) => {
+            let left = a.origin.x.0.max(b.origin.x.0);
+            let top = a.origin.y.0.max(b.origin.y.0);
+            let right = (a.origin.x.0 + a.size.width.0).min(b.origin.x.0 + b.size.width.0);
+            let bottom = (a.origin.y.0 + a.size.height.0).min(b.origin.y.0 + b.size.height.0);
+            Some(Rect {
+                origin: Point {
+                    x: Dip(left),
+                    y: Dip(top),
+                },
+                size: zui_core::Size {
+                    width: Dip((right - left).max(0.0)),
+                    height: Dip((bottom - top).max(0.0)),
+                },
+            })
+        }
+        (clip, None) | (None, clip) => clip,
+    }
+}
+
+fn clip_rect(rect: Rect, clip: Option<Rect>) -> Option<Rect> {
+    let Some(clip) = clip else {
+        return Some(rect);
+    };
+    let left = rect.origin.x.0.max(clip.origin.x.0);
+    let top = rect.origin.y.0.max(clip.origin.y.0);
+    let right = (rect.origin.x.0 + rect.size.width.0).min(clip.origin.x.0 + clip.size.width.0);
+    let bottom = (rect.origin.y.0 + rect.size.height.0).min(clip.origin.y.0 + clip.size.height.0);
+    if right <= left || bottom <= top {
+        None
+    } else {
+        Some(Rect {
+            origin: Point {
+                x: Dip(left),
+                y: Dip(top),
+            },
+            size: zui_core::Size {
+                width: Dip(right - left),
+                height: Dip(bottom - top),
+            },
+        })
+    }
+}
+
+fn clip_line(start: Point, end: Point, clip: Option<Rect>) -> Option<LineSegment> {
+    let Some(clip) = clip else {
+        return Some(LineSegment { start, end });
+    };
+    let x_min = clip.origin.x.0;
+    let x_max = x_min + clip.size.width.0;
+    let y_min = clip.origin.y.0;
+    let y_max = y_min + clip.size.height.0;
+    let dx = end.x.0 - start.x.0;
+    let dy = end.y.0 - start.y.0;
+    let mut low: f32 = 0.0;
+    let mut high: f32 = 1.0;
+    for (p, q) in [
+        (-dx, start.x.0 - x_min),
+        (dx, x_max - start.x.0),
+        (-dy, start.y.0 - y_min),
+        (dy, y_max - start.y.0),
+    ] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+        } else {
+            let value = q / p;
+            if p < 0.0 {
+                low = low.max(value);
+            } else {
+                high = high.min(value);
+            }
+            if low > high {
+                return None;
+            }
+        }
+    }
+    Some(LineSegment {
+        start: Point {
+            x: Dip(start.x.0 + low * dx),
+            y: Dip(start.y.0 + low * dy),
+        },
+        end: Point {
+            x: Dip(start.x.0 + high * dx),
+            y: Dip(start.y.0 + high * dy),
+        },
+    })
+}
+
+fn transform_command(
+    command: &PaintCommand,
+    transform: Transform,
+    clip: Option<Rect>,
+    opacity: f32,
+) -> Option<PaintCommand> {
+    let apply_opacity = |mut color: Color| {
+        color.a *= opacity;
+        color
+    };
+    let visible = |rect: Rect| clip.map(|clip| rect_intersects(rect, clip)).unwrap_or(true);
+    match command {
+        PaintCommand::Clear(color) => Some(PaintCommand::Clear(apply_opacity(*color))),
+        PaintCommand::Rect { rect, color } => {
+            let rect = transform.rect(*rect);
+            clip_rect(rect, clip)
+                .filter(|_| visible(rect))
+                .map(|rect| PaintCommand::Rect {
+                    rect,
+                    color: apply_opacity(*color),
+                })
+        }
+        PaintCommand::RoundedRect {
+            rect,
+            radius,
+            color,
+        } => {
+            let rect = transform.rect(*rect);
+            clip_rect(rect, clip)
+                .filter(|_| visible(rect))
+                .map(|rect| PaintCommand::RoundedRect {
+                    rect,
+                    radius: *radius,
+                    color: apply_opacity(*color),
+                })
+        }
+        PaintCommand::Line {
+            start,
+            end,
+            width,
+            color,
+        } => {
+            let start = transform.point(*start);
+            let end = transform.point(*end);
+            let bounds = line_bounds(start, end, *width);
+            clip_line(start, end, clip)
+                .filter(|_| visible(bounds))
+                .map(|segment| PaintCommand::Line {
+                    start: segment.start,
+                    end: segment.end,
+                    width: *width,
+                    color: apply_opacity(*color),
+                })
+        }
+        PaintCommand::Text {
+            text,
+            origin,
+            color,
+            scale,
+        } => {
+            let origin = transform.point(*origin);
+            let rect = Rect {
+                origin,
+                size: zui_core::Size {
+                    width: Dip(1.0),
+                    height: Dip(1.0),
+                },
+            };
+            visible(rect).then_some(PaintCommand::Text {
+                text: text.clone(),
+                origin,
+                color: apply_opacity(*color),
+                scale: *scale,
+            })
+        }
+        PaintCommand::Icon {
+            rect,
+            path,
+            color,
+            stroke,
+        } => {
+            let rect = transform.rect(*rect);
+            visible(rect).then_some(PaintCommand::Icon {
+                rect,
+                path: IconPath::new(
+                    path.segments
+                        .iter()
+                        .filter_map(|segment| {
+                            clip_line(
+                                transform.point(segment.start),
+                                transform.point(segment.end),
+                                clip,
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                color: apply_opacity(*color),
+                stroke: *stroke,
+            })
+        }
+        PaintCommand::Image {
+            rect,
+            image,
+            opacity: image_opacity,
+        } => {
+            let rect = transform.rect(*rect);
+            visible(rect).then_some(PaintCommand::Image {
+                rect,
+                image: *image,
+                opacity: image_opacity * opacity,
+            })
+        }
+        PaintCommand::Clip { rect } => Some(PaintCommand::Clip {
+            rect: transform.rect(*rect),
+        }),
+        PaintCommand::Transform(transform) => Some(PaintCommand::Transform(*transform)),
+        PaintCommand::Opacity(value) => Some(PaintCommand::Opacity(value * opacity)),
+    }
+}
+
+fn rect_intersects(a: Rect, b: Rect) -> bool {
+    a.origin.x.0 < b.origin.x.0 + b.size.width.0
+        && a.origin.x.0 + a.size.width.0 > b.origin.x.0
+        && a.origin.y.0 < b.origin.y.0 + b.size.height.0
+        && a.origin.y.0 + a.size.height.0 > b.origin.y.0
+}
+
+fn union_rect(a: Rect, b: Rect) -> Rect {
+    let left = a.origin.x.0.min(b.origin.x.0);
+    let top = a.origin.y.0.min(b.origin.y.0);
+    let right = (a.origin.x.0 + a.size.width.0).max(b.origin.x.0 + b.size.width.0);
+    let bottom = (a.origin.y.0 + a.size.height.0).max(b.origin.y.0 + b.size.height.0);
+    Rect {
+        origin: Point {
+            x: Dip(left),
+            y: Dip(top),
+        },
+        size: zui_core::Size {
+            width: Dip(right - left),
+            height: Dip(bottom - top),
+        },
+    }
+}
+
+pub struct RenderNodeBuilder {
+    node: RenderNode,
+}
+
+impl RenderNodeBuilder {
+    pub fn new(bounds: Rect) -> Self {
+        Self {
+            node: RenderNode::new(bounds),
+        }
+    }
+
+    pub fn commands_mut(&mut self) -> &mut DisplayList {
+        &mut self.node.commands
+    }
+
+    pub fn add_child(&mut self, child: RenderNode) {
+        self.node.add_child(child);
+    }
+
+    pub fn transform(&mut self, transform: Transform) -> &mut Self {
+        self.node.transform = transform;
+        self
+    }
+
+    pub fn clip(&mut self, clip: Option<Rect>) -> &mut Self {
+        self.node.clip = clip;
+        self
+    }
+
+    pub fn opacity(&mut self, opacity: f32) -> &mut Self {
+        self.node.opacity = opacity.clamp(0.0, 1.0);
+        self
+    }
+
+    pub fn finish(self) -> RenderNode {
+        let mut node = self.node;
+        node.clear_dirty();
+        node
     }
 }
 
@@ -185,6 +1032,49 @@ struct LineVertex {
     color: [f32; 4],
 }
 
+enum RenderBatch {
+    Rect(Vec<RectVertex>),
+    Rounded(Vec<RoundedRectVertex>),
+    Line(Vec<LineVertex>),
+}
+
+#[derive(Clone, Copy)]
+enum BatchKind {
+    Rect,
+    Rounded,
+    Line,
+}
+
+fn rect_batch(batches: &mut Vec<RenderBatch>) -> &mut Vec<RectVertex> {
+    if !matches!(batches.last(), Some(RenderBatch::Rect(_))) {
+        batches.push(RenderBatch::Rect(Vec::new()));
+    }
+    match batches.last_mut().expect("rect batch was just added") {
+        RenderBatch::Rect(vertices) => vertices,
+        _ => unreachable!(),
+    }
+}
+
+fn rounded_batch(batches: &mut Vec<RenderBatch>) -> &mut Vec<RoundedRectVertex> {
+    if !matches!(batches.last(), Some(RenderBatch::Rounded(_))) {
+        batches.push(RenderBatch::Rounded(Vec::new()));
+    }
+    match batches.last_mut().expect("rounded batch was just added") {
+        RenderBatch::Rounded(vertices) => vertices,
+        _ => unreachable!(),
+    }
+}
+
+fn line_batch(batches: &mut Vec<RenderBatch>) -> &mut Vec<LineVertex> {
+    if !matches!(batches.last(), Some(RenderBatch::Line(_))) {
+        batches.push(RenderBatch::Line(Vec::new()));
+    }
+    match batches.last_mut().expect("line batch was just added") {
+        RenderBatch::Line(vertices) => vertices,
+        _ => unreachable!(),
+    }
+}
+
 pub struct Renderer {
     pub(crate) instance: wgpu::Instance,
     pub(crate) adapter: wgpu::Adapter,
@@ -194,6 +1084,7 @@ pub struct Renderer {
     fonts: &'static [fontdue::Font],
     glyph_cache: HashMap<(usize, char, u32, u32), CachedGlyph>,
     font_cache: HashMap<char, Option<usize>>,
+    resources: ResourceCache,
 }
 
 struct CachedGlyph {
@@ -234,11 +1125,20 @@ impl Renderer {
             fonts: cached_system_fonts(),
             glyph_cache: HashMap::new(),
             font_cache: HashMap::new(),
+            resources: ResourceCache::default(),
         })
     }
 
     pub fn new_blocking() -> Result<Self, RenderError> {
         pollster::block_on(Self::new())
+    }
+
+    pub fn register_image(&mut self, id: ImageId, image: ImageResource) {
+        self.resources.register_image(id, image);
+    }
+
+    pub fn remove_image(&mut self, id: ImageId) -> Option<ImageResource> {
+        self.resources.remove_image(id)
     }
 
     /// Attach a platform host's native handles to a render surface.
@@ -384,6 +1284,14 @@ impl Renderer {
         display_list: &DisplayList,
         damage: Option<Rect>,
     ) -> Result<(), RenderError> {
+        display_list.validate()?;
+        for command in display_list.commands() {
+            if let PaintCommand::Image { image, .. } = command {
+                if !self.resources.contains_image(*image) {
+                    return Err(RenderError::MissingImage(*image));
+                }
+            }
+        }
         let state = self
             .surfaces
             .get_mut(&window)
@@ -403,8 +1311,8 @@ impl Renderer {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let clear = display_list
-            .commands()
+        let resolved_commands = resolve_commands(display_list);
+        let clear = resolved_commands
             .iter()
             .rev()
             .find_map(|command| match command {
@@ -414,10 +1322,15 @@ impl Renderer {
                     b: color.b as f64,
                     a: color.a as f64,
                 }),
-                PaintCommand::FillRect { .. } => None,
-                PaintCommand::FillRoundedRect { .. } => None,
+                PaintCommand::Rect { .. } => None,
+                PaintCommand::RoundedRect { .. } => None,
                 PaintCommand::Line { .. } => None,
                 PaintCommand::Text { .. } => None,
+                PaintCommand::Icon { .. }
+                | PaintCommand::Image { .. }
+                | PaintCommand::Clip { .. }
+                | PaintCommand::Transform(_)
+                | PaintCommand::Opacity(_) => None,
             })
             .unwrap_or(wgpu::Color {
                 r: 0.0,
@@ -436,26 +1349,24 @@ impl Renderer {
                 width: (state.size.width as f64 / scale).round().max(1.0) as u32,
                 height: (state.size.height as f64 / scale).round().max(1.0) as u32,
             };
-            let mut rects = Vec::new();
-            let mut rounded_rects = Vec::new();
-            let mut lines = Vec::new();
-            for command in display_list.commands() {
+            let mut batches = Vec::new();
+            for command in &resolved_commands {
                 if let Some(damage) = damage.filter(|_| state.has_contents) {
                     if !command_intersects(command, damage) {
                         continue;
                     }
                 }
                 match command {
-                    PaintCommand::FillRect { rect, color } => {
-                        append_rect(&mut rects, *rect, *color, render_size);
+                    PaintCommand::Rect { rect, color } => {
+                        append_rect(rect_batch(&mut batches), *rect, *color, render_size);
                     }
-                    PaintCommand::FillRoundedRect {
+                    PaintCommand::RoundedRect {
                         rect,
                         radius,
                         color,
                     } => {
                         append_rounded_rect(
-                            &mut rounded_rects,
+                            rounded_batch(&mut batches),
                             *rect,
                             *radius,
                             *color,
@@ -468,7 +1379,14 @@ impl Renderer {
                         width,
                         color,
                     } => {
-                        append_line(&mut lines, *start, *end, *width, *color, render_size);
+                        append_line(
+                            line_batch(&mut batches),
+                            *start,
+                            *end,
+                            *width,
+                            *color,
+                            render_size,
+                        );
                     }
                     PaintCommand::Text {
                         text,
@@ -477,7 +1395,7 @@ impl Renderer {
                         scale,
                     } => {
                         append_text(
-                            &mut rects,
+                            rect_batch(&mut batches),
                             self.fonts,
                             &mut self.glyph_cache,
                             &mut self.font_cache,
@@ -489,45 +1407,71 @@ impl Renderer {
                             state.scale_factor.0 as f32,
                         );
                     }
+                    PaintCommand::Icon {
+                        path,
+                        color,
+                        stroke,
+                        ..
+                    } => {
+                        for segment in &path.segments {
+                            append_line(
+                                line_batch(&mut batches),
+                                segment.start,
+                                segment.end,
+                                *stroke,
+                                *color,
+                                render_size,
+                            );
+                        }
+                    }
+                    // These commands are retained in the IR for validation
+                    // and future scoped GPU state. Node-level state is
+                    // resolved before flattening, so they do not draw by
+                    // themselves. Image resources are handled by the image
+                    // resource backend when it is attached.
+                    PaintCommand::Image { .. }
+                    | PaintCommand::Clip { .. }
+                    | PaintCommand::Transform(_)
+                    | PaintCommand::Opacity(_) => {}
                     PaintCommand::Clear(_) => {}
                 }
             }
-            let vertex_buffer = if rects.is_empty() {
-                None
-            } else {
-                Some(
-                    self.device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("zui-render rectangles"),
-                            contents: bytemuck::cast_slice(&rects),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        }),
-                )
-            };
-            let rounded_vertex_buffer = if rounded_rects.is_empty() {
-                None
-            } else {
-                Some(
-                    self.device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("zui-render rounded rectangles"),
-                            contents: bytemuck::cast_slice(&rounded_rects),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        }),
-                )
-            };
-            let line_vertex_buffer = if lines.is_empty() {
-                None
-            } else {
-                Some(
-                    self.device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("zui-render lines"),
-                            contents: bytemuck::cast_slice(&lines),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        }),
-                )
-            };
+            let gpu_batches: Vec<(BatchKind, wgpu::Buffer, u32)> = batches
+                .into_iter()
+                .filter_map(|batch| match batch {
+                    RenderBatch::Rect(vertices) if !vertices.is_empty() => Some((
+                        BatchKind::Rect,
+                        self.device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("zui-render rectangles"),
+                                contents: bytemuck::cast_slice(&vertices),
+                                usage: wgpu::BufferUsages::VERTEX,
+                            }),
+                        vertices.len() as u32,
+                    )),
+                    RenderBatch::Rounded(vertices) if !vertices.is_empty() => Some((
+                        BatchKind::Rounded,
+                        self.device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("zui-render rounded rectangles"),
+                                contents: bytemuck::cast_slice(&vertices),
+                                usage: wgpu::BufferUsages::VERTEX,
+                            }),
+                        vertices.len() as u32,
+                    )),
+                    RenderBatch::Line(vertices) if !vertices.is_empty() => Some((
+                        BatchKind::Line,
+                        self.device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("zui-render lines"),
+                                contents: bytemuck::cast_slice(&vertices),
+                                usage: wgpu::BufferUsages::VERTEX,
+                            }),
+                        vertices.len() as u32,
+                    )),
+                    _ => None,
+                })
+                .collect();
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("zui-render clear pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -560,20 +1504,14 @@ impl Renderer {
                     .max(y as f32) as u32;
                 pass.set_scissor_rect(x, y, right.saturating_sub(x), bottom.saturating_sub(y));
             }
-            if let Some(vertex_buffer) = rounded_vertex_buffer {
-                pass.set_pipeline(&state.rounded_pipeline);
+            for (kind, vertex_buffer, count) in gpu_batches {
+                pass.set_pipeline(match kind {
+                    BatchKind::Rect => &state.pipeline,
+                    BatchKind::Rounded => &state.rounded_pipeline,
+                    BatchKind::Line => &state.line_pipeline,
+                });
                 pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                pass.draw(0..rounded_rects.len() as u32, 0..1);
-            }
-            if let Some(vertex_buffer) = line_vertex_buffer {
-                pass.set_pipeline(&state.line_pipeline);
-                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                pass.draw(0..lines.len() as u32, 0..1);
-            }
-            if let Some(vertex_buffer) = vertex_buffer {
-                pass.set_pipeline(&state.pipeline);
-                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                pass.draw(0..rects.len() as u32, 0..1);
+                pass.draw(0..count, 0..1);
             }
         }
         {
@@ -758,7 +1696,7 @@ fn append_text(
 fn command_intersects(command: &PaintCommand, damage: Rect) -> bool {
     let bounds = match command {
         PaintCommand::Clear(_) => return true,
-        PaintCommand::FillRect { rect, .. } | PaintCommand::FillRoundedRect { rect, .. } => *rect,
+        PaintCommand::Rect { rect, .. } | PaintCommand::RoundedRect { rect, .. } => *rect,
         PaintCommand::Line {
             start, end, width, ..
         } => {
@@ -786,6 +1724,9 @@ fn command_intersects(command: &PaintCommand, damage: Rect) -> bool {
                 height: Dip((*scale).max(1) as f32 * 7.0),
             },
         },
+        PaintCommand::Icon { rect, .. } | PaintCommand::Image { rect, .. } => *rect,
+        PaintCommand::Clip { rect } => *rect,
+        PaintCommand::Transform(_) | PaintCommand::Opacity(_) => return true,
     };
     let bounds_right = bounds.origin.x.0 + bounds.size.width.0;
     let bounds_bottom = bounds.origin.y.0 + bounds.size.height.0;
@@ -795,6 +1736,28 @@ fn command_intersects(command: &PaintCommand, damage: Rect) -> bool {
         && bounds_right > damage.origin.x.0
         && bounds.origin.y.0 < damage_bottom
         && bounds_bottom > damage.origin.y.0
+}
+
+fn resolve_commands(display_list: &DisplayList) -> Vec<PaintCommand> {
+    let mut resolved = Vec::with_capacity(display_list.commands().len());
+    let mut transform = Transform::IDENTITY;
+    let mut clip = None;
+    let mut opacity = 1.0;
+    for command in display_list.commands() {
+        match command {
+            PaintCommand::Transform(next) => transform = compose_transform(transform, *next),
+            PaintCommand::Clip { rect } => {
+                clip = intersect_clip(clip, Some(transform.rect(*rect)));
+            }
+            PaintCommand::Opacity(value) => opacity *= value.clamp(0.0, 1.0),
+            command => {
+                if let Some(command) = transform_command(command, transform, clip, opacity) {
+                    resolved.push(command);
+                }
+            }
+        }
+    }
+    resolved
 }
 
 fn append_rect(vertices: &mut Vec<RectVertex>, rect: Rect, color: Color, size: PhysicalSize) {
@@ -1429,5 +2392,132 @@ mod tests {
         let _encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let _pipeline = create_rounded_rect_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
         let _line_pipeline = create_line_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
+    }
+
+    #[test]
+    fn render_node_flattens_commands_before_children() {
+        let mut node = RenderNode::new(Rect::default());
+        node.commands.fill_rect(Rect::default(), Color::WHITE);
+        let mut child = RenderNode::new(Rect::default());
+        child.commands.clear(Color::BLACK);
+        node.add_child(child);
+        let mut list = DisplayList::new();
+        node.flatten_into(&mut list);
+        assert_eq!(list.commands().len(), 2);
+        assert!(matches!(list.commands()[0], PaintCommand::Rect { .. }));
+        assert!(matches!(list.commands()[1], PaintCommand::Clear(_)));
+    }
+
+    #[test]
+    fn render_node_applies_transform_and_opacity() {
+        let mut node = RenderNode::new(Rect::default());
+        node.set_transform(Transform::translate(Dip(10.0), Dip(20.0)));
+        node.set_opacity(0.5);
+        node.commands.fill_rect(
+            Rect {
+                origin: Point::default(),
+                size: zui_core::Size {
+                    width: Dip(4.0),
+                    height: Dip(5.0),
+                },
+            },
+            Color::WHITE,
+        );
+        let mut list = DisplayList::new();
+        node.flatten_into(&mut list);
+        assert_eq!(
+            list.commands(),
+            &[PaintCommand::Rect {
+                rect: Rect {
+                    origin: Point {
+                        x: Dip(10.0),
+                        y: Dip(20.0)
+                    },
+                    size: zui_core::Size {
+                        width: Dip(4.0),
+                        height: Dip(5.0)
+                    },
+                },
+                color: Color {
+                    r: 1.0,
+                    g: 1.0,
+                    b: 1.0,
+                    a: 0.5
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn render_node_clips_commands_and_propagates_dirty_state() {
+        let mut node = RenderNode::new(Rect::default());
+        node.set_clip(Some(Rect {
+            origin: Point::default(),
+            size: zui_core::Size {
+                width: Dip(5.0),
+                height: Dip(5.0),
+            },
+        }));
+        node.commands.fill_rect(
+            Rect {
+                origin: Point {
+                    x: Dip(20.0),
+                    y: Dip(20.0),
+                },
+                size: zui_core::Size {
+                    width: Dip(2.0),
+                    height: Dip(2.0),
+                },
+            },
+            Color::WHITE,
+        );
+        assert!(node.dirty_flags.contains(DirtyFlags::PAINT));
+        let mut list = DisplayList::new();
+        node.flatten_into(&mut list);
+        assert!(list.commands().is_empty());
+
+        node.clear_dirty();
+        assert!(!node.dirty);
+        assert!(node.dirty_flags.is_empty());
+        node.mark_dirty_region(Rect::default());
+        assert!(node.dirty);
+        assert_eq!(node.dirty_region, Some(Rect::default()));
+    }
+
+    #[test]
+    fn paint_commands_validate_geometry_and_report_bounds() {
+        let command = PaintCommand::RoundedRect {
+            rect: Rect {
+                origin: Point {
+                    x: Dip(2.0),
+                    y: Dip(3.0),
+                },
+                size: zui_core::Size {
+                    width: Dip(10.0),
+                    height: Dip(8.0),
+                },
+            },
+            radius: Dip(2.0),
+            color: Color::WHITE,
+        };
+        assert!(command.validate().is_ok());
+        assert_eq!(command.bounds().unwrap().size.width, Dip(10.0));
+
+        let invalid = PaintCommand::Line {
+            start: Point::default(),
+            end: Point {
+                x: Dip(1.0),
+                y: Dip(1.0),
+            },
+            width: Dip(0.0),
+            color: Color::WHITE,
+        };
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn image_resource_requires_matching_rgba_data() {
+        assert!(ImageResource::new(2, 2, vec![0; 16]).is_ok());
+        assert!(ImageResource::new(2, 2, vec![0; 15]).is_err());
     }
 }

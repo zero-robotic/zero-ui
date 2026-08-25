@@ -5,6 +5,7 @@ use crate::{
     widget::{PaintContext, Widget, WidgetId},
 };
 use zui_core::{Dip, Point, Rect, Size};
+use zui_render::RenderNode;
 
 pub struct Padding {
     id: WidgetId,
@@ -64,6 +65,20 @@ impl Widget for Padding {
     }
     fn paint(&self, ctx: &mut PaintContext<'_>) {
         self.child.paint(ctx);
+    }
+    fn build_render_node_with_cache(
+        &self,
+        previous: Option<&RenderNode>,
+        dirty_region: Option<Rect>,
+        theme: &Theme,
+    ) -> RenderNode {
+        let mut node = RenderNode::new(self.bounds);
+        let cached_child = previous.and_then(|node| node.children.first());
+        node.add_child(
+            self.child
+                .build_render_node_with_cache(cached_child, dirty_region, theme),
+        );
+        node
     }
     fn set_theme(&mut self, theme: &Theme) {
         self.child.set_theme(theme);

@@ -27,6 +27,10 @@ pub use widget::{PaintContext, Widget, WidgetId};
 pub use widgets::{
     Button, Checkbox, Divider, DividerAxis, Icon, IconButton, IconName, Switch, Text, TextInput,
 };
+pub use zui_render::{
+    DirtyFlags, IconPath, ImageId, ImageResource, LineSegment, RenderNode, RenderNodeBuilder,
+    ResourceCache, Transform,
+};
 
 #[cfg(test)]
 mod tests {

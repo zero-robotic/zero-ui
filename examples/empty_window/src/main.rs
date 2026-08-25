@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut commands = display_list.borrow_mut();
             commands.clear(background);
             let damage = ui.borrow().dirty_region();
-            ui.borrow().paint(&mut commands);
+            ui.borrow_mut().paint(&mut commands);
             if let Err(error) = renderer
                 .borrow_mut()
                 .render_frame_with_damage(window, &commands, damage)
