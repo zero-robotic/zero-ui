@@ -449,9 +449,35 @@ pub struct ResourceManager {
     clock: u64,
     max_gpu_images: usize,
     image_sampler: wgpu::Sampler,
+    icons: HashMap<u64, IconPath>,
+    budget: ResourceBudget,
     fonts: &'static [fontdue::Font],
     glyph_cache: HashMap<(usize, char, u32, u32), CachedGlyph>,
     font_cache: HashMap<char, Option<usize>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResourceBudget {
+    pub max_gpu_images: usize,
+    pub max_gpu_image_bytes: usize,
+}
+
+impl Default for ResourceBudget {
+    fn default() -> Self {
+        Self {
+            max_gpu_images: 256,
+            max_gpu_image_bytes: 256 * 1024 * 1024,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResourceUsage {
+    pub cpu_image_bytes: usize,
+    pub gpu_image_bytes: usize,
+    pub gpu_image_count: usize,
+    pub icon_count: usize,
+    pub cached_glyph_count: usize,
 }
 
 impl ResourceManager {
@@ -469,6 +495,8 @@ impl ResourceManager {
                 min_filter: wgpu::FilterMode::Linear,
                 ..Default::default()
             }),
+            icons: HashMap::new(),
+            budget: ResourceBudget::default(),
             fonts,
             glyph_cache: HashMap::new(),
             font_cache: HashMap::new(),
@@ -477,7 +505,46 @@ impl ResourceManager {
 
     pub fn set_gpu_image_capacity(&mut self, capacity: usize) {
         self.max_gpu_images = capacity.max(1);
+        self.budget.max_gpu_images = self.max_gpu_images;
         self.evict_gpu_images();
+    }
+
+    pub fn set_budget(&mut self, budget: ResourceBudget) {
+        self.budget = ResourceBudget {
+            max_gpu_images: budget.max_gpu_images.max(1),
+            max_gpu_image_bytes: budget.max_gpu_image_bytes.max(4),
+        };
+        self.max_gpu_images = self.budget.max_gpu_images;
+        self.evict_gpu_images();
+    }
+
+    pub fn budget(&self) -> ResourceBudget {
+        self.budget
+    }
+
+    pub fn usage(&self) -> ResourceUsage {
+        ResourceUsage {
+            cpu_image_bytes: self
+                .cpu
+                .images
+                .values()
+                .map(|image| image.rgba8.len())
+                .sum(),
+            gpu_image_bytes: self.gpu_images.values().map(|image| image.bytes).sum(),
+            gpu_image_count: self.gpu_images.len(),
+            icon_count: self.icons.len(),
+            cached_glyph_count: self.glyph_cache.len(),
+        }
+    }
+
+    pub fn register_icon(&mut self, id: u64, path: IconPath) {
+        self.icons.insert(id, path);
+    }
+    pub fn icon(&self, id: u64) -> Option<&IconPath> {
+        self.icons.get(&id)
+    }
+    pub fn remove_icon(&mut self, id: u64) -> Option<IconPath> {
+        self.icons.remove(&id)
     }
 
     fn register_image(
@@ -537,6 +604,7 @@ impl ResourceManager {
             GpuImage {
                 _texture: texture,
                 view,
+                bytes: image.rgba8.len(),
             },
         );
         self.image_bind_groups
@@ -551,7 +619,14 @@ impl ResourceManager {
     }
 
     fn evict_gpu_images(&mut self) {
-        while self.gpu_images.len() > self.max_gpu_images {
+        while self.gpu_images.len() > self.max_gpu_images
+            || self
+                .gpu_images
+                .values()
+                .map(|image| image.bytes)
+                .sum::<usize>()
+                > self.budget.max_gpu_image_bytes
+        {
             let Some(oldest) = self
                 .last_used
                 .iter()
@@ -1467,12 +1542,23 @@ struct SurfaceState {
     /// Retained renderer items. A clean RenderNode reuses this ordered list
     /// without walking the widget/render tree again.
     retained_items: Option<BTreeMap<Vec<usize>, RenderNodeItem>>,
+    /// GPU draw data keyed by retained-node path. Only nodes whose render key
+    /// changes rebuild these batches; partial replay reads this table directly.
+    retained_gpu_items: Option<Vec<RetainedGpuItem>>,
     spatial_index: Option<SpatialIndex>,
 }
 
 struct GpuBatchCacheEntry {
     batches: Vec<GpuBatch>,
     last_used: u64,
+}
+
+#[derive(Clone)]
+struct RetainedGpuItem {
+    path: Vec<usize>,
+    key: u64,
+    bounds: Rect,
+    batches: Vec<GpuBatch>,
 }
 
 struct TransformBinding {
@@ -1646,6 +1732,7 @@ struct GpuImage {
     // Kept alive for the view and bind groups.
     _texture: wgpu::Texture,
     view: wgpu::TextureView,
+    bytes: usize,
 }
 
 struct CachedGlyph {
@@ -1784,6 +1871,7 @@ impl Renderer {
                 cache_clock: 0,
                 max_gpu_cache_entries: 256,
                 retained_items: None,
+                retained_gpu_items: None,
                 spatial_index: None,
             },
         );
@@ -1861,6 +1949,7 @@ impl Renderer {
                 cache_clock: 0,
                 max_gpu_cache_entries: 256,
                 retained_items: None,
+                retained_gpu_items: None,
                 spatial_index: None,
             },
         );
@@ -1897,6 +1986,7 @@ impl Renderer {
         state.node_gpu_cache.clear();
         state.transform_bindings.clear();
         state.retained_items = None;
+        state.retained_gpu_items = None;
         state.spatial_index = None;
         state.cache_clock = 0;
         Ok(())
@@ -2047,6 +2137,13 @@ impl Renderer {
             .surfaces
             .get_mut(&window)
             .ok_or(RenderError::SurfaceNotAttached(window))?;
+        // Temporarily move retained GPU items out of SurfaceState. This keeps
+        // the replay table stable while the pass mutates other per-surface
+        // caches (transform bindings) without cloning every node batch.
+        let retained_gpu_items = segments
+            .is_some()
+            .then(|| state.retained_gpu_items.take())
+            .flatten();
         // An empty damage list means full invalidation at the UI layer. On a
         // newly attached (or resized) surface, make that explicit so the
         // first frame cannot take a partial replay/composite path.
@@ -2120,47 +2217,15 @@ impl Renderer {
                     1.0,
                 )
             });
-            let node_batches = segments.map(|segments| {
-                segments
-                    .iter()
-                    .map(|segment| {
-                        let gpu_batches = if let Some(cached) = take_gpu_cache(state, segment.key) {
-                            cached
-                        } else {
-                            let mut batches = Vec::new();
-                            for clip in &segment.clips {
-                                batches.extend(Self::build_render_batches(
-                                    self.resources.fonts,
-                                    &mut self.resources.glyph_cache,
-                                    &mut self.resources.font_cache,
-                                    &[PaintCommand::Clip {
-                                        shape: clip.shape.clone(),
-                                    }],
-                                    render_size,
-                                    state.scale_factor.0 as f32,
-                                    clip.transform,
-                                    1.0,
-                                ));
-                            }
-                            batches.extend(Self::build_render_batches(
-                                self.resources.fonts,
-                                &mut self.resources.glyph_cache,
-                                &mut self.resources.font_cache,
-                                &segment.commands,
-                                render_size,
-                                state.scale_factor.0 as f32,
-                                segment.transform,
-                                segment.opacity,
-                            ));
-                            build_gpu_batches(&self.device, batches)
-                        };
-                        (segment.key, segment.bounds, gpu_batches)
-                    })
-                    .collect::<Vec<_>>()
+            let node_batches = segments.map(|_| {
+                retained_gpu_items
+                    .as_ref()
+                    .expect("retained GPU batches are prepared before replay")
             });
             let gpu_batches = if let Some(node_batches) = &node_batches {
                 let mut all = Vec::new();
-                for (_, _, batches) in node_batches {
+                for item in node_batches.iter() {
+                    let batches = &item.batches;
                     let has_clip = batches
                         .iter()
                         .any(|batch| matches!(batch, GpuBatch::Clip(_, _, _)));
@@ -2200,8 +2265,9 @@ impl Renderer {
                             .map(|index| index.query(*region))
                             .unwrap_or_else(|| (0..node_batches.len()).collect());
                         for item_index in candidates {
-                            let (_, bounds, batches) = &node_batches[item_index];
-                            if rect_intersects(*bounds, *region) {
+                            let item = &node_batches[item_index];
+                            if rect_intersects(item.bounds, *region) {
+                                let batches = &item.batches;
                                 let has_clip = batches
                                     .iter()
                                     .any(|batch| matches!(batch, GpuBatch::Clip(_, _, _)));
@@ -2370,11 +2436,7 @@ impl Renderer {
                     }
                 }
             }
-            if let Some(node_batches) = node_batches {
-                for (key, _, batches) in node_batches {
-                    insert_gpu_cache(state, key, batches);
-                }
-            } else {
+            if node_batches.is_none() {
                 insert_gpu_cache(state, batch_hash, gpu_batches);
             }
         }
@@ -2430,6 +2492,9 @@ impl Renderer {
             }
         }
         state.has_contents = true;
+        if let Some(items) = retained_gpu_items {
+            state.retained_gpu_items = Some(items);
+        }
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
         Ok(())
@@ -2469,6 +2534,84 @@ impl Renderer {
         if scene_changed {
             if let Some(state) = self.surfaces.get_mut(&window) {
                 state.spatial_index = Some(SpatialIndex::build(&items));
+            }
+        }
+        let gpu_scene_changed = scene_changed
+            || self
+                .surfaces
+                .get(&window)
+                .and_then(|state| state.retained_gpu_items.as_ref())
+                .is_none();
+        if gpu_scene_changed {
+            // Materialize GPU data only for new or changed retained nodes. The
+            // replay function consumes this table directly, so a clean partial
+            // redraw no longer walks every RenderNode to assemble batches.
+            let old_gpu_items = self
+                .surfaces
+                .get_mut(&window)
+                .and_then(|state| state.retained_gpu_items.take())
+                .unwrap_or_default();
+            let old_gpu_by_path = old_gpu_items
+                .into_iter()
+                .map(|item| (item.path.clone(), item))
+                .collect::<BTreeMap<_, _>>();
+            let (render_size, scale_factor) = {
+                let state = self
+                    .surfaces
+                    .get(&window)
+                    .ok_or(RenderError::SurfaceNotAttached(window))?;
+                let scale = state.scale_factor.0.max(1.0);
+                (
+                    PhysicalSize {
+                        width: (state.size.width as f64 / scale).round().max(1.0) as u32,
+                        height: (state.size.height as f64 / scale).round().max(1.0) as u32,
+                    },
+                    state.scale_factor.0 as f32,
+                )
+            };
+            let mut retained_gpu_items = Vec::with_capacity(retained.len());
+            for (path, item) in &retained {
+                if let Some(previous) = old_gpu_by_path
+                    .get(path)
+                    .filter(|previous| previous.key == item.key)
+                {
+                    retained_gpu_items.push(previous.clone());
+                    continue;
+                }
+                let mut batches = Vec::new();
+                for clip in &item.clips {
+                    batches.extend(Self::build_render_batches(
+                        self.resources.fonts,
+                        &mut self.resources.glyph_cache,
+                        &mut self.resources.font_cache,
+                        &[PaintCommand::Clip {
+                            shape: clip.shape.clone(),
+                        }],
+                        render_size,
+                        scale_factor,
+                        clip.transform,
+                        1.0,
+                    ));
+                }
+                batches.extend(Self::build_render_batches(
+                    self.resources.fonts,
+                    &mut self.resources.glyph_cache,
+                    &mut self.resources.font_cache,
+                    &item.commands,
+                    render_size,
+                    scale_factor,
+                    item.transform,
+                    item.opacity,
+                ));
+                retained_gpu_items.push(RetainedGpuItem {
+                    path: path.clone(),
+                    key: item.key,
+                    bounds: item.bounds,
+                    batches: build_gpu_batches(&self.device, batches),
+                });
+            }
+            if let Some(state) = self.surfaces.get_mut(&window) {
+                state.retained_gpu_items = Some(retained_gpu_items);
             }
         }
         let damage_regions = coalesce_damage_for_items(damage_regions, &items);

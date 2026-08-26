@@ -29,7 +29,8 @@ pub use widgets::{
 };
 pub use zui_render::{
     ClipShape, DirtyFlags, DirtyRegionSet, DirtyState, IconPath, ImageId, ImageResource,
-    LineSegment, RenderNode, RenderNodeBuilder, RenderNodeIndex, ResourceCache, ResourceManager,
+    LineSegment, RenderNode, RenderNodeBuilder, RenderNodeIndex, ResourceBudget, ResourceCache,
+    ResourceManager, ResourceUsage,
     Transform,
 };
 
