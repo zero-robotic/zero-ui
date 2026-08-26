@@ -57,15 +57,25 @@ impl WidgetTree {
         let mut ctx = EventContext::new();
         let result = self.root.event(event, &mut ctx);
         let actions = ctx.take_actions();
-        let invalidated_widgets = ctx.take_invalidated_widgets();
-        self.dirty_widget_ids
-            .extend(invalidated_widgets.into_iter().map(|widget| widget.0));
-        if result == EventResult::RequestRedraw {
+        let invalidations = ctx.take_invalidations();
+        let dirty_regions = ctx.take_dirty_regions();
+        for (widget, regions) in &invalidations {
+            self.dirty_widget_ids.insert(widget.0);
+            if let (Some(node), Some(path)) = (
+                self.render_node.as_mut(),
+                self.render_index.path_for(widget.0),
+            ) {
+                for region in regions {
+                    node.mark_dirty_path(path, zui_render::DirtyFlags::PAINT, Some(*region));
+                }
+            }
+        }
+        if result == EventResult::RequestRedraw || !invalidations.is_empty() {
             if ctx.requires_full_redraw() {
                 self.request_paint(None);
             } else {
                 self.paint_dirty = true;
-                self.dirty_regions.extend(ctx.take_dirty_regions());
+                self.dirty_regions.extend(dirty_regions);
             }
         }
         (result, actions)
@@ -154,6 +164,9 @@ impl WidgetTree {
         self.dirty_regions.clear();
         self.dirty_widget_ids.clear();
         self.full_rebuild = false;
+        if let Some(node) = self.render_node.as_mut() {
+            node.clear_dirty();
+        }
     }
     pub fn root(&self) -> &dyn Widget {
         &*self.root

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use zui_core::{Point, WindowId};
 use zui_platform::{InputEvent, KeyState, MouseButton};
 use zui_render::DirtyRegionSet;
@@ -52,7 +52,7 @@ pub struct Action {
 pub struct EventContext {
     actions: Vec<Action>,
     dirty_regions: DirtyRegionSet,
-    invalidated_widgets: HashSet<crate::WidgetId>,
+    invalidated_widgets: HashMap<crate::WidgetId, DirtyRegionSet>,
     full_redraw: bool,
 }
 
@@ -74,11 +74,17 @@ impl EventContext {
         self.full_redraw = true;
     }
     pub fn invalidate_widget(&mut self, widget: crate::WidgetId, region: zui_core::Rect) {
-        self.invalidated_widgets.insert(widget);
+        self.invalidated_widgets
+            .entry(widget)
+            .or_default()
+            .add(region);
         self.dirty_regions.add(region);
     }
-    pub fn take_invalidated_widgets(&mut self) -> HashSet<crate::WidgetId> {
+    pub fn take_invalidations(&mut self) -> Vec<(crate::WidgetId, Vec<zui_core::Rect>)> {
         std::mem::take(&mut self.invalidated_widgets)
+            .into_iter()
+            .map(|(widget, regions)| (widget, regions.as_slice().to_vec()))
+            .collect()
     }
     pub fn request_full_redraw(&mut self) {
         self.full_redraw = true;

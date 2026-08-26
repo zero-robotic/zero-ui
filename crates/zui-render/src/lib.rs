@@ -962,6 +962,27 @@ impl RenderNode {
         }
     }
 
+    /// Propagates an invalidation from a Widget path to the corresponding
+    /// retained node and all of its ancestors. The path is relative to this
+    /// node and follows child indices in the RenderNode tree.
+    pub fn mark_dirty_path(&mut self, path: &[usize], flags: DirtyFlags, region: Option<Rect>) {
+        if path.is_empty() {
+            self.mark_dirty(flags);
+            if let Some(region) = region {
+                self.mark_dirty_region(region);
+            }
+            return;
+        }
+
+        self.mark_dirty(DirtyFlags::CHILDREN);
+        if let Some(region) = region {
+            self.mark_dirty_region(region);
+        }
+        if let Some(child) = self.children.get_mut(path[0]) {
+            child.mark_dirty_path(&path[1..], flags, region);
+        }
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.dirty.is_dirty() || self.children.iter().any(Self::is_dirty)
     }
@@ -1489,6 +1510,10 @@ struct SurfaceState {
     stencil_reset: wgpu::Buffer,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group: wgpu::BindGroup,
+    /// Whether the swap-chain texture can be the destination of a GPU copy.
+    /// When available, presentation uses a texture copy instead of a
+    /// full-screen fragment composite.
+    direct_copy_present: bool,
     scale_factor: ScaleFactor,
     has_contents: bool,
     /// GPU vertex buffers keyed by the retained render-node/display-list
@@ -1742,9 +1767,16 @@ impl Renderer {
         };
         let surface = unsafe { self.instance.create_surface_unsafe(target) }
             .map_err(|error| RenderError::Surface(error.to_string()))?;
-        let config = surface
+        let mut config = surface
             .get_default_config(&self.adapter, size.width.max(1), size.height.max(1))
             .ok_or_else(|| RenderError::Surface("adapter cannot present to this surface".into()))?;
+        let direct_copy_present = surface
+            .get_capabilities(&self.adapter)
+            .usages
+            .contains(wgpu::TextureUsages::COPY_DST);
+        if direct_copy_present {
+            config.usage |= wgpu::TextureUsages::COPY_DST;
+        }
         surface.configure(&self.device, &config);
         let pipeline = create_rect_pipeline(&self.device, config.format);
         let rounded_pipeline = create_rounded_rect_pipeline(&self.device, config.format);
@@ -1778,6 +1810,7 @@ impl Renderer {
                 stencil_reset,
                 blit_pipeline,
                 blit_bind_group,
+                direct_copy_present,
                 scale_factor,
                 has_contents: false,
                 node_gpu_cache: HashMap::new(),
@@ -1803,9 +1836,16 @@ impl Renderer {
         };
         let surface = unsafe { self.instance.create_surface_unsafe(target) }
             .map_err(|error| RenderError::Surface(error.to_string()))?;
-        let config = surface
+        let mut config = surface
             .get_default_config(&self.adapter, size.width.max(1), size.height.max(1))
             .ok_or_else(|| RenderError::Surface("adapter cannot present to this surface".into()))?;
+        let direct_copy_present = surface
+            .get_capabilities(&self.adapter)
+            .usages
+            .contains(wgpu::TextureUsages::COPY_DST);
+        if direct_copy_present {
+            config.usage |= wgpu::TextureUsages::COPY_DST;
+        }
         surface.configure(&self.device, &config);
         let pipeline = create_rect_pipeline(&self.device, config.format);
         let rounded_pipeline = create_rounded_rect_pipeline(&self.device, config.format);
@@ -1839,6 +1879,7 @@ impl Renderer {
                 stencil_reset,
                 blit_pipeline,
                 blit_bind_group,
+                direct_copy_present,
                 scale_factor,
                 has_contents: false,
                 node_gpu_cache: HashMap::new(),
@@ -2273,33 +2314,55 @@ impl Renderer {
             }
         }
         {
-            // The swap-chain texture is not a persistent render target. In
-            // particular, Metal does not guarantee that LoadOp::Load contains
-            // the previous frame's pixels. A partial composite would
-            // therefore discard controls outside the current damage region.
-            // The retained canvas is still updated locally above; presenting
-            // it is a cheap full-screen blit and must always cover the whole
-            // swap-chain image.
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("zui-render canvas composite pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
+            // The swap-chain texture is not a persistent render target, so it
+            // cannot safely be incrementally loaded on Metal. When the
+            // backend exposes COPY_DST, compose the retained GPU canvas into
+            // the acquired frame with a texture copy. This keeps composition
+            // entirely on the GPU and avoids the full-screen fragment pass.
+            // Some backends do not expose COPY_DST for presentation textures;
+            // retain the shader fallback for those platforms.
+            if state.direct_copy_present {
+                encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &state.canvas,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
                     },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&state.blit_pipeline);
-            pass.set_bind_group(0, &state.blit_bind_group, &[]);
-            set_scissor(&mut pass, None, state.size, state.scale_factor);
-            pass.draw(0..3, 0..1);
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &frame.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width: state.size.width.max(1),
+                        height: state.size.height.max(1),
+                        depth_or_array_layers: 1,
+                    },
+                );
+            } else {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("zui-render canvas composite pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&state.blit_pipeline);
+                pass.set_bind_group(0, &state.blit_bind_group, &[]);
+                set_scissor(&mut pass, None, state.size, state.scale_factor);
+                pass.draw(0..3, 0..1);
+            }
         }
         state.has_contents = true;
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -3018,7 +3081,9 @@ fn create_canvas(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -3759,6 +3824,43 @@ mod tests {
             index.node(&root, 3).and_then(|node| node.source_id),
             Some(3)
         );
+    }
+
+    #[test]
+    fn dirty_path_propagates_flags_and_region_to_ancestors() {
+        let mut root = RenderNode::new(Rect::default());
+        let mut child = RenderNode::new(Rect::default());
+        let leaf = RenderNode::new(Rect::default());
+        root.add_child(child.clone());
+        child.add_child(leaf);
+        root.children[0] = child;
+        root.clear_dirty();
+
+        let region = Rect {
+            origin: Point {
+                x: Dip(4.0),
+                y: Dip(8.0),
+            },
+            size: Size {
+                width: Dip(12.0),
+                height: Dip(16.0),
+            },
+        };
+        root.mark_dirty_path(&[0, 0], DirtyFlags::PAINT, Some(region));
+
+        assert!(root.dirty.flags.contains(DirtyFlags::CHILDREN));
+        assert!(root.dirty.regions.as_slice().contains(&region));
+        assert!(root.children[0].dirty.flags.contains(DirtyFlags::CHILDREN));
+        assert!(root.children[0].dirty.regions.as_slice().contains(&region));
+        assert!(root.children[0].children[0]
+            .dirty
+            .flags
+            .contains(DirtyFlags::PAINT));
+        assert!(root.children[0].children[0]
+            .dirty
+            .regions
+            .as_slice()
+            .contains(&region));
     }
 
     #[test]

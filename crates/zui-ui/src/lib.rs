@@ -310,4 +310,33 @@ mod tests {
         assert_eq!(size.height, Dip(100.0));
         assert_eq!(column.children()[1].bounds().size.height, Dip(60.0));
     }
+
+    #[test]
+    fn widget_invalidation_drives_incremental_tree_rebuild() {
+        let mut tree = WidgetTree::new(Button::new("OK"));
+        tree.layout(Constraints::loose(Size {
+            width: Dip(120.0),
+            height: Dip(40.0),
+        }));
+        tree.render_node_cached();
+        tree.mark_clean();
+
+        let event = UiEvent::pointer(
+            None,
+            Point {
+                x: Dip(10.0),
+                y: Dip(10.0),
+            },
+            InputEvent::CursorMoved {
+                position: Point {
+                    x: Dip(10.0),
+                    y: Dip(10.0),
+                },
+            },
+        );
+        tree.event(&event);
+        assert!(tree.needs_redraw());
+        let node = tree.render_node_cached();
+        assert!(!node.is_dirty());
+    }
 }
