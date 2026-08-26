@@ -151,6 +151,11 @@ impl TextInput {
 
     fn insert_text(&mut self, value: &str) {
         self.delete_selection();
+        // A pointer press establishes a zero-width anchor for potential drag
+        // selection. Once text is committed, that anchor must collapse or it
+        // would turn the newly typed prefix into a selection as the cursor
+        // advances.
+        self.clear_selection();
         self.text.insert_str(self.cursor, value);
         self.cursor += value.len();
         self.reset_blink();

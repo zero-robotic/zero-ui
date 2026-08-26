@@ -30,8 +30,7 @@ pub use widgets::{
 pub use zui_render::{
     ClipShape, DirtyFlags, DirtyRegionSet, DirtyState, IconPath, ImageId, ImageResource,
     LineSegment, RenderNode, RenderNodeBuilder, RenderNodeIndex, ResourceBudget, ResourceCache,
-    ResourceManager, ResourceUsage,
-    Transform,
+    ResourceManager, ResourceUsage, Transform,
 };
 
 #[cfg(test)]
@@ -208,11 +207,13 @@ mod tests {
                 state: KeyState::Pressed,
             },
         );
-        let text = UiEvent::input(InputEvent::Text("a".into()));
+        let first = UiEvent::input(InputEvent::Text("a".into()));
+        let second = UiEvent::input(InputEvent::Text("b".into()));
         let mut context = EventContext::new();
         input.event(&focus, &mut context);
-        input.event(&text, &mut context);
-        assert_eq!(input.text(), "a");
+        input.event(&first, &mut context);
+        input.event(&second, &mut context);
+        assert_eq!(input.text(), "ab");
     }
 
     #[test]
