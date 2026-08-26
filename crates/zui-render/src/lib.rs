@@ -830,10 +830,15 @@ struct RenderNodeItem {
     key: u64,
     bounds: Rect,
     transform: Transform,
-    clip: Option<Rect>,
     opacity: f32,
-    clips: Vec<ClipShape>,
+    clips: Vec<RenderClip>,
     commands: Vec<PaintCommand>,
+}
+
+#[derive(Clone, Debug)]
+struct RenderClip {
+    shape: ClipShape,
+    transform: Transform,
 }
 
 /// Uniform-grid spatial index for retained render items. It is rebuilt only
@@ -1203,194 +1208,9 @@ fn intersect_rect(a: Rect, b: Rect) -> Rect {
     }
 }
 
-fn clip_rect(rect: Rect, clip: Option<Rect>) -> Option<Rect> {
-    let Some(clip) = clip else {
-        return Some(rect);
-    };
-    let left = rect.origin.x.0.max(clip.origin.x.0);
-    let top = rect.origin.y.0.max(clip.origin.y.0);
-    let right = (rect.origin.x.0 + rect.size.width.0).min(clip.origin.x.0 + clip.size.width.0);
-    let bottom = (rect.origin.y.0 + rect.size.height.0).min(clip.origin.y.0 + clip.size.height.0);
-    if right <= left || bottom <= top {
-        None
-    } else {
-        Some(Rect {
-            origin: Point {
-                x: Dip(left),
-                y: Dip(top),
-            },
-            size: zui_core::Size {
-                width: Dip(right - left),
-                height: Dip(bottom - top),
-            },
-        })
-    }
-}
-
-fn clip_line(start: Point, end: Point, clip: Option<Rect>) -> Option<LineSegment> {
-    let Some(clip) = clip else {
-        return Some(LineSegment { start, end });
-    };
-    let x_min = clip.origin.x.0;
-    let x_max = x_min + clip.size.width.0;
-    let y_min = clip.origin.y.0;
-    let y_max = y_min + clip.size.height.0;
-    let dx = end.x.0 - start.x.0;
-    let dy = end.y.0 - start.y.0;
-    let mut low: f32 = 0.0;
-    let mut high: f32 = 1.0;
-    for (p, q) in [
-        (-dx, start.x.0 - x_min),
-        (dx, x_max - start.x.0),
-        (-dy, start.y.0 - y_min),
-        (dy, y_max - start.y.0),
-    ] {
-        if p == 0.0 {
-            if q < 0.0 {
-                return None;
-            }
-        } else {
-            let value = q / p;
-            if p < 0.0 {
-                low = low.max(value);
-            } else {
-                high = high.min(value);
-            }
-            if low > high {
-                return None;
-            }
-        }
-    }
-    Some(LineSegment {
-        start: Point {
-            x: Dip(start.x.0 + low * dx),
-            y: Dip(start.y.0 + low * dy),
-        },
-        end: Point {
-            x: Dip(start.x.0 + high * dx),
-            y: Dip(start.y.0 + high * dy),
-        },
-    })
-}
-
-fn transform_command(
-    command: &PaintCommand,
-    transform: Transform,
-    clip: Option<Rect>,
-    opacity: f32,
-) -> Option<PaintCommand> {
-    let apply_opacity = |mut color: Color| {
-        color.a *= opacity;
-        color
-    };
-    let visible = |rect: Rect| clip.map(|clip| rect_intersects(rect, clip)).unwrap_or(true);
-    match command {
-        PaintCommand::Clear(color) => Some(PaintCommand::Clear(apply_opacity(*color))),
-        PaintCommand::Rect { rect, color } => {
-            let rect = transform.rect(*rect);
-            clip_rect(rect, clip)
-                .filter(|_| visible(rect))
-                .map(|rect| PaintCommand::Rect {
-                    rect,
-                    color: apply_opacity(*color),
-                })
-        }
-        PaintCommand::RoundedRect {
-            rect,
-            radius,
-            color,
-        } => {
-            let rect = transform.rect(*rect);
-            clip_rect(rect, clip)
-                .filter(|_| visible(rect))
-                .map(|rect| PaintCommand::RoundedRect {
-                    rect,
-                    radius: *radius,
-                    color: apply_opacity(*color),
-                })
-        }
-        PaintCommand::Line {
-            start,
-            end,
-            width,
-            color,
-        } => {
-            let start = transform.point(*start);
-            let end = transform.point(*end);
-            let bounds = line_bounds(start, end, *width);
-            clip_line(start, end, clip)
-                .filter(|_| visible(bounds))
-                .map(|segment| PaintCommand::Line {
-                    start: segment.start,
-                    end: segment.end,
-                    width: *width,
-                    color: apply_opacity(*color),
-                })
-        }
-        PaintCommand::Text {
-            text,
-            origin,
-            color,
-            scale,
-        } => {
-            let origin = transform.point(*origin);
-            let rect = Rect {
-                origin,
-                size: zui_core::Size {
-                    width: Dip(1.0),
-                    height: Dip(1.0),
-                },
-            };
-            visible(rect).then_some(PaintCommand::Text {
-                text: text.clone(),
-                origin,
-                color: apply_opacity(*color),
-                scale: *scale,
-            })
-        }
-        PaintCommand::Icon {
-            rect,
-            path,
-            color,
-            stroke,
-        } => {
-            let rect = transform.rect(*rect);
-            visible(rect).then_some(PaintCommand::Icon {
-                rect,
-                path: IconPath::new(
-                    path.segments
-                        .iter()
-                        .filter_map(|segment| {
-                            clip_line(
-                                transform.point(segment.start),
-                                transform.point(segment.end),
-                                clip,
-                            )
-                        })
-                        .collect::<Vec<_>>(),
-                ),
-                color: apply_opacity(*color),
-                stroke: *stroke,
-            })
-        }
-        PaintCommand::Image {
-            rect,
-            image,
-            opacity: image_opacity,
-        } => {
-            let rect = transform.rect(*rect);
-            visible(rect).then_some(PaintCommand::Image {
-                rect,
-                image: *image,
-                opacity: image_opacity * opacity,
-            })
-        }
-        PaintCommand::Clip { shape } => Some(PaintCommand::Clip {
-            shape: transform_clip_shape(shape, transform),
-        }),
-        PaintCommand::Transform(transform) => Some(PaintCommand::Transform(*transform)),
-        PaintCommand::Opacity(value) => Some(PaintCommand::Opacity(value * opacity)),
-    }
+fn apply_opacity(mut color: Color, opacity: f32) -> Color {
+    color.a *= opacity;
+    color
 }
 
 fn rect_intersects(a: Rect, b: Rect) -> bool {
@@ -1416,18 +1236,24 @@ fn build_render_item(
     parent_transform: Transform,
     parent_clip: Option<Rect>,
     parent_opacity: f32,
-    parent_clips: &[ClipShape],
-) -> (RenderNodeItem, Transform, Option<Rect>, f32, Vec<ClipShape>) {
+    parent_clips: &[RenderClip],
+) -> (
+    RenderNodeItem,
+    Transform,
+    Option<Rect>,
+    f32,
+    Vec<RenderClip>,
+) {
     let transform = compose_transform(parent_transform, node.transform);
-    let node_clip = node
+    let node_clip_bounds = node
         .clip
         .as_ref()
-        .map(|clip| transform_clip_shape(clip, transform));
-    let clip = intersect_clip(parent_clip, node_clip.as_ref().map(ClipShape::bounds));
+        .map(|clip| transform_clip_shape(clip, transform).bounds());
+    let clip = intersect_clip(parent_clip, node_clip_bounds);
     let opacity = parent_opacity * node.opacity;
     let mut clips = parent_clips.to_vec();
-    if let Some(node_clip) = node_clip {
-        clips.push(node_clip);
+    if let Some(shape) = node.clip.clone() {
+        clips.push(RenderClip { shape, transform });
     }
     let inherited_clips = clips.clone();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -1439,7 +1265,6 @@ fn build_render_item(
             .map(|clip| intersect_rect(transform.rect(node.local_bounds), clip))
             .unwrap_or_else(|| transform.rect(node.local_bounds)),
         transform,
-        clip,
         opacity,
         clips,
         // Commands remain in the node's local coordinate system. The
@@ -1464,7 +1289,7 @@ fn update_retained_subtree(
     parent_transform: Transform,
     parent_clip: Option<Rect>,
     parent_opacity: f32,
-    parent_clips: &[ClipShape],
+    parent_clips: &[RenderClip],
     force_rebuild: bool,
 ) {
     let state_change = node.dirty.flags.contains(DirtyFlags::PAINT)
@@ -1617,6 +1442,10 @@ struct SurfaceState {
     image_pipeline: wgpu::RenderPipeline,
     stencil_pipeline: wgpu::RenderPipeline,
     stencil_mask_pipeline: wgpu::RenderPipeline,
+    /// Per-transform uniform resources. A draw must never share a mutable
+    /// uniform with a later draw in the same command buffer.
+    transform_bind_group_layout: wgpu::BindGroupLayout,
+    transform_bindings: HashMap<[u32; 6], TransformBinding>,
     canvas: wgpu::Texture,
     canvas_view: wgpu::TextureView,
     stencil: wgpu::Texture,
@@ -1644,6 +1473,11 @@ struct SurfaceState {
 struct GpuBatchCacheEntry {
     batches: Vec<GpuBatch>,
     last_used: u64,
+}
+
+struct TransformBinding {
+    _buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
 }
 
 fn take_gpu_cache(state: &mut SurfaceState, key: u64) -> Option<Vec<GpuBatch>> {
@@ -1707,14 +1541,15 @@ struct ImageVertex {
 }
 
 enum RenderBatch {
-    Rect(Vec<RectVertex>),
-    Rounded(Vec<RoundedRectVertex>),
-    Line(Vec<LineVertex>),
+    Rect(Vec<RectVertex>, Transform),
+    Rounded(Vec<RoundedRectVertex>, Transform),
+    Line(Vec<LineVertex>, Transform),
     Image {
         image: ImageId,
         vertices: Vec<ImageVertex>,
+        transform: Transform,
     },
-    Clip(ClipGeometry),
+    Clip(ClipGeometry, Transform),
 }
 
 #[derive(Clone, Debug)]
@@ -1741,47 +1576,55 @@ enum BatchKind {
 
 #[derive(Clone)]
 enum GpuBatch {
-    Draw(BatchKind, wgpu::Buffer, u32, Vec<u8>),
-    Clip(ClipGeometry, Option<(wgpu::Buffer, u32)>),
+    Draw(BatchKind, wgpu::Buffer, u32, Vec<u8>, Transform),
+    Clip(ClipGeometry, Option<(wgpu::Buffer, u32)>, Transform),
     Scissor(Rect),
 }
 
-fn rect_batch(batches: &mut Vec<RenderBatch>) -> &mut Vec<RectVertex> {
-    if !matches!(batches.last(), Some(RenderBatch::Rect(_))) {
-        batches.push(RenderBatch::Rect(Vec::new()));
+fn rect_batch(batches: &mut Vec<RenderBatch>, transform: Transform) -> &mut Vec<RectVertex> {
+    if !matches!(batches.last(), Some(RenderBatch::Rect(_, current)) if *current == transform) {
+        batches.push(RenderBatch::Rect(Vec::new(), transform));
     }
     match batches.last_mut().expect("rect batch was just added") {
-        RenderBatch::Rect(vertices) => vertices,
+        RenderBatch::Rect(vertices, _) => vertices,
         _ => unreachable!(),
     }
 }
 
-fn rounded_batch(batches: &mut Vec<RenderBatch>) -> &mut Vec<RoundedRectVertex> {
-    if !matches!(batches.last(), Some(RenderBatch::Rounded(_))) {
-        batches.push(RenderBatch::Rounded(Vec::new()));
+fn rounded_batch(
+    batches: &mut Vec<RenderBatch>,
+    transform: Transform,
+) -> &mut Vec<RoundedRectVertex> {
+    if !matches!(batches.last(), Some(RenderBatch::Rounded(_, current)) if *current == transform) {
+        batches.push(RenderBatch::Rounded(Vec::new(), transform));
     }
     match batches.last_mut().expect("rounded batch was just added") {
-        RenderBatch::Rounded(vertices) => vertices,
+        RenderBatch::Rounded(vertices, _) => vertices,
         _ => unreachable!(),
     }
 }
 
-fn line_batch(batches: &mut Vec<RenderBatch>) -> &mut Vec<LineVertex> {
-    if !matches!(batches.last(), Some(RenderBatch::Line(_))) {
-        batches.push(RenderBatch::Line(Vec::new()));
+fn line_batch(batches: &mut Vec<RenderBatch>, transform: Transform) -> &mut Vec<LineVertex> {
+    if !matches!(batches.last(), Some(RenderBatch::Line(_, current)) if *current == transform) {
+        batches.push(RenderBatch::Line(Vec::new(), transform));
     }
     match batches.last_mut().expect("line batch was just added") {
-        RenderBatch::Line(vertices) => vertices,
+        RenderBatch::Line(vertices, _) => vertices,
         _ => unreachable!(),
     }
 }
 
-fn image_batch(batches: &mut Vec<RenderBatch>, image: ImageId) -> &mut Vec<ImageVertex> {
-    if !matches!(batches.last(), Some(RenderBatch::Image { image: current, .. }) if *current == image)
+fn image_batch(
+    batches: &mut Vec<RenderBatch>,
+    image: ImageId,
+    transform: Transform,
+) -> &mut Vec<ImageVertex> {
+    if !matches!(batches.last(), Some(RenderBatch::Image { image: current, transform: current_transform, .. }) if *current == image && *current_transform == transform)
     {
         batches.push(RenderBatch::Image {
             image,
             vertices: Vec::new(),
+            transform,
         });
     }
     match batches.last_mut().expect("image batch was just added") {
@@ -1896,13 +1739,17 @@ impl Renderer {
             config.usage |= wgpu::TextureUsages::COPY_DST;
         }
         surface.configure(&self.device, &config);
-        let pipeline = create_rect_pipeline(&self.device, config.format);
-        let rounded_pipeline = create_rounded_rect_pipeline(&self.device, config.format);
-        let stencil_rounded_pipeline = create_stencil_rounded_pipeline(&self.device, config.format);
-        let line_pipeline = create_line_pipeline(&self.device, config.format);
-        let image_pipeline = create_image_pipeline(&self.device, config.format);
+        let transform_layout = create_transform_bind_group_layout(&self.device);
+        let pipeline = create_rect_pipeline(&self.device, config.format, &transform_layout);
+        let rounded_pipeline =
+            create_rounded_rect_pipeline(&self.device, config.format, &transform_layout);
+        let stencil_rounded_pipeline =
+            create_stencil_rounded_pipeline(&self.device, config.format, &transform_layout);
+        let line_pipeline = create_line_pipeline(&self.device, config.format, &transform_layout);
+        let image_pipeline = create_image_pipeline(&self.device, config.format, &transform_layout);
         let stencil_pipeline = create_stencil_pipeline(&self.device, config.format);
-        let stencil_mask_pipeline = create_stencil_mask_pipeline(&self.device, config.format);
+        let stencil_mask_pipeline =
+            create_stencil_mask_pipeline(&self.device, config.format, &transform_layout);
         let (canvas, canvas_view) = create_canvas(&self.device, size, config.format);
         let (stencil, stencil_view) = create_stencil(&self.device, size);
         let stencil_reset = create_stencil_reset_buffer(&self.device);
@@ -1921,6 +1768,8 @@ impl Renderer {
                 image_pipeline,
                 stencil_pipeline,
                 stencil_mask_pipeline,
+                transform_bind_group_layout: transform_layout,
+                transform_bindings: HashMap::new(),
                 canvas,
                 canvas_view,
                 stencil,
@@ -1967,13 +1816,17 @@ impl Renderer {
             config.usage |= wgpu::TextureUsages::COPY_DST;
         }
         surface.configure(&self.device, &config);
-        let pipeline = create_rect_pipeline(&self.device, config.format);
-        let rounded_pipeline = create_rounded_rect_pipeline(&self.device, config.format);
-        let stencil_rounded_pipeline = create_stencil_rounded_pipeline(&self.device, config.format);
-        let line_pipeline = create_line_pipeline(&self.device, config.format);
-        let image_pipeline = create_image_pipeline(&self.device, config.format);
+        let transform_layout = create_transform_bind_group_layout(&self.device);
+        let pipeline = create_rect_pipeline(&self.device, config.format, &transform_layout);
+        let rounded_pipeline =
+            create_rounded_rect_pipeline(&self.device, config.format, &transform_layout);
+        let stencil_rounded_pipeline =
+            create_stencil_rounded_pipeline(&self.device, config.format, &transform_layout);
+        let line_pipeline = create_line_pipeline(&self.device, config.format, &transform_layout);
+        let image_pipeline = create_image_pipeline(&self.device, config.format, &transform_layout);
         let stencil_pipeline = create_stencil_pipeline(&self.device, config.format);
-        let stencil_mask_pipeline = create_stencil_mask_pipeline(&self.device, config.format);
+        let stencil_mask_pipeline =
+            create_stencil_mask_pipeline(&self.device, config.format, &transform_layout);
         let (canvas, canvas_view) = create_canvas(&self.device, size, config.format);
         let (stencil, stencil_view) = create_stencil(&self.device, size);
         let stencil_reset = create_stencil_reset_buffer(&self.device);
@@ -1992,6 +1845,8 @@ impl Renderer {
                 image_pipeline,
                 stencil_pipeline,
                 stencil_mask_pipeline,
+                transform_bind_group_layout: transform_layout,
+                transform_bindings: HashMap::new(),
                 canvas,
                 canvas_view,
                 stencil,
@@ -2040,6 +1895,7 @@ impl Renderer {
             create_blit_bind_group(&self.device, &state.blit_pipeline, &state.canvas_view);
         state.has_contents = false;
         state.node_gpu_cache.clear();
+        state.transform_bindings.clear();
         state.retained_items = None;
         state.spatial_index = None;
         state.cache_clock = 0;
@@ -2055,42 +1911,61 @@ impl Renderer {
         glyph_cache: &mut HashMap<(usize, char, u32, u32), CachedGlyph>,
         font_cache: &mut HashMap<char, Option<usize>>,
         commands: &[PaintCommand],
-        render_size: PhysicalSize,
+        _render_size: PhysicalSize,
         scale_factor: f32,
+        clip_transform: Transform,
+        initial_opacity: f32,
     ) -> Vec<RenderBatch> {
         let mut batches = Vec::new();
+        let mut command_transform = Transform::IDENTITY;
+        let mut opacity = initial_opacity;
         for command in commands {
             match command {
+                PaintCommand::Transform(next) => {
+                    command_transform = compose_transform(command_transform, *next);
+                    continue;
+                }
+                PaintCommand::Opacity(value) => {
+                    opacity *= value.clamp(0.0, 1.0);
+                    continue;
+                }
                 PaintCommand::Clip { shape } => {
-                    batches.push(RenderBatch::Clip(match shape {
-                        ClipShape::Rect(rect) => ClipGeometry::Rect(*rect),
-                        ClipShape::RoundedRect { rect, radius } => ClipGeometry::Rounded {
-                            rect: *rect,
-                            radius: *radius,
+                    batches.push(RenderBatch::Clip(
+                        match shape {
+                            ClipShape::Rect(rect) => ClipGeometry::Rect(*rect),
+                            ClipShape::RoundedRect { rect, radius } => ClipGeometry::Rounded {
+                                rect: *rect,
+                                radius: *radius,
+                            },
+                            ClipShape::Path { path } => ClipGeometry::Path {
+                                bounds: path_bounds(path),
+                                vertices: path_mask_vertices(path),
+                            },
                         },
-                        ClipShape::Path { path } => ClipGeometry::Path {
-                            bounds: path_bounds(path),
-                            vertices: path_mask_vertices(path, render_size),
-                        },
-                    }));
+                        compose_transform(clip_transform, command_transform),
+                    ));
                     continue;
                 }
                 _ => {}
             }
+            let transform = compose_transform(clip_transform, command_transform);
             match command {
                 PaintCommand::Rect { rect, color } => {
-                    append_rect(rect_batch(&mut batches), *rect, *color, render_size);
+                    append_rect(
+                        rect_batch(&mut batches, transform),
+                        *rect,
+                        apply_opacity(*color, opacity),
+                    );
                 }
                 PaintCommand::RoundedRect {
                     rect,
                     radius,
                     color,
                 } => append_rounded_rect(
-                    rounded_batch(&mut batches),
+                    rounded_batch(&mut batches, transform),
                     *rect,
                     *radius,
-                    *color,
-                    render_size,
+                    apply_opacity(*color, opacity),
                 ),
                 PaintCommand::Line {
                     start,
@@ -2098,12 +1973,11 @@ impl Renderer {
                     width,
                     color,
                 } => append_line(
-                    line_batch(&mut batches),
+                    line_batch(&mut batches, transform),
                     *start,
                     *end,
                     *width,
-                    *color,
-                    render_size,
+                    apply_opacity(*color, opacity),
                 ),
                 PaintCommand::Text {
                     text,
@@ -2111,15 +1985,14 @@ impl Renderer {
                     color,
                     scale,
                 } => append_text(
-                    rect_batch(&mut batches),
+                    rect_batch(&mut batches, transform),
                     fonts,
                     glyph_cache,
                     font_cache,
                     text,
                     *origin,
-                    *color,
+                    apply_opacity(*color, opacity),
                     *scale,
-                    render_size,
                     scale_factor,
                 ),
                 PaintCommand::Icon {
@@ -2130,24 +2003,22 @@ impl Renderer {
                 } => {
                     for segment in &path.segments {
                         append_line(
-                            line_batch(&mut batches),
+                            line_batch(&mut batches, transform),
                             segment.start,
                             segment.end,
                             *stroke,
-                            *color,
-                            render_size,
+                            apply_opacity(*color, opacity),
                         );
                     }
                 }
                 PaintCommand::Image {
                     rect,
                     image,
-                    opacity,
+                    opacity: image_opacity,
                 } => append_image(
-                    image_batch(&mut batches, *image),
+                    image_batch(&mut batches, *image, transform),
                     *rect,
-                    *opacity,
-                    render_size,
+                    *image_opacity * opacity,
                 ),
                 PaintCommand::Transform(_) | PaintCommand::Opacity(_) | PaintCommand::Clear(_) => {}
                 PaintCommand::Clip { .. } => unreachable!(),
@@ -2207,11 +2078,7 @@ impl Renderer {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let resolved_commands = segments
-            .is_none()
-            .then(|| resolve_commands(commands))
-            .unwrap_or_default();
-        let batch_hash = cache_key.unwrap_or_else(|| command_list_hash(&resolved_commands));
+        let batch_hash = cache_key.unwrap_or_else(|| command_list_hash(commands));
         let clear = commands
             .iter()
             .rev()
@@ -2246,28 +2113,46 @@ impl Renderer {
                     self.resources.fonts,
                     &mut self.resources.glyph_cache,
                     &mut self.resources.font_cache,
-                    &resolved_commands,
+                    commands,
                     render_size,
                     state.scale_factor.0 as f32,
+                    Transform::IDENTITY,
+                    1.0,
                 )
             });
             let node_batches = segments.map(|segments| {
                 segments
                     .iter()
                     .map(|segment| {
-                        let resolved = resolve_node_item_commands(segment);
                         let gpu_batches = if let Some(cached) = take_gpu_cache(state, segment.key) {
                             cached
                         } else {
-                            let batches = Self::build_render_batches(
+                            let mut batches = Vec::new();
+                            for clip in &segment.clips {
+                                batches.extend(Self::build_render_batches(
+                                    self.resources.fonts,
+                                    &mut self.resources.glyph_cache,
+                                    &mut self.resources.font_cache,
+                                    &[PaintCommand::Clip {
+                                        shape: clip.shape.clone(),
+                                    }],
+                                    render_size,
+                                    state.scale_factor.0 as f32,
+                                    clip.transform,
+                                    1.0,
+                                ));
+                            }
+                            batches.extend(Self::build_render_batches(
                                 self.resources.fonts,
                                 &mut self.resources.glyph_cache,
                                 &mut self.resources.font_cache,
-                                &resolved,
+                                &segment.commands,
                                 render_size,
                                 state.scale_factor.0 as f32,
-                            );
-                            build_gpu_batches(&self.device, batches, render_size)
+                                segment.transform,
+                                segment.opacity,
+                            ));
+                            build_gpu_batches(&self.device, batches)
                         };
                         (segment.key, segment.bounds, gpu_batches)
                     })
@@ -2278,13 +2163,21 @@ impl Renderer {
                 for (_, _, batches) in node_batches {
                     let has_clip = batches
                         .iter()
-                        .any(|batch| matches!(batch, GpuBatch::Clip(_, _)));
+                        .any(|batch| matches!(batch, GpuBatch::Clip(_, _, _)));
                     if has_clip {
-                        all.push(GpuBatch::Clip(ClipGeometry::Reset, None));
+                        all.push(GpuBatch::Clip(
+                            ClipGeometry::Reset,
+                            None,
+                            Transform::IDENTITY,
+                        ));
                     }
                     all.extend(batches.iter().cloned());
                     if has_clip {
-                        all.push(GpuBatch::Clip(ClipGeometry::Reset, None));
+                        all.push(GpuBatch::Clip(
+                            ClipGeometry::Reset,
+                            None,
+                            Transform::IDENTITY,
+                        ));
                     }
                 }
                 coalesce_gpu_batches(&self.device, all)
@@ -2293,7 +2186,6 @@ impl Renderer {
                     build_gpu_batches(
                         &self.device,
                         batches.expect("command batches are built without node items"),
-                        render_size,
                     )
                 })
             };
@@ -2312,13 +2204,21 @@ impl Renderer {
                             if rect_intersects(*bounds, *region) {
                                 let has_clip = batches
                                     .iter()
-                                    .any(|batch| matches!(batch, GpuBatch::Clip(_, _)));
+                                    .any(|batch| matches!(batch, GpuBatch::Clip(_, _, _)));
                                 if has_clip {
-                                    replay.push(GpuBatch::Clip(ClipGeometry::Reset, None));
+                                    replay.push(GpuBatch::Clip(
+                                        ClipGeometry::Reset,
+                                        None,
+                                        Transform::IDENTITY,
+                                    ));
                                 }
                                 replay.extend(batches.iter().cloned());
                                 if has_clip {
-                                    replay.push(GpuBatch::Clip(ClipGeometry::Reset, None));
+                                    replay.push(GpuBatch::Clip(
+                                        ClipGeometry::Reset,
+                                        None,
+                                        Transform::IDENTITY,
+                                    ));
                                 }
                             }
                         }
@@ -2336,6 +2236,22 @@ impl Renderer {
             } else {
                 gpu_batches.clone()
             };
+            let mut transform_groups = HashMap::new();
+            for batch in &replay_batches {
+                let transform = match batch {
+                    GpuBatch::Draw(_, _, _, _, transform) | GpuBatch::Clip(_, _, transform) => {
+                        Some(*transform)
+                    }
+                    GpuBatch::Scissor(_) => None,
+                };
+                if let Some(transform) = transform {
+                    transform_groups
+                        .entry(transform_key(transform))
+                        .or_insert_with(|| {
+                            transform_bind_group_for(state, &self.device, transform, render_size)
+                        });
+                }
+            }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("zui-render clear pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2378,13 +2294,20 @@ impl Renderer {
                     pass.draw(0..6, 0..1);
                     continue;
                 }
-                if let GpuBatch::Clip(geometry, mask) = batch {
+                if let GpuBatch::Clip(geometry, mask, transform) = batch {
                     if let Some((buffer, count)) = mask {
                         pass.set_pipeline(match geometry {
                             ClipGeometry::Rounded { .. } => &state.stencil_rounded_pipeline,
                             _ => &state.stencil_mask_pipeline,
                         });
                         pass.set_stencil_reference(active_clip_depth);
+                        pass.set_bind_group(
+                            0,
+                            transform_groups
+                                .get(&transform_key(*transform))
+                                .expect("clip transform binding is prepared"),
+                            &[],
+                        );
                         pass.set_vertex_buffer(0, buffer.slice(..));
                         pass.draw(0..*count, 0..1);
                         active_clip_depth = active_clip_depth.saturating_add(1);
@@ -2398,17 +2321,20 @@ impl Renderer {
                     }
                     active_clip = match geometry {
                         ClipGeometry::Rect(rect) | ClipGeometry::Rounded { rect, .. } => {
-                            Some(*rect)
+                            Some(transform.rect(*rect))
                         }
-                        ClipGeometry::Path { bounds, .. } => Some(*bounds),
+                        ClipGeometry::Path { bounds, .. } => Some(transform.rect(*bounds)),
                         ClipGeometry::Reset => None,
                     };
                     continue;
                 }
-                let (kind, draws): (&BatchKind, Vec<(&wgpu::Buffer, u32)>) = match batch {
-                    GpuBatch::Draw(kind, buffer, count, _) => (kind, vec![(buffer, *count)]),
-                    _ => continue,
-                };
+                let (kind, draws, transform): (&BatchKind, Vec<(&wgpu::Buffer, u32)>, Transform) =
+                    match batch {
+                        GpuBatch::Draw(kind, buffer, count, _, transform) => {
+                            (kind, vec![(buffer, *count)], *transform)
+                        }
+                        _ => continue,
+                    };
                 let scissor = intersect_clip(active_clip, active_damage);
                 set_scissor(&mut pass, scissor, state.size, state.scale_factor);
                 pass.set_stencil_reference(active_clip_depth);
@@ -2418,13 +2344,20 @@ impl Renderer {
                     BatchKind::Line => &state.line_pipeline,
                     BatchKind::Image(_) => &state.image_pipeline,
                 });
+                pass.set_bind_group(
+                    0,
+                    transform_groups
+                        .get(&transform_key(transform))
+                        .expect("draw transform binding is prepared"),
+                    &[],
+                );
                 if let BatchKind::Image(image) = *kind {
-                    let layout = state.image_pipeline.get_bind_group_layout(0);
+                    let layout = state.image_pipeline.get_bind_group_layout(1);
                     if let Some(bind_group) =
                         self.resources
                             .bind_group(&self.device, &self.queue, window, image, &layout)
                     {
-                        pass.set_bind_group(0, &bind_group, &[]);
+                        pass.set_bind_group(1, &bind_group, &[]);
                         for (vertex_buffer, count) in draws {
                             pass.set_vertex_buffer(0, vertex_buffer.slice(..));
                             pass.draw(0..count, 0..1);
@@ -2566,64 +2499,72 @@ impl Renderer {
     }
 }
 
-fn build_gpu_batches(
-    device: &wgpu::Device,
-    batches: Vec<RenderBatch>,
-    render_size: PhysicalSize,
-) -> Vec<GpuBatch> {
+fn build_gpu_batches(device: &wgpu::Device, batches: Vec<RenderBatch>) -> Vec<GpuBatch> {
     coalesce_gpu_batches(
         device,
         batches
             .into_iter()
             .filter_map(|batch| match batch {
-                RenderBatch::Rect(vertices) if !vertices.is_empty() => Some(GpuBatch::Draw(
-                    BatchKind::Rect,
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("zui-render rectangles"),
-                        contents: bytemuck::cast_slice(&vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    }),
-                    vertices.len() as u32,
-                    bytemuck::cast_slice(&vertices).to_vec(),
-                )),
-                RenderBatch::Rounded(vertices) if !vertices.is_empty() => Some(GpuBatch::Draw(
-                    BatchKind::Rounded,
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("zui-render rounded rectangles"),
-                        contents: bytemuck::cast_slice(&vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    }),
-                    vertices.len() as u32,
-                    bytemuck::cast_slice(&vertices).to_vec(),
-                )),
-                RenderBatch::Line(vertices) if !vertices.is_empty() => Some(GpuBatch::Draw(
-                    BatchKind::Line,
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("zui-render lines"),
-                        contents: bytemuck::cast_slice(&vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    }),
-                    vertices.len() as u32,
-                    bytemuck::cast_slice(&vertices).to_vec(),
-                )),
-                RenderBatch::Image { image, vertices } if !vertices.is_empty() => {
+                RenderBatch::Rect(vertices, transform) if !vertices.is_empty() => {
                     Some(GpuBatch::Draw(
-                        BatchKind::Image(image),
+                        BatchKind::Rect,
                         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("zui-render images"),
+                            label: Some("zui-render rectangles"),
                             contents: bytemuck::cast_slice(&vertices),
                             usage: wgpu::BufferUsages::VERTEX,
                         }),
                         vertices.len() as u32,
                         bytemuck::cast_slice(&vertices).to_vec(),
+                        transform,
                     ))
                 }
-                RenderBatch::Clip(geometry) => {
+                RenderBatch::Rounded(vertices, transform) if !vertices.is_empty() => {
+                    Some(GpuBatch::Draw(
+                        BatchKind::Rounded,
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("zui-render rounded rectangles"),
+                            contents: bytemuck::cast_slice(&vertices),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        }),
+                        vertices.len() as u32,
+                        bytemuck::cast_slice(&vertices).to_vec(),
+                        transform,
+                    ))
+                }
+                RenderBatch::Line(vertices, transform) if !vertices.is_empty() => {
+                    Some(GpuBatch::Draw(
+                        BatchKind::Line,
+                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("zui-render lines"),
+                            contents: bytemuck::cast_slice(&vertices),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        }),
+                        vertices.len() as u32,
+                        bytemuck::cast_slice(&vertices).to_vec(),
+                        transform,
+                    ))
+                }
+                RenderBatch::Image {
+                    image,
+                    vertices,
+                    transform,
+                } if !vertices.is_empty() => Some(GpuBatch::Draw(
+                    BatchKind::Image(image),
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("zui-render images"),
+                        contents: bytemuck::cast_slice(&vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+                    vertices.len() as u32,
+                    bytemuck::cast_slice(&vertices).to_vec(),
+                    transform,
+                )),
+                RenderBatch::Clip(geometry, clip_transform) => {
                     let mask = match geometry {
                         ClipGeometry::Reset => None,
                         ClipGeometry::Rect(rect) => {
                             let mut vertices = Vec::new();
-                            append_rect(&mut vertices, rect, Color::WHITE, render_size);
+                            append_rect(&mut vertices, rect, Color::WHITE);
                             let buffer =
                                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                                     label: Some("zui-render stencil clip"),
@@ -2634,13 +2575,7 @@ fn build_gpu_batches(
                         }
                         ClipGeometry::Rounded { rect, radius } => {
                             let mut vertices = Vec::new();
-                            append_rounded_rect(
-                                &mut vertices,
-                                rect,
-                                radius,
-                                Color::WHITE,
-                                render_size,
-                            );
+                            append_rounded_rect(&mut vertices, rect, radius, Color::WHITE);
                             let buffer =
                                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                                     label: Some("zui-render rounded stencil clip"),
@@ -2659,7 +2594,7 @@ fn build_gpu_batches(
                             Some((buffer, vertices.len() as u32))
                         }
                     };
-                    Some(GpuBatch::Clip(geometry, mask))
+                    Some(GpuBatch::Clip(geometry, mask, clip_transform))
                 }
                 _ => None,
             })
@@ -2671,16 +2606,17 @@ fn coalesce_gpu_batches(device: &wgpu::Device, batches: Vec<GpuBatch>) -> Vec<Gp
     let mut result = Vec::with_capacity(batches.len());
     for batch in batches {
         match batch {
-            GpuBatch::Draw(kind, buffer, count, bytes) => {
+            GpuBatch::Draw(kind, buffer, count, bytes, transform) => {
                 let mut merged = false;
                 if let Some(GpuBatch::Draw(
                     previous_kind,
                     previous_buffer,
                     previous_count,
                     previous_bytes,
+                    previous_transform,
                 )) = result.last_mut()
                 {
-                    if *previous_kind == kind {
+                    if *previous_kind == kind && *previous_transform == transform {
                         previous_bytes.extend_from_slice(&bytes);
                         *previous_count += count;
                         *previous_buffer =
@@ -2693,7 +2629,7 @@ fn coalesce_gpu_batches(device: &wgpu::Device, batches: Vec<GpuBatch>) -> Vec<Gp
                     }
                 }
                 if !merged {
-                    result.push(GpuBatch::Draw(kind, buffer, count, bytes));
+                    result.push(GpuBatch::Draw(kind, buffer, count, bytes, transform));
                 }
             }
             other => result.push(other),
@@ -2742,7 +2678,6 @@ fn append_text(
     origin: Point,
     color: Color,
     scale: u32,
-    size: PhysicalSize,
     scale_factor: f32,
 ) {
     if !fonts.is_empty() {
@@ -2810,7 +2745,6 @@ fn append_text(
                         a: color.a * pixel.alpha,
                         ..color
                     },
-                    size,
                 );
             }
             x += metrics.advance_width / scale_factor;
@@ -2837,7 +2771,6 @@ fn append_text(
                             },
                         },
                         color,
-                        size,
                     );
                 }
             }
@@ -2846,54 +2779,11 @@ fn append_text(
     }
 }
 
-fn resolve_node_item_commands(segment: &RenderNodeItem) -> Vec<PaintCommand> {
-    let mut resolved = segment
-        .clips
-        .iter()
-        .cloned()
-        .map(|shape| PaintCommand::Clip { shape })
-        .collect::<Vec<_>>();
-    resolved.extend(
-        resolve_commands(&segment.commands)
-            .into_iter()
-            .filter_map(|command| {
-                transform_command(&command, segment.transform, segment.clip, segment.opacity)
-            }),
-    );
-    resolved
-}
-
-fn resolve_commands(commands: &[PaintCommand]) -> Vec<PaintCommand> {
-    let mut resolved = Vec::with_capacity(commands.len());
-    let mut transform = Transform::IDENTITY;
-    let mut clip = None;
-    let mut opacity = 1.0;
-    for command in commands {
-        match command {
-            PaintCommand::Transform(next) => transform = compose_transform(transform, *next),
-            PaintCommand::Clip { shape } => {
-                let shape = transform_clip_shape(shape, transform);
-                clip = intersect_clip(clip, Some(shape.bounds()));
-                if clip.is_some() {
-                    resolved.push(PaintCommand::Clip { shape });
-                }
-            }
-            PaintCommand::Opacity(value) => opacity *= value.clamp(0.0, 1.0),
-            command => {
-                if let Some(command) = transform_command(command, transform, clip, opacity) {
-                    resolved.push(command);
-                }
-            }
-        }
-    }
-    resolved
-}
-
-fn append_rect(vertices: &mut Vec<RectVertex>, rect: Rect, color: Color, size: PhysicalSize) {
-    let left = rect.origin.x.0 / size.width.max(1) as f32 * 2.0 - 1.0;
-    let right = (rect.origin.x.0 + rect.size.width.0) / size.width.max(1) as f32 * 2.0 - 1.0;
-    let top = 1.0 - rect.origin.y.0 / size.height.max(1) as f32 * 2.0;
-    let bottom = 1.0 - (rect.origin.y.0 + rect.size.height.0) / size.height.max(1) as f32 * 2.0;
+fn append_rect(vertices: &mut Vec<RectVertex>, rect: Rect, color: Color) {
+    let left = rect.origin.x.0;
+    let right = rect.origin.x.0 + rect.size.width.0;
+    let top = rect.origin.y.0;
+    let bottom = rect.origin.y.0 + rect.size.height.0;
     let color = [color.r, color.g, color.b, color.a];
     vertices.extend([
         RectVertex {
@@ -2927,7 +2817,7 @@ fn path_bounds(path: &IconPath) -> Rect {
     ClipShape::Path { path: path.clone() }.bounds()
 }
 
-fn path_mask_vertices(path: &IconPath, size: PhysicalSize) -> Vec<RectVertex> {
+fn path_mask_vertices(path: &IconPath) -> Vec<RectVertex> {
     let mut points = path
         .segments
         .iter()
@@ -2955,12 +2845,7 @@ fn path_mask_vertices(path: &IconPath, size: PhysicalSize) -> Vec<RectVertex> {
         return Vec::new();
     }
     let winding = if area > 0.0 { 1.0 } else { -1.0 };
-    let to_position = |point: Point| {
-        [
-            point.x.0 / size.width.max(1) as f32 * 2.0 - 1.0,
-            1.0 - point.y.0 / size.height.max(1) as f32 * 2.0,
-        ]
-    };
+    let to_position = |point: Point| [point.x.0, point.y.0];
     let mut remaining = (0..points.len()).collect::<Vec<_>>();
     let mut vertices = Vec::with_capacity((points.len() - 2) * 3);
     let mut guard = 0;
@@ -3011,14 +2896,7 @@ fn point_in_triangle(point: Point, a: Point, b: Point, c: Point, winding: f32) -
     ab * winding >= 0.0 && bc * winding >= 0.0 && ca * winding >= 0.0
 }
 
-fn append_line(
-    vertices: &mut Vec<LineVertex>,
-    start: Point,
-    end: Point,
-    width: Dip,
-    color: Color,
-    size: PhysicalSize,
-) {
+fn append_line(vertices: &mut Vec<LineVertex>, start: Point, end: Point, width: Dip, color: Color) {
     let dx = end.x.0 - start.x.0;
     let dy = end.y.0 - start.y.0;
     let length = (dx * dx + dy * dy).sqrt();
@@ -3047,10 +2925,7 @@ fn append_line(
         },
     ];
     let to_vertex = |point: Point| LineVertex {
-        position: [
-            point.x.0 / size.width.max(1) as f32 * 2.0 - 1.0,
-            1.0 - point.y.0 / size.height.max(1) as f32 * 2.0,
-        ],
+        position: [point.x.0, point.y.0],
         point: [point.x.0, point.y.0],
         start: [start.x.0, start.y.0],
         end: [end.x.0, end.y.0],
@@ -3067,11 +2942,11 @@ fn append_line(
     ]);
 }
 
-fn append_image(vertices: &mut Vec<ImageVertex>, rect: Rect, opacity: f32, size: PhysicalSize) {
-    let left = rect.origin.x.0 / size.width.max(1) as f32 * 2.0 - 1.0;
-    let right = (rect.origin.x.0 + rect.size.width.0) / size.width.max(1) as f32 * 2.0 - 1.0;
-    let top = 1.0 - rect.origin.y.0 / size.height.max(1) as f32 * 2.0;
-    let bottom = 1.0 - (rect.origin.y.0 + rect.size.height.0) / size.height.max(1) as f32 * 2.0;
+fn append_image(vertices: &mut Vec<ImageVertex>, rect: Rect, opacity: f32) {
+    let left = rect.origin.x.0;
+    let right = rect.origin.x.0 + rect.size.width.0;
+    let top = rect.origin.y.0;
+    let bottom = rect.origin.y.0 + rect.size.height.0;
     vertices.extend([
         ImageVertex {
             position: [left, top],
@@ -3142,17 +3017,16 @@ fn append_rounded_rect(
     rect: Rect,
     radius: Dip,
     color: Color,
-    size: PhysicalSize,
 ) {
     let radius = radius
         .0
         .max(0.0)
         .min(rect.size.width.0 / 2.0)
         .min(rect.size.height.0 / 2.0);
-    let left = rect.origin.x.0 / size.width.max(1) as f32 * 2.0 - 1.0;
-    let right = (rect.origin.x.0 + rect.size.width.0) / size.width.max(1) as f32 * 2.0 - 1.0;
-    let top = 1.0 - rect.origin.y.0 / size.height.max(1) as f32 * 2.0;
-    let bottom = 1.0 - (rect.origin.y.0 + rect.size.height.0) / size.height.max(1) as f32 * 2.0;
+    let left = rect.origin.x.0;
+    let right = rect.origin.x.0 + rect.size.width.0;
+    let top = rect.origin.y.0;
+    let bottom = rect.origin.y.0 + rect.size.height.0;
     let color = [color.r, color.g, color.b, color.a];
     let make_vertex = |position: [f32; 2], local: [f32; 2]| RoundedRectVertex {
         position,
@@ -3525,41 +3399,135 @@ fn create_stencil_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
-    create_stencil_pipeline_with_state(device, format, stencil_reset_state())
+    create_stencil_pipeline_with_state(device, format, stencil_reset_state(), None)
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuTransform {
+    matrix: [[f32; 4]; 4],
+}
+
+fn gpu_transform(transform: Transform, size: PhysicalSize) -> GpuTransform {
+    let [a, b, c, d, tx, ty] = transform.matrix;
+    let width = size.width.max(1) as f32;
+    let height = size.height.max(1) as f32;
+    GpuTransform {
+        // WGSL matrices are column-major. This maps logical DIP coordinates
+        // directly to NDC, including arbitrary affine node transforms.
+        matrix: [
+            [2.0 * a / width, -2.0 * b / height, 0.0, 0.0],
+            [2.0 * c / width, -2.0 * d / height, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [2.0 * tx / width - 1.0, 1.0 - 2.0 * ty / height, 0.0, 1.0],
+        ],
+    }
+}
+
+fn create_transform_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("zui-render transform bind group layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<GpuTransform>() as u64),
+            },
+            count: None,
+        }],
+    })
+}
+
+fn transform_key(transform: Transform) -> [u32; 6] {
+    transform.matrix.map(f32::to_bits)
+}
+
+fn transform_bind_group_for(
+    state: &mut SurfaceState,
+    device: &wgpu::Device,
+    transform: Transform,
+    size: PhysicalSize,
+) -> wgpu::BindGroup {
+    let key = transform_key(transform);
+    if let Some(binding) = state.transform_bindings.get(&key) {
+        return binding.bind_group.clone();
+    }
+    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("zui-render transform uniform"),
+        contents: bytemuck::bytes_of(&gpu_transform(transform, size)),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("zui-render transform bind group"),
+        layout: &state.transform_bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+    });
+    state.transform_bindings.insert(
+        key,
+        TransformBinding {
+            _buffer: buffer,
+            bind_group: bind_group.clone(),
+        },
+    );
+    bind_group
 }
 
 fn create_stencil_mask_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
+    transform_layout: &wgpu::BindGroupLayout,
 ) -> wgpu::RenderPipeline {
-    create_stencil_pipeline_with_state(device, format, stencil_mask_state())
+    create_stencil_pipeline_with_state(device, format, stencil_mask_state(), Some(transform_layout))
 }
 
 fn create_stencil_pipeline_with_state(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
     stencil_state: wgpu::DepthStencilState,
+    transform_layout: Option<&wgpu::BindGroupLayout>,
 ) -> wgpu::RenderPipeline {
+    let transformed = transform_layout.is_some();
+    let layout = transform_layout.map(|layout| {
+        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("zui-render stencil mask pipeline layout"),
+            bind_group_layouts: &[Some(layout)],
+            immediate_size: 0,
+        })
+    });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("zui-render stencil mask shader"),
         source: wgpu::ShaderSource::Wgsl(
-            r#"
+            if transformed { r#"
+            struct Transform { matrix: mat4x4<f32>, };
+            @group(0) @binding(0) var<uniform> transform: Transform;
             @vertex
             fn vs(@location(0) position: vec2<f32>, @location(1) color: vec4<f32>) -> @builtin(position) vec4<f32> {
-                return vec4<f32>(position, 0.0, 1.0);
+                return transform.matrix * vec4<f32>(position, 0.0, 1.0);
             }
 
             @fragment
             fn fs() -> @location(0) vec4<f32> {
                 return vec4<f32>(0.0);
             }
-        "#
+        "# } else { r#"
+            @vertex
+            fn vs(@location(0) position: vec2<f32>, @location(1) color: vec4<f32>) -> @builtin(position) vec4<f32> {
+                return vec4<f32>(position, 0.0, 1.0);
+            }
+            @fragment
+            fn fs() -> @location(0) vec4<f32> { return vec4<f32>(0.0); }
+        "# }
             .into(),
         ),
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("zui-render stencil mask pipeline"),
-        layout: None,
+        layout: layout.as_ref(),
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs"),
@@ -3591,11 +3559,14 @@ fn create_stencil_pipeline_with_state(
 fn create_rect_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
+    transform_layout: &wgpu::BindGroupLayout,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("zui-render rectangle shader"),
         source: wgpu::ShaderSource::Wgsl(
             r#"
+            struct Transform { matrix: mat4x4<f32>, };
+            @group(0) @binding(0) var<uniform> transform: Transform;
             struct VertexOutput {
                 @builtin(position) position: vec4<f32>,
                 @location(0) color: vec4<f32>,
@@ -3603,7 +3574,7 @@ fn create_rect_pipeline(
             @vertex
             fn vs(@location(0) position: vec2<f32>, @location(1) color: vec4<f32>) -> VertexOutput {
                 var output: VertexOutput;
-                output.position = vec4<f32>(position, 0.0, 1.0);
+                output.position = transform.matrix * vec4<f32>(position, 0.0, 1.0);
                 output.color = color;
                 return output;
             }
@@ -3613,9 +3584,14 @@ fn create_rect_pipeline(
             .into(),
         ),
     });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("zui-render rectangle pipeline layout"),
+        bind_group_layouts: &[Some(transform_layout)],
+        immediate_size: 0,
+    });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("zui-render rectangle pipeline"),
-        layout: None,
+        layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs"),
@@ -3647,13 +3623,16 @@ fn create_rect_pipeline(
 fn create_image_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
+    transform_layout: &wgpu::BindGroupLayout,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("zui-render image shader"),
         source: wgpu::ShaderSource::Wgsl(
             r#"
-            @group(0) @binding(0) var image: texture_2d<f32>;
-            @group(0) @binding(1) var image_sampler: sampler;
+            struct Transform { matrix: mat4x4<f32>, };
+            @group(0) @binding(0) var<uniform> transform: Transform;
+            @group(1) @binding(0) var image: texture_2d<f32>;
+            @group(1) @binding(1) var image_sampler: sampler;
 
             struct VertexOutput {
                 @builtin(position) position: vec4<f32>,
@@ -3668,7 +3647,7 @@ fn create_image_pipeline(
                 @location(2) opacity: f32,
             ) -> VertexOutput {
                 var output: VertexOutput;
-                output.position = vec4<f32>(position, 0.0, 1.0);
+                output.position = transform.matrix * vec4<f32>(position, 0.0, 1.0);
                 output.uv = uv;
                 output.opacity = opacity;
                 return output;
@@ -3706,7 +3685,7 @@ fn create_image_pipeline(
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("zui-render image pipeline layout"),
-        bind_group_layouts: &[Some(&bind_group_layout)],
+        bind_group_layouts: &[Some(transform_layout), Some(&bind_group_layout)],
         immediate_size: 0,
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -3743,11 +3722,14 @@ fn create_image_pipeline(
 fn create_rounded_rect_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
+    transform_layout: &wgpu::BindGroupLayout,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("zui-render rounded rectangle SDF shader"),
         source: wgpu::ShaderSource::Wgsl(
             r#"
+            struct Transform { matrix: mat4x4<f32>, };
+            @group(0) @binding(0) var<uniform> transform: Transform;
             struct VertexOutput {
                 @builtin(position) position: vec4<f32>,
                 @location(0) local: vec2<f32>,
@@ -3765,7 +3747,7 @@ fn create_rounded_rect_pipeline(
                 @location(4) color: vec4<f32>,
             ) -> VertexOutput {
                 var output: VertexOutput;
-                output.position = vec4<f32>(position, 0.0, 1.0);
+                output.position = transform.matrix * vec4<f32>(position, 0.0, 1.0);
                 output.local = local;
                 output.size = size;
                 output.radius = radius;
@@ -3790,9 +3772,14 @@ fn create_rounded_rect_pipeline(
             .into(),
         ),
     });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("zui-render rounded rectangle pipeline layout"),
+        bind_group_layouts: &[Some(transform_layout)],
+        immediate_size: 0,
+    });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("zui-render rounded rectangle SDF pipeline"),
-        layout: None,
+        layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs"),
@@ -3830,11 +3817,14 @@ fn create_rounded_rect_pipeline(
 fn create_stencil_rounded_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
+    transform_layout: &wgpu::BindGroupLayout,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("zui-render rounded stencil mask shader"),
         source: wgpu::ShaderSource::Wgsl(
             r#"
+            struct Transform { matrix: mat4x4<f32>, };
+            @group(0) @binding(0) var<uniform> transform: Transform;
             struct VertexOutput {
                 @builtin(position) position: vec4<f32>,
                 @location(0) local: vec2<f32>,
@@ -3846,7 +3836,7 @@ fn create_stencil_rounded_pipeline(
                   @location(2) size: vec2<f32>, @location(3) radius: f32,
                   @location(4) color: vec4<f32>) -> VertexOutput {
                 var output: VertexOutput;
-                output.position = vec4<f32>(position, 0.0, 1.0);
+                output.position = transform.matrix * vec4<f32>(position, 0.0, 1.0);
                 output.local = local;
                 output.size = size;
                 output.radius = radius;
@@ -3867,9 +3857,14 @@ fn create_stencil_rounded_pipeline(
             .into(),
         ),
     });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("zui-render rounded stencil mask pipeline layout"),
+        bind_group_layouts: &[Some(transform_layout)],
+        immediate_size: 0,
+    });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("zui-render rounded stencil mask pipeline"),
-        layout: None,
+        layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs"),
@@ -3903,11 +3898,14 @@ fn create_stencil_rounded_pipeline(
 fn create_line_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
+    transform_layout: &wgpu::BindGroupLayout,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("zui-render antialiased line shader"),
         source: wgpu::ShaderSource::Wgsl(
             r#"
+            struct Transform { matrix: mat4x4<f32>, };
+            @group(0) @binding(0) var<uniform> transform: Transform;
             struct VertexOutput {
                 @builtin(position) position: vec4<f32>,
                 @location(0) point: vec2<f32>,
@@ -3927,7 +3925,7 @@ fn create_line_pipeline(
                 @location(5) color: vec4<f32>,
             ) -> VertexOutput {
                 var output: VertexOutput;
-                output.position = vec4<f32>(position, 0.0, 1.0);
+                output.position = transform.matrix * vec4<f32>(position, 0.0, 1.0);
                 output.point = point;
                 output.start = start;
                 output.end = end;
@@ -3955,9 +3953,14 @@ fn create_line_pipeline(
             .into(),
         ),
     });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("zui-render line pipeline layout"),
+        bind_group_layouts: &[Some(transform_layout)],
+        immediate_size: 0,
+    });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("zui-render antialiased line pipeline"),
-        layout: None,
+        layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs"),
@@ -4001,12 +4004,44 @@ mod tests {
     fn noop_device_can_create_gpu_objects() {
         let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let _encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        let _pipeline = create_rounded_rect_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let transform_layout = create_transform_bind_group_layout(&device);
+        let _pipeline = create_rounded_rect_pipeline(
+            &device,
+            wgpu::TextureFormat::Rgba8Unorm,
+            &transform_layout,
+        );
         let _stencil_pipeline = create_stencil_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
-        let _rounded_stencil_pipeline =
-            create_stencil_rounded_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
-        let _line_pipeline = create_line_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
-        let _image_pipeline = create_image_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let _rounded_stencil_pipeline = create_stencil_rounded_pipeline(
+            &device,
+            wgpu::TextureFormat::Rgba8Unorm,
+            &transform_layout,
+        );
+        let _line_pipeline =
+            create_line_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm, &transform_layout);
+        let _image_pipeline =
+            create_image_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm, &transform_layout);
+    }
+
+    #[test]
+    fn gpu_transform_maps_local_dips_to_clip_space() {
+        let transform = compose_transform(
+            Transform::translate(Dip(10.0), Dip(20.0)),
+            Transform::scale(2.0, 3.0),
+        );
+        let matrix = gpu_transform(
+            transform,
+            PhysicalSize {
+                width: 100,
+                height: 200,
+            },
+        )
+        .matrix;
+        // Column-major affine matrix: x = 2 * (2x + 10) / 100 - 1;
+        // y = 1 - 2 * (3y + 20) / 200.
+        assert_eq!(matrix[0][0], 0.04);
+        assert_eq!(matrix[1][1], -0.03);
+        assert_eq!(matrix[3][0], -0.8);
+        assert_eq!(matrix[3][1], 0.8);
     }
 
     #[test]
@@ -4131,7 +4166,6 @@ mod tests {
                 },
             },
             transform: Transform::IDENTITY,
-            clip: None,
             opacity: 1.0,
             clips: Vec::new(),
             commands: Vec::new(),
@@ -4261,8 +4295,12 @@ mod tests {
     }
 
     #[test]
-    fn clip_commands_are_preserved_for_gpu_scissor_segments() {
+    fn command_transforms_are_preserved_for_gpu_batches() {
         let mut commands = Vec::new();
+        commands.push(PaintCommand::Transform(Transform::translate(
+            Dip(3.0),
+            Dip(4.0),
+        )));
         commands.push(PaintCommand::Clip {
             shape: ClipShape::Rect(Rect {
                 origin: Point {
@@ -4288,9 +4326,27 @@ mod tests {
             },
             color: Color::WHITE,
         });
-        let resolved = resolve_commands(&commands);
-        assert!(matches!(resolved.first(), Some(PaintCommand::Clip { .. })));
-        assert!(matches!(resolved.get(1), Some(PaintCommand::Rect { .. })));
+        let mut glyph_cache = HashMap::new();
+        let mut font_cache = HashMap::new();
+        let batches = Renderer::build_render_batches(
+            &[],
+            &mut glyph_cache,
+            &mut font_cache,
+            &commands,
+            PhysicalSize {
+                width: 100,
+                height: 100,
+            },
+            1.0,
+            Transform::IDENTITY,
+            1.0,
+        );
+        assert!(
+            matches!(batches.first(), Some(RenderBatch::Clip(_, transform)) if *transform == Transform::translate(Dip(3.0), Dip(4.0)))
+        );
+        assert!(
+            matches!(batches.get(1), Some(RenderBatch::Rect(_, transform)) if *transform == Transform::translate(Dip(3.0), Dip(4.0)))
+        );
     }
 
     #[test]
