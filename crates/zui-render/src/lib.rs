@@ -3,7 +3,7 @@
 //! This crate deliberately exposes no `wgpu::Device` to widgets. Widgets produce
 //! drawing data; `Renderer` owns the GPU and the per-window swap-chain surfaces.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
 
@@ -826,7 +826,7 @@ pub struct RenderNode {
 }
 
 #[derive(Clone, Debug)]
-struct RenderSegment {
+struct RenderNodeItem {
     key: u64,
     bounds: Rect,
     transform: Transform,
@@ -1037,50 +1037,6 @@ impl RenderNode {
         )
         .hash(&mut hasher);
         hasher.finish()
-    }
-
-    fn flatten_segments(&self) -> Vec<RenderSegment> {
-        let mut segments = Vec::new();
-        self.flatten_segments_with_state(&mut segments, Transform::IDENTITY, None, 1.0, &[]);
-        segments
-    }
-
-    fn flatten_segments_with_state(
-        &self,
-        segments: &mut Vec<RenderSegment>,
-        parent_transform: Transform,
-        parent_clip: Option<Rect>,
-        parent_opacity: f32,
-        parent_clips: &[ClipShape],
-    ) {
-        let transform = compose_transform(parent_transform, self.transform);
-        let node_clip = self
-            .clip
-            .as_ref()
-            .map(|clip| transform_clip_shape(clip, transform));
-        let clip = intersect_clip(parent_clip, node_clip.as_ref().map(ClipShape::bounds));
-        let opacity = parent_opacity * self.opacity;
-        let mut clips = parent_clips.to_vec();
-        if let Some(node_clip) = node_clip {
-            clips.push(node_clip);
-        }
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.local_gpu_cache_key().hash(&mut hasher);
-        format!("{:?}{:?}{:?}{:?}", transform, clip, opacity, clips).hash(&mut hasher);
-        segments.push(RenderSegment {
-            key: hasher.finish(),
-            bounds: clip
-                .map(|clip| intersect_rect(transform.rect(self.local_bounds), clip))
-                .unwrap_or_else(|| transform.rect(self.local_bounds)),
-            transform,
-            clip,
-            opacity,
-            clips: clips.clone(),
-            commands: self.commands.clone(),
-        });
-        for child in &self.children {
-            child.flatten_segments_with_state(segments, transform, clip, opacity, &clips);
-        }
     }
 
     /// Converts a tree whose nodes were arranged in window coordinates into
@@ -1397,7 +1353,107 @@ fn rects_touch_or_overlap(a: Rect, b: Rect) -> bool {
         && b.origin.y.0 <= a_bottom
 }
 
-fn coalesce_damage_for_segments(regions: &[Rect], segments: &[RenderSegment]) -> Vec<Rect> {
+fn build_render_item(
+    node: &RenderNode,
+    parent_transform: Transform,
+    parent_clip: Option<Rect>,
+    parent_opacity: f32,
+    parent_clips: &[ClipShape],
+) -> (RenderNodeItem, Transform, Option<Rect>, f32, Vec<ClipShape>) {
+    let transform = compose_transform(parent_transform, node.transform);
+    let node_clip = node
+        .clip
+        .as_ref()
+        .map(|clip| transform_clip_shape(clip, transform));
+    let clip = intersect_clip(parent_clip, node_clip.as_ref().map(ClipShape::bounds));
+    let opacity = parent_opacity * node.opacity;
+    let mut clips = parent_clips.to_vec();
+    if let Some(node_clip) = node_clip {
+        clips.push(node_clip);
+    }
+    let inherited_clips = clips.clone();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    node.local_gpu_cache_key().hash(&mut hasher);
+    format!("{:?}{:?}{:?}{:?}", transform, clip, opacity, clips).hash(&mut hasher);
+    let item = RenderNodeItem {
+        key: hasher.finish(),
+        bounds: clip
+            .map(|clip| intersect_rect(transform.rect(node.local_bounds), clip))
+            .unwrap_or_else(|| transform.rect(node.local_bounds)),
+        transform,
+        clip,
+        opacity,
+        clips,
+        // Commands remain in the node's local coordinate system. The
+        // renderer resolves them only while producing GPU vertices.
+        commands: node.commands.clone(),
+    };
+    (item, transform, clip, opacity, inherited_clips)
+}
+
+fn path_starts_with(path: &[usize], prefix: &[usize]) -> bool {
+    path.len() >= prefix.len() && path[..prefix.len()] == *prefix
+}
+
+fn remove_cached_subtree(cache: &mut BTreeMap<Vec<usize>, RenderNodeItem>, path: &[usize]) {
+    cache.retain(|cached_path, _| !path_starts_with(cached_path, path));
+}
+
+fn update_retained_subtree(
+    node: &RenderNode,
+    path: &mut Vec<usize>,
+    cache: &mut BTreeMap<Vec<usize>, RenderNodeItem>,
+    parent_transform: Transform,
+    parent_clip: Option<Rect>,
+    parent_opacity: f32,
+    parent_clips: &[ClipShape],
+    force_rebuild: bool,
+) {
+    let state_change = node.dirty.flags.contains(DirtyFlags::PAINT)
+        || node.dirty.flags.contains(DirtyFlags::LAYOUT)
+        || node.dirty.flags.contains(DirtyFlags::RESOURCES);
+    let rebuild_subtree = force_rebuild || state_change || !cache.contains_key(path);
+    if rebuild_subtree {
+        remove_cached_subtree(cache, path);
+    }
+
+    let (item, transform, clip, opacity, clips) = build_render_item(
+        node,
+        parent_transform,
+        parent_clip,
+        parent_opacity,
+        parent_clips,
+    );
+    if rebuild_subtree {
+        cache.insert(path.clone(), item);
+    }
+
+    // Remove cached children which no longer exist after a structural update.
+    cache.retain(|cached_path, _| {
+        !(cached_path.len() > path.len()
+            && path_starts_with(cached_path, path)
+            && cached_path[path.len()] >= node.children.len())
+    });
+
+    for (index, child) in node.children.iter().enumerate() {
+        path.push(index);
+        if rebuild_subtree || child.dirty.is_dirty() || !cache.contains_key(path) {
+            update_retained_subtree(
+                child,
+                path,
+                cache,
+                transform,
+                clip,
+                opacity,
+                &clips,
+                rebuild_subtree,
+            );
+        }
+        path.pop();
+    }
+}
+
+fn coalesce_damage_for_items(regions: &[Rect], segments: &[RenderNodeItem]) -> Vec<Rect> {
     let mut result = regions.to_vec();
     let mut changed = true;
     while changed {
@@ -1521,6 +1577,9 @@ struct SurfaceState {
     node_gpu_cache: HashMap<u64, GpuBatchCacheEntry>,
     cache_clock: u64,
     max_gpu_cache_entries: usize,
+    /// Retained renderer items. A clean RenderNode reuses this ordered list
+    /// without walking the widget/render tree again.
+    retained_items: Option<BTreeMap<Vec<usize>, RenderNodeItem>>,
 }
 
 struct GpuBatchCacheEntry {
@@ -1816,6 +1875,7 @@ impl Renderer {
                 node_gpu_cache: HashMap::new(),
                 cache_clock: 0,
                 max_gpu_cache_entries: 256,
+                retained_items: None,
             },
         );
         Ok(())
@@ -1885,6 +1945,7 @@ impl Renderer {
                 node_gpu_cache: HashMap::new(),
                 cache_clock: 0,
                 max_gpu_cache_entries: 256,
+                retained_items: None,
             },
         );
         Ok(())
@@ -1918,6 +1979,7 @@ impl Renderer {
             create_blit_bind_group(&self.device, &state.blit_pipeline, &state.canvas_view);
         state.has_contents = false;
         state.node_gpu_cache.clear();
+        state.retained_items = None;
         state.cache_clock = 0;
         Ok(())
     }
@@ -2038,7 +2100,7 @@ impl Renderer {
         commands: &[PaintCommand],
         damage_regions: &[Rect],
         cache_key: Option<u64>,
-        segments: Option<&[RenderSegment]>,
+        segments: Option<&[RenderNodeItem]>,
     ) -> Result<(), RenderError> {
         commands.iter().try_for_each(PaintCommand::validate)?;
         for command in commands {
@@ -2083,9 +2145,12 @@ impl Renderer {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let resolved_commands = resolve_commands(commands);
+        let resolved_commands = segments
+            .is_none()
+            .then(|| resolve_commands(commands))
+            .unwrap_or_default();
         let batch_hash = cache_key.unwrap_or_else(|| command_list_hash(&resolved_commands));
-        let clear = resolved_commands
+        let clear = commands
             .iter()
             .rev()
             .find_map(|command| match command {
@@ -2095,15 +2160,7 @@ impl Renderer {
                     b: color.b as f64,
                     a: color.a as f64,
                 }),
-                PaintCommand::Rect { .. } => None,
-                PaintCommand::RoundedRect { .. } => None,
-                PaintCommand::Line { .. } => None,
-                PaintCommand::Text { .. } => None,
-                PaintCommand::Icon { .. }
-                | PaintCommand::Image { .. }
-                | PaintCommand::Clip { .. }
-                | PaintCommand::Transform(_)
-                | PaintCommand::Opacity(_) => None,
+                _ => None,
             })
             .unwrap_or(wgpu::Color {
                 r: 0.0,
@@ -2122,19 +2179,21 @@ impl Renderer {
                 width: (state.size.width as f64 / scale).round().max(1.0) as u32,
                 height: (state.size.height as f64 / scale).round().max(1.0) as u32,
             };
-            let batches = Self::build_render_batches(
-                self.resources.fonts,
-                &mut self.resources.glyph_cache,
-                &mut self.resources.font_cache,
-                &resolved_commands,
-                render_size,
-                state.scale_factor.0 as f32,
-            );
+            let batches = segments.is_none().then(|| {
+                Self::build_render_batches(
+                    self.resources.fonts,
+                    &mut self.resources.glyph_cache,
+                    &mut self.resources.font_cache,
+                    &resolved_commands,
+                    render_size,
+                    state.scale_factor.0 as f32,
+                )
+            });
             let node_batches = segments.map(|segments| {
                 segments
                     .iter()
                     .map(|segment| {
-                        let resolved = resolve_segment_commands(segment);
+                        let resolved = resolve_node_item_commands(segment);
                         let gpu_batches = if let Some(cached) = take_gpu_cache(state, segment.key) {
                             cached
                         } else {
@@ -2168,8 +2227,13 @@ impl Renderer {
                 }
                 coalesce_gpu_batches(&self.device, all)
             } else {
-                take_gpu_cache(state, batch_hash)
-                    .unwrap_or_else(|| build_gpu_batches(&self.device, batches, render_size))
+                take_gpu_cache(state, batch_hash).unwrap_or_else(|| {
+                    build_gpu_batches(
+                        &self.device,
+                        batches.expect("command batches are built without node items"),
+                        render_size,
+                    )
+                })
             };
             let replay_batches = if state.has_contents && !damage_regions.is_empty() {
                 if let Some(node_batches) = &node_batches {
@@ -2380,19 +2444,44 @@ impl Renderer {
         damage_regions: &[Rect],
         clear: Color,
     ) -> Result<(), RenderError> {
-        let segments = node.flatten_segments();
-        let damage_regions = coalesce_damage_for_segments(damage_regions, &segments);
-        let mut commands = vec![PaintCommand::Clear(clear)];
-        for segment in &segments {
-            commands.extend(segment.commands.iter().cloned());
+        let mut retained = self
+            .surfaces
+            .get_mut(&window)
+            .and_then(|state| state.retained_items.take())
+            .unwrap_or_default();
+        let initial_scene = retained.is_empty();
+        if node.dirty.is_dirty() || initial_scene {
+            let mut path = Vec::new();
+            update_retained_subtree(
+                node,
+                &mut path,
+                &mut retained,
+                Transform::IDENTITY,
+                None,
+                1.0,
+                &[],
+                initial_scene,
+            );
         }
-        self.render_commands_with_damage_regions_key(
+        let items = retained.values().cloned().collect::<Vec<_>>();
+        let damage_regions = coalesce_damage_for_items(damage_regions, &items);
+        let mut commands = vec![PaintCommand::Clear(clear)];
+        for item in &items {
+            commands.extend(item.commands.iter().cloned());
+        }
+        let result = self.render_commands_with_damage_regions_key(
             window,
             &commands,
             &damage_regions,
             None,
-            Some(&segments),
-        )
+            Some(&items),
+        );
+        if result.is_ok() {
+            if let Some(state) = self.surfaces.get_mut(&window) {
+                state.retained_items = Some(retained);
+            }
+        }
+        result
     }
 
     pub fn device(&self) -> &wgpu::Device {
@@ -2683,7 +2772,7 @@ fn append_text(
     }
 }
 
-fn resolve_segment_commands(segment: &RenderSegment) -> Vec<PaintCommand> {
+fn resolve_node_item_commands(segment: &RenderNodeItem) -> Vec<PaintCommand> {
     let mut resolved = segment
         .clips
         .iter()
@@ -3790,7 +3879,7 @@ mod tests {
     }
 
     #[test]
-    fn render_node_flattens_commands_before_children() {
+    fn render_node_keeps_commands_before_children() {
         let mut node = RenderNode::new(Rect::default());
         node.commands.push(PaintCommand::Rect {
             rect: Rect::default(),
@@ -3897,8 +3986,8 @@ mod tests {
     }
 
     #[test]
-    fn shared_segment_damage_is_coalesced_once() {
-        let segments = vec![RenderSegment {
+    fn shared_item_damage_is_coalesced_once() {
+        let items = vec![RenderNodeItem {
             key: 1,
             bounds: Rect {
                 origin: Point {
@@ -3935,7 +4024,7 @@ mod tests {
                 },
             },
         ];
-        let merged = coalesce_damage_for_segments(&regions, &segments);
+        let merged = coalesce_damage_for_items(&regions, &items);
         assert_eq!(merged.len(), 1);
     }
 

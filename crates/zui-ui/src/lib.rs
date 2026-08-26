@@ -337,6 +337,8 @@ mod tests {
         tree.event(&event);
         assert!(tree.needs_redraw());
         let node = tree.render_node_cached();
-        assert!(!node.is_dirty());
+        assert!(node.is_dirty());
+        tree.mark_clean();
+        assert!(!tree.render_node_cached().is_dirty());
     }
 }

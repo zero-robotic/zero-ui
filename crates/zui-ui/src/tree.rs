@@ -85,6 +85,7 @@ impl WidgetTree {
             let mut context = RenderBuildContext::new(None, &[], true, &self.theme);
             let mut node = self.root.build_render_node_incremental(&mut context);
             node.normalize_local_coordinates();
+            node.mark_dirty(zui_render::DirtyFlags::PAINT);
             self.render_index = node.build_index();
             self.render_node = Some(node);
         } else if self.paint_dirty {
@@ -103,6 +104,13 @@ impl WidgetTree {
             );
             let mut node = self.root.build_render_node_incremental(&mut context);
             node.normalize_local_coordinates();
+            if self.full_rebuild {
+                node.mark_dirty(zui_render::DirtyFlags::PAINT);
+            } else {
+                for path in &dirty_paths {
+                    node.mark_dirty_path(path, zui_render::DirtyFlags::PAINT, None);
+                }
+            }
             self.render_index = node.build_index();
             self.render_node = Some(node);
         }
