@@ -836,6 +836,64 @@ struct RenderNodeItem {
     commands: Vec<PaintCommand>,
 }
 
+/// Uniform-grid spatial index for retained render items. It is rebuilt only
+/// when the retained scene changes and lets damage replay visit intersecting
+/// nodes without scanning every item.
+#[derive(Clone, Debug, Default)]
+struct SpatialIndex {
+    cell_size: f32,
+    cells: HashMap<(i32, i32), Vec<usize>>,
+    bounds: Vec<Rect>,
+}
+
+impl SpatialIndex {
+    fn build(items: &[RenderNodeItem]) -> Self {
+        let cell_size = 128.0_f32;
+        let mut index = Self {
+            cell_size,
+            cells: HashMap::new(),
+            bounds: items.iter().map(|item| item.bounds).collect(),
+        };
+        for (item_index, item) in items.iter().enumerate() {
+            let (min_x, min_y, max_x, max_y) = index.cell_range(item.bounds);
+            for y in min_y..=max_y {
+                for x in min_x..=max_x {
+                    index.cells.entry((x, y)).or_default().push(item_index);
+                }
+            }
+        }
+        index
+    }
+
+    fn cell_range(&self, rect: Rect) -> (i32, i32, i32, i32) {
+        let min_x = (rect.origin.x.0 / self.cell_size).floor() as i32;
+        let min_y = (rect.origin.y.0 / self.cell_size).floor() as i32;
+        let max_x = ((rect.origin.x.0 + rect.size.width.0) / self.cell_size).floor() as i32;
+        let max_y = ((rect.origin.y.0 + rect.size.height.0) / self.cell_size).floor() as i32;
+        (min_x, min_y, max_x, max_y)
+    }
+
+    fn query(&self, region: Rect) -> Vec<usize> {
+        let (min_x, min_y, max_x, max_y) = self.cell_range(region);
+        let mut result = Vec::new();
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                if let Some(indices) = self.cells.get(&(x, y)) {
+                    result.extend(
+                        indices
+                            .iter()
+                            .copied()
+                            .filter(|index| rect_intersects(self.bounds[*index], region)),
+                    );
+                }
+            }
+        }
+        result.sort_unstable();
+        result.dedup();
+        result
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RenderNodeIndex {
     paths: HashMap<u64, Vec<usize>>,
@@ -1580,6 +1638,7 @@ struct SurfaceState {
     /// Retained renderer items. A clean RenderNode reuses this ordered list
     /// without walking the widget/render tree again.
     retained_items: Option<BTreeMap<Vec<usize>, RenderNodeItem>>,
+    spatial_index: Option<SpatialIndex>,
 }
 
 struct GpuBatchCacheEntry {
@@ -1876,6 +1935,7 @@ impl Renderer {
                 cache_clock: 0,
                 max_gpu_cache_entries: 256,
                 retained_items: None,
+                spatial_index: None,
             },
         );
         Ok(())
@@ -1946,6 +2006,7 @@ impl Renderer {
                 cache_clock: 0,
                 max_gpu_cache_entries: 256,
                 retained_items: None,
+                spatial_index: None,
             },
         );
         Ok(())
@@ -1980,6 +2041,7 @@ impl Renderer {
         state.has_contents = false;
         state.node_gpu_cache.clear();
         state.retained_items = None;
+        state.spatial_index = None;
         state.cache_clock = 0;
         Ok(())
     }
@@ -2240,7 +2302,13 @@ impl Renderer {
                     let mut replay = Vec::new();
                     for region in damage_regions {
                         replay.push(GpuBatch::Scissor(*region));
-                        for (_, bounds, batches) in node_batches {
+                        let candidates = state
+                            .spatial_index
+                            .as_ref()
+                            .map(|index| index.query(*region))
+                            .unwrap_or_else(|| (0..node_batches.len()).collect());
+                        for item_index in candidates {
+                            let (_, bounds, batches) = &node_batches[item_index];
                             if rect_intersects(*bounds, *region) {
                                 let has_clip = batches
                                     .iter()
@@ -2450,7 +2518,8 @@ impl Renderer {
             .and_then(|state| state.retained_items.take())
             .unwrap_or_default();
         let initial_scene = retained.is_empty();
-        if node.dirty.is_dirty() || initial_scene {
+        let scene_changed = node.dirty.is_dirty() || initial_scene;
+        if scene_changed {
             let mut path = Vec::new();
             update_retained_subtree(
                 node,
@@ -2464,6 +2533,11 @@ impl Renderer {
             );
         }
         let items = retained.values().cloned().collect::<Vec<_>>();
+        if scene_changed {
+            if let Some(state) = self.surfaces.get_mut(&window) {
+                state.spatial_index = Some(SpatialIndex::build(&items));
+            }
+        }
         let damage_regions = coalesce_damage_for_items(damage_regions, &items);
         let mut commands = vec![PaintCommand::Clear(clear)];
         for item in &items {
@@ -2854,7 +2928,7 @@ fn path_bounds(path: &IconPath) -> Rect {
 }
 
 fn path_mask_vertices(path: &IconPath, size: PhysicalSize) -> Vec<RectVertex> {
-    let points = path
+    let mut points = path
         .segments
         .iter()
         .map(|segment| segment.start)
@@ -2862,22 +2936,79 @@ fn path_mask_vertices(path: &IconPath, size: PhysicalSize) -> Vec<RectVertex> {
     if points.len() < 3 {
         return Vec::new();
     }
+    points.dedup_by(|left, right| left == right);
+    if points.len() >= 2 && points.first() == points.last() {
+        points.pop();
+    }
+    if points.len() < 3 {
+        return Vec::new();
+    }
+    let area = points
+        .iter()
+        .enumerate()
+        .map(|(index, point)| {
+            let next = points[(index + 1) % points.len()];
+            point.x.0 * next.y.0 - next.x.0 * point.y.0
+        })
+        .sum::<f32>();
+    if area.abs() <= f32::EPSILON {
+        return Vec::new();
+    }
+    let winding = if area > 0.0 { 1.0 } else { -1.0 };
     let to_position = |point: Point| {
         [
             point.x.0 / size.width.max(1) as f32 * 2.0 - 1.0,
             1.0 - point.y.0 / size.height.max(1) as f32 * 2.0,
         ]
     };
+    let mut remaining = (0..points.len()).collect::<Vec<_>>();
     let mut vertices = Vec::with_capacity((points.len() - 2) * 3);
-    for index in 1..points.len() - 1 {
-        for point in [points[0], points[index], points[index + 1]] {
-            vertices.push(RectVertex {
-                position: to_position(point),
-                color: [1.0; 4],
+    let mut guard = 0;
+    while remaining.len() > 2 && guard < points.len() * points.len() {
+        let mut clipped = false;
+        for offset in 0..remaining.len() {
+            let previous = remaining[(offset + remaining.len() - 1) % remaining.len()];
+            let current = remaining[offset];
+            let next = remaining[(offset + 1) % remaining.len()];
+            let a = points[previous];
+            let b = points[current];
+            let c = points[next];
+            let cross = (b.x.0 - a.x.0) * (c.y.0 - a.y.0) - (b.y.0 - a.y.0) * (c.x.0 - a.x.0);
+            if cross * winding <= 0.0 {
+                continue;
+            }
+            let contains_point = remaining.iter().any(|candidate| {
+                if *candidate == previous || *candidate == current || *candidate == next {
+                    return false;
+                }
+                point_in_triangle(points[*candidate], a, b, c, winding)
             });
+            if contains_point {
+                continue;
+            }
+            for point in [a, b, c] {
+                vertices.push(RectVertex {
+                    position: to_position(point),
+                    color: [1.0; 4],
+                });
+            }
+            remaining.remove(offset);
+            clipped = true;
+            break;
         }
+        if !clipped {
+            break;
+        }
+        guard += 1;
     }
     vertices
+}
+
+fn point_in_triangle(point: Point, a: Point, b: Point, c: Point, winding: f32) -> bool {
+    let ab = (b.x.0 - a.x.0) * (point.y.0 - a.y.0) - (b.y.0 - a.y.0) * (point.x.0 - a.x.0);
+    let bc = (c.x.0 - b.x.0) * (point.y.0 - b.y.0) - (c.y.0 - b.y.0) * (point.x.0 - b.x.0);
+    let ca = (a.x.0 - c.x.0) * (point.y.0 - c.y.0) - (a.y.0 - c.y.0) * (point.x.0 - c.x.0);
+    ab * winding >= 0.0 && bc * winding >= 0.0 && ca * winding >= 0.0
 }
 
 fn append_line(
