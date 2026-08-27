@@ -79,6 +79,15 @@ pub enum PaintCommand {
         color: Color,
         stroke: Dip,
     },
+    PathFill {
+        path: IconPath,
+        color: Color,
+    },
+    PathStroke {
+        path: IconPath,
+        width: Dip,
+        color: Color,
+    },
     Image {
         rect: Rect,
         image: ImageId,
@@ -92,14 +101,27 @@ pub enum PaintCommand {
     Clip {
         shape: ClipShape,
     },
+    /// Compatibility transform that remains active until the node ends.
     Transform(Transform),
+    /// Compatibility opacity that remains active until the node ends.
     Opacity(f32),
+    PushTransform(Transform),
+    PopTransform,
+    PushOpacity(f32),
+    PopOpacity,
 }
 
 impl PaintCommand {
     pub fn bounds(&self) -> Option<Rect> {
         match self {
-            Self::Clear(_) | Self::Transform(_) | Self::Opacity(_) | Self::PopClip => None,
+            Self::Clear(_)
+            | Self::Transform(_)
+            | Self::Opacity(_)
+            | Self::PushTransform(_)
+            | Self::PopTransform
+            | Self::PushOpacity(_)
+            | Self::PopOpacity
+            | Self::PopClip => None,
             Self::Rect { rect, .. } | Self::RoundedRect { rect, .. } | Self::Image { rect, .. } => {
                 Some(*rect)
             }
@@ -120,6 +142,7 @@ impl PaintCommand {
                 },
             }),
             Self::Icon { rect, .. } => Some(*rect),
+            Self::PathFill { path, .. } | Self::PathStroke { path, .. } => Some(path_bounds(path)),
         }
     }
 
@@ -192,6 +215,17 @@ impl PaintCommand {
                 }
                 validate_color(*color)
             }
+            Self::PathFill { path, color } => {
+                validate_path(path)?;
+                validate_color(*color)
+            }
+            Self::PathStroke { path, width, color } => {
+                validate_path(path)?;
+                if !width.0.is_finite() || width.0 <= 0.0 {
+                    return Err(RenderError::InvalidCommand("path stroke width is invalid".into()));
+                }
+                validate_color(*color)
+            }
             Self::Image { rect, opacity, .. } => {
                 validate_rect(*rect)?;
                 if !opacity.is_finite() || !(0.0..=1.0).contains(opacity) {
@@ -221,8 +255,8 @@ impl PaintCommand {
                 }
                 Ok(())
             }
-            Self::PopClip => Ok(()),
-            Self::Transform(transform) => {
+            Self::PopClip | Self::PopTransform | Self::PopOpacity => Ok(()),
+            Self::Transform(transform) | Self::PushTransform(transform) => {
                 if transform.matrix.iter().all(|value| value.is_finite()) {
                     Ok(())
                 } else {
@@ -231,7 +265,7 @@ impl PaintCommand {
                     ))
                 }
             }
-            Self::Opacity(value) => {
+            Self::Opacity(value) | Self::PushOpacity(value) => {
                 if value.is_finite() && (0.0..=1.0).contains(value) {
                     Ok(())
                 } else {
@@ -243,6 +277,40 @@ impl PaintCommand {
         }
     }
 
+    /// Validates both individual commands and scoped state transitions.
+    pub fn validate_sequence(commands: &[Self]) -> Result<(), RenderError> {
+        let mut clips = 0_usize;
+        let mut transforms = 0_usize;
+        let mut opacities = 0_usize;
+        for command in commands {
+            command.validate()?;
+            match command {
+                Self::PushClip(_) => clips += 1,
+                Self::PopClip if clips == 0 => {
+                    return Err(RenderError::InvalidCommand("clip stack underflow".into()))
+                }
+                Self::PopClip => clips -= 1,
+                Self::PushTransform(_) => transforms += 1,
+                Self::PopTransform if transforms == 0 => {
+                    return Err(RenderError::InvalidCommand("transform stack underflow".into()))
+                }
+                Self::PopTransform => transforms -= 1,
+                Self::PushOpacity(_) => opacities += 1,
+                Self::PopOpacity if opacities == 0 => {
+                    return Err(RenderError::InvalidCommand("opacity stack underflow".into()))
+                }
+                Self::PopOpacity => opacities -= 1,
+                _ => {}
+            }
+        }
+        if clips != 0 || transforms != 0 || opacities != 0 {
+            return Err(RenderError::InvalidCommand(
+                "unbalanced scoped paint state".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn is_draw_command(&self) -> bool {
         !matches!(
             self,
@@ -252,7 +320,21 @@ impl PaintCommand {
                 | Self::PopClip
                 | Self::Transform(_)
                 | Self::Opacity(_)
+                | Self::PushTransform(_)
+                | Self::PopTransform
+                | Self::PushOpacity(_)
+                | Self::PopOpacity
         )
+    }
+}
+
+fn validate_path(path: &IconPath) -> Result<(), RenderError> {
+    if path.points().any(|point| !point_is_finite(point)) || path.to_lyon().is_none() {
+        Err(RenderError::InvalidCommand(
+            "path contains invalid commands or non-finite points".into(),
+        ))
+    } else {
+        Ok(())
     }
 }
 

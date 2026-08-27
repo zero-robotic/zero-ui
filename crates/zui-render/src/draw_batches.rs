@@ -348,6 +348,49 @@ pub(crate) fn path_mask_vertices(path: &IconPath) -> Vec<RectVertex> {
         .collect()
 }
 
+pub(crate) fn path_fill_vertices(path: &IconPath, color: Color) -> Vec<RectVertex> {
+    path_mask_vertices(path)
+        .into_iter()
+        .map(|vertex| RectVertex {
+            color: [color.r, color.g, color.b, color.a],
+            ..vertex
+        })
+        .collect()
+}
+
+pub(crate) fn path_stroke_vertices(
+    path: &IconPath,
+    width: Dip,
+    color: Color,
+) -> Vec<RectVertex> {
+    let Some(lyon_path) = path.to_lyon() else {
+        return Vec::new();
+    };
+    let mut geometry: VertexBuffers<[f32; 2], u32> = VertexBuffers::new();
+    if StrokeTessellator::new()
+        .tessellate_path(
+            &lyon_path,
+            &StrokeOptions::tolerance(0.1).with_line_width(width.0),
+            &mut BuffersBuilder::new(&mut geometry, |vertex: StrokeVertex| {
+                let point = vertex.position();
+                [point.x, point.y]
+            }),
+        )
+        .is_err()
+    {
+        return Vec::new();
+    }
+    geometry
+        .indices
+        .chunks_exact(3)
+        .flat_map(|triangle| triangle.iter().map(|index| geometry.vertices[*index as usize]))
+        .map(|position| RectVertex {
+            position,
+            color: [color.r, color.g, color.b, color.a],
+        })
+        .collect()
+}
+
 pub(crate) fn append_line(vertices: &mut Vec<LineVertex>, start: Point, end: Point, width: Dip, color: Color) {
     let dx = end.x.0 - start.x.0;
     let dy = end.y.0 - start.y.0;

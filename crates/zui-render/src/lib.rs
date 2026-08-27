@@ -10,7 +10,7 @@ use std::sync::{Mutex, OnceLock};
 use lyon_path::{math::point as lyon_point, Path as LyonPath};
 use lyon_tessellation::{
     BuffersBuilder, FillOptions, FillRule as LyonFillRule, FillTessellator, FillVertex,
-    VertexBuffers,
+    StrokeOptions, StrokeTessellator, StrokeVertex, VertexBuffers,
 };
 use wgpu::util::DeviceExt;
 use zui_core::{Color, Dip, PhysicalSize, Point, Rect, ScaleFactor, Size, WindowId};
@@ -390,6 +390,7 @@ impl ResourceManager {
         }
         self.last_used.remove(&oldest);
         self.image_bind_groups.retain(|(_, id), _| *id != oldest);
+        self.reclaim_empty_atlas_tail();
         true
     }
 
@@ -402,7 +403,20 @@ impl ResourceManager {
         self.last_used.remove(&id);
         self.image_bind_groups
             .retain(|(_, image_id), _| *image_id != id);
+        self.reclaim_empty_atlas_tail();
         self.cpu.remove_image(id)
+    }
+
+    /// Atlas page indices are stored in GPU image slots, so only trailing
+    /// empty pages may be reclaimed without rebasing live resources.
+    fn reclaim_empty_atlas_tail(&mut self) {
+        while self.image_atlases.len() > 1 {
+            let page = self.image_atlases.len() - 1;
+            if self.gpu_images.values().any(|image| image.slot.page == page) {
+                break;
+            }
+            self.image_atlases.pop();
+        }
     }
 
     fn register_glyph(
@@ -719,27 +733,64 @@ struct RenderClip {
 #[derive(Clone, Debug, Default)]
 struct SpatialIndex {
     cell_size: f32,
-    cells: HashMap<(i32, i32), Vec<usize>>,
-    bounds: Vec<Rect>,
+    cells: HashMap<(i32, i32), Vec<Vec<usize>>>,
+    bounds: BTreeMap<Vec<usize>, Rect>,
 }
 
 impl SpatialIndex {
-    fn build(items: &[RenderNodeItem]) -> Self {
+    fn build(items: &BTreeMap<Vec<usize>, RenderNodeItem>) -> Self {
         let cell_size = 128.0_f32;
         let mut index = Self {
             cell_size,
             cells: HashMap::new(),
-            bounds: items.iter().map(|item| item.bounds).collect(),
+            bounds: BTreeMap::new(),
         };
-        for (item_index, item) in items.iter().enumerate() {
-            let (min_x, min_y, max_x, max_y) = index.cell_range(item.bounds);
-            for y in min_y..=max_y {
-                for x in min_x..=max_x {
-                    index.cells.entry((x, y)).or_default().push(item_index);
+        for (path, item) in items {
+            index.insert(path.clone(), item.bounds);
+        }
+        index
+    }
+
+    fn insert(&mut self, path: Vec<usize>, bounds: Rect) {
+        let (min_x, min_y, max_x, max_y) = self.cell_range(bounds);
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                self.cells.entry((x, y)).or_default().push(path.clone());
+            }
+        }
+        self.bounds.insert(path, bounds);
+    }
+
+    fn update_subtrees(&mut self, items: &BTreeMap<Vec<usize>, RenderNodeItem>, paths: &[Vec<usize>]) {
+        self.bounds.retain(|path, _| !paths.iter().any(|prefix| path_starts_with(path, prefix)));
+        self.cells.retain(|_, entries| {
+            entries.retain(|path| !paths.iter().any(|prefix| path_starts_with(path, prefix)));
+            !entries.is_empty()
+        });
+        for (path, item) in items {
+            if paths.iter().any(|prefix| path_starts_with(path, prefix)) {
+                self.insert(path.clone(), item.bounds);
+            }
+        }
+    }
+
+    fn query(&self, region: Rect) -> Vec<Vec<usize>> {
+        let (min_x, min_y, max_x, max_y) = self.cell_range(region);
+        let mut result = Vec::new();
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                if let Some(paths) = self.cells.get(&(x, y)) {
+                    result.extend(paths.iter().filter(|path| {
+                        self.bounds
+                            .get(*path)
+                            .is_some_and(|bounds| rect_intersects(*bounds, region))
+                    }).cloned());
                 }
             }
         }
-        index
+        result.sort();
+        result.dedup();
+        result
     }
 
     fn cell_range(&self, rect: Rect) -> (i32, i32, i32, i32) {
@@ -750,25 +801,6 @@ impl SpatialIndex {
         (min_x, min_y, max_x, max_y)
     }
 
-    fn query(&self, region: Rect) -> Vec<usize> {
-        let (min_x, min_y, max_x, max_y) = self.cell_range(region);
-        let mut result = Vec::new();
-        for y in min_y..=max_y {
-            for x in min_x..=max_x {
-                if let Some(indices) = self.cells.get(&(x, y)) {
-                    result.extend(
-                        indices
-                            .iter()
-                            .copied()
-                            .filter(|index| rect_intersects(self.bounds[*index], region)),
-                    );
-                }
-            }
-        }
-        result.sort_unstable();
-        result.dedup();
-        result
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1219,7 +1251,7 @@ fn coalesce_damage_for_spatial_index(regions: &[Rect], index: Option<&SpatialInd
                         index.query(result[left]).into_iter().any(|item| {
                             index
                                 .bounds
-                                .get(item)
+                                .get(&item)
                                 .is_some_and(|bounds| rect_intersects(*bounds, result[right]))
                         })
                     })
@@ -1911,14 +1943,34 @@ impl Renderer {
         let mut command_transform = Transform::IDENTITY;
         let mut opacity = initial_opacity;
         let mut clip_stack: Vec<(ClipGeometry, Transform)> = Vec::new();
+        let mut transform_stack = Vec::new();
+        let mut opacity_stack = Vec::new();
         for command in commands {
             match command {
                 PaintCommand::Transform(next) => {
                     command_transform = compose_transform(command_transform, *next);
                     continue;
                 }
+                PaintCommand::PushTransform(next) => {
+                    transform_stack.push(command_transform);
+                    command_transform = compose_transform(command_transform, *next);
+                    continue;
+                }
+                PaintCommand::PopTransform => {
+                    command_transform = transform_stack.pop().expect("validated transform stack");
+                    continue;
+                }
                 PaintCommand::Opacity(value) => {
                     opacity *= value.clamp(0.0, 1.0);
+                    continue;
+                }
+                PaintCommand::PushOpacity(value) => {
+                    opacity_stack.push(opacity);
+                    opacity *= value.clamp(0.0, 1.0);
+                    continue;
+                }
+                PaintCommand::PopOpacity => {
+                    opacity = opacity_stack.pop().expect("validated opacity stack");
                     continue;
                 }
                 PaintCommand::Clip { shape } | PaintCommand::PushClip(shape) => {
@@ -2014,6 +2066,19 @@ impl Renderer {
                         );
                     }
                 }
+                PaintCommand::PathFill { path, color } => {
+                    rect_batch(&mut batches, transform).extend(path_fill_vertices(
+                        path,
+                        apply_opacity(*color, opacity),
+                    ));
+                }
+                PaintCommand::PathStroke { path, width, color } => {
+                    rect_batch(&mut batches, transform).extend(path_stroke_vertices(
+                        path,
+                        *width,
+                        apply_opacity(*color, opacity),
+                    ));
+                }
                 PaintCommand::Image {
                     rect,
                     image,
@@ -2026,6 +2091,10 @@ impl Renderer {
                 ),
                 PaintCommand::Transform(_)
                 | PaintCommand::Opacity(_)
+                | PaintCommand::PushTransform(_)
+                | PaintCommand::PopTransform
+                | PaintCommand::PushOpacity(_)
+                | PaintCommand::PopOpacity
                 | PaintCommand::Clear(_)
                 | PaintCommand::PopClip => {}
                 PaintCommand::Clip { .. } | PaintCommand::PushClip(_) => unreachable!(),
@@ -2042,7 +2111,7 @@ impl Renderer {
         cache_key: Option<u64>,
         segments: Option<&[RenderNodeItem]>,
     ) -> Result<(), RenderError> {
-        commands.iter().try_for_each(PaintCommand::validate)?;
+        PaintCommand::validate_sequence(commands)?;
         for command in commands {
             if let PaintCommand::Image { image, .. } = command {
                 if !self.resources.contains_image(*image) {
@@ -2188,9 +2257,9 @@ impl Renderer {
                             .spatial_index
                             .as_ref()
                             .map(|index| index.query(*region))
-                            .unwrap_or_else(|| (0..node_batches.len()).collect());
-                        for item_index in candidates {
-                            let Some(item) = node_batches.values().nth(item_index) else {
+                            .unwrap_or_else(|| node_batches.keys().cloned().collect());
+                        for path in candidates {
+                            let Some(item) = node_batches.get(&path) else {
                                 continue;
                             };
                             if rect_intersects(item.bounds, *region) {
@@ -2477,9 +2546,12 @@ impl Renderer {
             changed_paths.extend_from_slice(dirty_paths);
         }
         if scene_changed {
-            let items = retained.values().cloned().collect::<Vec<_>>();
             if let Some(state) = self.surfaces.get_mut(&window) {
-                state.spatial_index = Some(SpatialIndex::build(&items));
+                if initial_scene || state.spatial_index.is_none() {
+                    state.spatial_index = Some(SpatialIndex::build(&retained));
+                } else if let Some(index) = state.spatial_index.as_mut() {
+                    index.update_subtrees(&retained, &changed_paths);
+                }
             }
         }
         let gpu_scene_changed = scene_changed
@@ -2532,7 +2604,7 @@ impl Renderer {
                     .iter()
                     .filter(|(path, _)| path_starts_with(path, &changed_path))
                 {
-                item.commands.iter().try_for_each(PaintCommand::validate)?;
+                PaintCommand::validate_sequence(&item.commands)?;
                 for command in &item.commands {
                     if let PaintCommand::Image { image, .. } = command {
                         if !self.resources.contains_image(*image) {

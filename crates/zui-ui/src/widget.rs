@@ -199,11 +199,17 @@ impl<'a> PaintContext<'a> {
         self.commands.push(PaintCommand::PopClip);
     }
     pub fn push_transform(&mut self, transform: Transform) {
-        self.commands.push(PaintCommand::Transform(transform));
+        self.commands.push(PaintCommand::PushTransform(transform));
+    }
+    pub fn pop_transform(&mut self) {
+        self.commands.push(PaintCommand::PopTransform);
     }
     pub fn push_opacity(&mut self, opacity: f32) {
         self.commands
-            .push(PaintCommand::Opacity(opacity.clamp(0.0, 1.0)));
+            .push(PaintCommand::PushOpacity(opacity.clamp(0.0, 1.0)));
+    }
+    pub fn pop_opacity(&mut self) {
+        self.commands.push(PaintCommand::PopOpacity);
     }
 }
 

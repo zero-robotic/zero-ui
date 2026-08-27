@@ -155,7 +155,7 @@ use super::*;
 
     #[test]
     fn shared_item_damage_is_coalesced_once() {
-        let items = vec![RenderNodeItem {
+        let items = std::collections::BTreeMap::from([(vec![0], RenderNodeItem {
             bounds: Rect {
                 origin: Point {
                     x: Dip(4.0),
@@ -170,7 +170,7 @@ use super::*;
             opacity: 1.0,
             clips: Vec::new(),
             commands: Vec::new(),
-        }];
+        })]);
         let regions = [
             Rect {
                 origin: Point::default(),
