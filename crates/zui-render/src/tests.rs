@@ -350,6 +350,25 @@ use super::*;
     }
 
     #[test]
+    fn path_mesh_preserves_tessellator_indices() {
+        let path = IconPath::from_commands(
+            vec![
+                PathCommand::MoveTo(Point { x: Dip(0.0), y: Dip(0.0) }),
+                PathCommand::LineTo(Point { x: Dip(20.0), y: Dip(0.0) }),
+                PathCommand::LineTo(Point { x: Dip(20.0), y: Dip(20.0) }),
+                PathCommand::LineTo(Point { x: Dip(0.0), y: Dip(20.0) }),
+                PathCommand::Close,
+            ],
+            FillRule::NonZero,
+        );
+        let mesh = path_fill_mesh(&path, Color::WHITE);
+        assert!(!mesh.vertices.is_empty());
+        assert_eq!(mesh.indices.len() % 3, 0);
+        assert!(mesh.indices.iter().all(|index| (*index as usize) < mesh.vertices.len()));
+        assert!(mesh.indices.len() > mesh.vertices.len());
+    }
+
+    #[test]
     fn normalizing_nested_cached_nodes_is_idempotent() {
         let mut root = RenderNode::for_widget(Rect {
             origin: Point {

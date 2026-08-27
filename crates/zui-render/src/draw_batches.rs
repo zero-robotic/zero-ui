@@ -6,6 +6,7 @@ pub(crate) fn build_gpu_batches(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     arenas: &mut VertexArenas,
+    index_arena: &mut IndexArena,
     batches: Vec<RenderBatch>,
 ) -> Vec<GpuBatch> {
     batches
@@ -15,6 +16,23 @@ pub(crate) fn build_gpu_batches(
                     Some(GpuBatch::Draw(
                         BatchKind::Rect,
                         arenas.upload(device, queue, VertexArenaKind::Rect, bytemuck::cast_slice(&vertices), vertices.len() as u32),
+                        index_arena.upload(device, queue, &sequential_indices(vertices.len())),
+                        transform,
+                    ))
+                }
+                RenderBatch::IndexedRect(vertices, indices, transform)
+                    if !vertices.is_empty() && !indices.is_empty() =>
+                {
+                    Some(GpuBatch::Draw(
+                        BatchKind::Rect,
+                        arenas.upload(
+                            device,
+                            queue,
+                            VertexArenaKind::Rect,
+                            bytemuck::cast_slice(&vertices),
+                            vertices.len() as u32,
+                        ),
+                        index_arena.upload(device, queue, &indices),
                         transform,
                     ))
                 }
@@ -22,6 +40,7 @@ pub(crate) fn build_gpu_batches(
                     Some(GpuBatch::Draw(
                         BatchKind::Rounded,
                         arenas.upload(device, queue, VertexArenaKind::Rounded, bytemuck::cast_slice(&vertices), vertices.len() as u32),
+                        index_arena.upload(device, queue, &sequential_indices(vertices.len())),
                         transform,
                     ))
                 }
@@ -29,6 +48,7 @@ pub(crate) fn build_gpu_batches(
                     Some(GpuBatch::Draw(
                         BatchKind::Line,
                         arenas.upload(device, queue, VertexArenaKind::Line, bytemuck::cast_slice(&vertices), vertices.len() as u32),
+                        index_arena.upload(device, queue, &sequential_indices(vertices.len())),
                         transform,
                     ))
                 }
@@ -39,6 +59,7 @@ pub(crate) fn build_gpu_batches(
                 } if !vertices.is_empty() => Some(GpuBatch::Draw(
                     BatchKind::Image(image),
                     arenas.upload(device, queue, VertexArenaKind::Image, bytemuck::cast_slice(&vertices), vertices.len() as u32),
+                    index_arena.upload(device, queue, &sequential_indices(vertices.len())),
                     transform,
                 )),
                 RenderBatch::Clip(geometry, clip_transform) => {
@@ -47,15 +68,24 @@ pub(crate) fn build_gpu_batches(
                         ClipGeometry::Rect(rect) => {
                             let mut vertices = Vec::new();
                             append_rect(&mut vertices, rect, Color::WHITE);
-                            Some(arenas.upload(device, queue, VertexArenaKind::Rect, bytemuck::cast_slice(&vertices), vertices.len() as u32))
+                            Some(ClipGpuGeometry {
+                                vertices: arenas.upload(device, queue, VertexArenaKind::Rect, bytemuck::cast_slice(&vertices), vertices.len() as u32),
+                                indices: None,
+                            })
                         }
                         ClipGeometry::Rounded { rect, radius } => {
                             let mut vertices = Vec::new();
                             append_rounded_rect(&mut vertices, rect, radius, Color::WHITE);
-                            Some(arenas.upload(device, queue, VertexArenaKind::Rounded, bytemuck::cast_slice(&vertices), vertices.len() as u32))
+                            Some(ClipGpuGeometry {
+                                vertices: arenas.upload(device, queue, VertexArenaKind::Rounded, bytemuck::cast_slice(&vertices), vertices.len() as u32),
+                                indices: None,
+                            })
                         }
-                        ClipGeometry::Path { ref vertices, .. } => {
-                            Some(arenas.upload(device, queue, VertexArenaKind::Rect, bytemuck::cast_slice(vertices), vertices.len() as u32))
+                        ClipGeometry::Path { ref vertices, ref indices, .. } => {
+                            Some(ClipGpuGeometry {
+                                vertices: arenas.upload(device, queue, VertexArenaKind::Rect, bytemuck::cast_slice(vertices), vertices.len() as u32),
+                                indices: Some(index_arena.upload(device, queue, indices)),
+                            })
                         }
                     };
                     Some(GpuBatch::Clip(geometry, mask, clip_transform))
@@ -63,6 +93,10 @@ pub(crate) fn build_gpu_batches(
                 _ => None,
             })
             .collect()
+}
+
+fn sequential_indices(vertex_count: usize) -> Vec<u32> {
+    (0..vertex_count as u32).collect()
 }
 
 pub(crate) fn cached_system_fonts() -> &'static [fontdue::Font] {
@@ -239,9 +273,9 @@ pub(crate) fn path_bounds(path: &IconPath) -> Rect {
     ClipShape::Path { path: path.clone() }.bounds()
 }
 
-pub(crate) fn path_mask_vertices(path: &IconPath) -> Vec<RectVertex> {
+pub(crate) fn path_fill_mesh(path: &IconPath, color: Color) -> PathMesh {
     let Some(lyon_path) = path.to_lyon() else {
-        return Vec::new();
+        return PathMesh::default();
     };
     let options = FillOptions::tolerance(0.1).with_fill_rule(match path.fill_rule {
         FillRule::EvenOdd => LyonFillRule::EvenOdd,
@@ -259,36 +293,28 @@ pub(crate) fn path_mask_vertices(path: &IconPath) -> Vec<RectVertex> {
         )
         .is_err()
     {
-        return Vec::new();
+        return PathMesh::default();
     }
-    geometry
-        .indices
-        .chunks_exact(3)
-        .flat_map(|triangle| triangle.iter().map(|index| geometry.vertices[*index as usize]))
-        .map(|position| RectVertex {
-            position,
-            color: [1.0; 4],
-        })
-        .collect()
+    PathMesh {
+        vertices: geometry
+            .vertices
+            .into_iter()
+            .map(|position| RectVertex {
+                position,
+                color: [color.r, color.g, color.b, color.a],
+            })
+            .collect(),
+        indices: geometry.indices,
+    }
 }
 
-pub(crate) fn path_fill_vertices(path: &IconPath, color: Color) -> Vec<RectVertex> {
-    path_mask_vertices(path)
-        .into_iter()
-        .map(|vertex| RectVertex {
-            color: [color.r, color.g, color.b, color.a],
-            ..vertex
-        })
-        .collect()
-}
-
-pub(crate) fn path_stroke_vertices(
+pub(crate) fn path_stroke_mesh(
     path: &IconPath,
     width: Dip,
     color: Color,
-) -> Vec<RectVertex> {
+) -> PathMesh {
     let Some(lyon_path) = path.to_lyon() else {
-        return Vec::new();
+        return PathMesh::default();
     };
     let mut geometry: VertexBuffers<[f32; 2], u32> = VertexBuffers::new();
     if StrokeTessellator::new()
@@ -302,17 +328,19 @@ pub(crate) fn path_stroke_vertices(
         )
         .is_err()
     {
-        return Vec::new();
+        return PathMesh::default();
     }
-    geometry
-        .indices
-        .chunks_exact(3)
-        .flat_map(|triangle| triangle.iter().map(|index| geometry.vertices[*index as usize]))
-        .map(|position| RectVertex {
-            position,
-            color: [color.r, color.g, color.b, color.a],
-        })
-        .collect()
+    PathMesh {
+        vertices: geometry
+            .vertices
+            .into_iter()
+            .map(|position| RectVertex {
+                position,
+                color: [color.r, color.g, color.b, color.a],
+            })
+            .collect(),
+        indices: geometry.indices,
+    }
 }
 
 pub(crate) fn append_line(vertices: &mut Vec<LineVertex>, start: Point, end: Point, width: Dip, color: Color) {
