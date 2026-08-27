@@ -54,13 +54,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return None;
                 }
             }
-            let damage_regions = ui.borrow().dirty_regions().to_vec();
-            let node = ui.borrow_mut().render_node_cached().clone();
-            if let Err(error) = renderer.borrow_mut().render_node_with_damage_regions(
+            let (damage_regions, node, render_index, dirty_widgets) = {
+                let mut tree = ui.borrow_mut();
+                let damage_regions = tree.dirty_regions().to_vec();
+                let node = tree.render_node_cached().clone();
+                let render_index = tree.render_index().clone();
+                let dirty_widgets = tree.dirty_widget_ids();
+                (damage_regions, node, render_index, dirty_widgets)
+            };
+            if let Err(error) = renderer.borrow_mut().render_node_with_dirty_widgets(
                 window,
                 &node,
                 &damage_regions,
                 background,
+                &render_index,
+                &dirty_widgets,
             ) {
                 match error {
                     RenderError::SurfaceLost => {

@@ -28,9 +28,9 @@ pub use widgets::{
     Button, Checkbox, Divider, DividerAxis, Icon, IconButton, IconName, Switch, Text, TextInput,
 };
 pub use zui_render::{
-    ClipShape, DirtyFlags, DirtyRegionSet, DirtyState, IconPath, ImageId, ImageResource,
-    LineSegment, RenderNode, RenderNodeBuilder, RenderNodeIndex, ResourceBudget, ResourceCache,
-    ResourceManager, ResourceUsage, Transform,
+    ClipShape, DirtyFlags, DirtyRegionSet, DirtyState, FillRule, IconPath, ImageId,
+    ImageResource, LineSegment, PathCommand, RenderNode, RenderNodeBuilder, RenderNodeIndex,
+    ResourceBudget, ResourceCache, ResourceManager, ResourceUsage, Transform,
 };
 
 #[cfg(test)]

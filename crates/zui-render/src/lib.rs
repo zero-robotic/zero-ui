@@ -7,6 +7,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
 
+use lyon_path::{math::point as lyon_point, Path as LyonPath};
+use lyon_tessellation::{
+    BuffersBuilder, FillOptions, FillRule as LyonFillRule, FillTessellator, FillVertex,
+    VertexBuffers,
+};
 use wgpu::util::DeviceExt;
 use zui_core::{Color, Dip, PhysicalSize, Point, Rect, ScaleFactor, Size, WindowId};
 use zui_platform::spi::RawWindowHandleProvider;
@@ -90,22 +95,20 @@ impl ClipShape {
             Self::Rect(rect) | Self::RoundedRect { rect, .. } => *rect,
             Self::Path { path } => {
                 let mut bounds = None;
-                for segment in &path.segments {
-                    for point in [segment.start, segment.end] {
-                        bounds = Some(match bounds {
-                            Some(bounds) => union_rect(
-                                bounds,
-                                Rect {
-                                    origin: point,
-                                    size: zui_core::Size::default(),
-                                },
-                            ),
-                            None => Rect {
+                for point in path.points() {
+                    bounds = Some(match bounds {
+                        Some(bounds) => union_rect(
+                            bounds,
+                            Rect {
                                 origin: point,
                                 size: zui_core::Size::default(),
                             },
-                        });
-                    }
+                        ),
+                        None => Rect {
+                            origin: point,
+                            size: zui_core::Size::default(),
+                        },
+                    });
                 }
                 bounds.unwrap_or_default()
             }
@@ -121,15 +124,7 @@ fn transform_clip_shape(shape: &ClipShape, transform: Transform) -> ClipShape {
             radius: *radius,
         },
         ClipShape::Path { path } => ClipShape::Path {
-            path: IconPath::new(
-                path.segments
-                    .iter()
-                    .map(|segment| LineSegment {
-                        start: transform.point(segment.start),
-                        end: transform.point(segment.end),
-                    })
-                    .collect::<Vec<_>>(),
-            ),
+            path: path.transformed(transform),
         },
     }
 }
@@ -169,6 +164,11 @@ pub enum PaintCommand {
         image: ImageId,
         opacity: f32,
     },
+    /// Begins a nested clip scope. `PopClip` restores the previous scope.
+    PushClip(ClipShape),
+    PopClip,
+    /// Compatibility alias for a clip that remains active until a reset or
+    /// the end of its RenderNode.
     Clip {
         shape: ClipShape,
     },
@@ -179,11 +179,11 @@ pub enum PaintCommand {
 impl PaintCommand {
     pub fn bounds(&self) -> Option<Rect> {
         match self {
-            Self::Clear(_) | Self::Transform(_) | Self::Opacity(_) => None,
+            Self::Clear(_) | Self::Transform(_) | Self::Opacity(_) | Self::PopClip => None,
             Self::Rect { rect, .. } | Self::RoundedRect { rect, .. } | Self::Image { rect, .. } => {
                 Some(*rect)
             }
-            Self::Clip { shape } => Some(shape.bounds()),
+            Self::Clip { shape } | Self::PushClip(shape) => Some(shape.bounds()),
             Self::Line {
                 start, end, width, ..
             } => Some(line_bounds(*start, *end, *width)),
@@ -281,7 +281,7 @@ impl PaintCommand {
                 }
                 Ok(())
             }
-            Self::Clip { shape } => {
+            Self::Clip { shape } | Self::PushClip(shape) => {
                 validate_rect(shape.bounds())?;
                 if let ClipShape::RoundedRect { radius, .. } = shape {
                     if !radius.0.is_finite() || radius.0 < 0.0 {
@@ -291,18 +291,17 @@ impl PaintCommand {
                     }
                 }
                 if let ClipShape::Path { path } = shape {
-                    if path.segments.len() < 3
-                        || path.segments.iter().any(|segment| {
-                            !point_is_finite(segment.start) || !point_is_finite(segment.end)
-                        })
+                    if path.points().any(|point| !point_is_finite(point))
+                        || path.to_lyon().is_none()
                     {
                         return Err(RenderError::InvalidCommand(
-                            "path clip must contain at least three finite segments".into(),
+                            "path clip contains invalid commands or non-finite points".into(),
                         ));
                     }
                 }
                 Ok(())
             }
+            Self::PopClip => Ok(()),
             Self::Transform(transform) => {
                 if transform.matrix.iter().all(|value| value.is_finite()) {
                     Ok(())
@@ -327,7 +326,12 @@ impl PaintCommand {
     pub fn is_draw_command(&self) -> bool {
         !matches!(
             self,
-            Self::Clear(_) | Self::Clip { .. } | Self::Transform(_) | Self::Opacity(_)
+            Self::Clear(_)
+                | Self::Clip { .. }
+                | Self::PushClip(_)
+                | Self::PopClip
+                | Self::Transform(_)
+                | Self::Opacity(_)
         )
     }
 }
@@ -379,16 +383,161 @@ pub struct LineSegment {
     pub end: Point,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FillRule {
+    #[default]
+    EvenOdd,
+    NonZero,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PathCommand {
+    MoveTo(Point),
+    LineTo(Point),
+    QuadTo { control: Point, to: Point },
+    CubicTo {
+        control1: Point,
+        control2: Point,
+        to: Point,
+    },
+    Close,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct IconPath {
+    /// Compatibility representation for existing stroked icons. New filled
+    /// paths and clips should use `commands`.
     pub segments: Vec<LineSegment>,
+    pub commands: Vec<PathCommand>,
+    pub fill_rule: FillRule,
 }
 
 impl IconPath {
     pub fn new(segments: impl Into<Vec<LineSegment>>) -> Self {
-        Self {
-            segments: segments.into(),
+        let segments = segments.into();
+        let mut commands = Vec::with_capacity(segments.len() * 2);
+        let mut current = None;
+        for segment in &segments {
+            if current != Some(segment.start) {
+                commands.push(PathCommand::MoveTo(segment.start));
+            }
+            commands.push(PathCommand::LineTo(segment.end));
+            current = Some(segment.end);
         }
+        Self {
+            segments,
+            commands,
+            fill_rule: FillRule::EvenOdd,
+        }
+    }
+
+    pub fn from_commands(commands: impl Into<Vec<PathCommand>>, fill_rule: FillRule) -> Self {
+        Self {
+            segments: Vec::new(),
+            commands: commands.into(),
+            fill_rule,
+        }
+    }
+
+    pub fn transformed(&self, transform: Transform) -> Self {
+        let map = |point: Point| transform.point(point);
+        Self {
+            segments: self
+                .segments
+                .iter()
+                .map(|segment| LineSegment {
+                    start: map(segment.start),
+                    end: map(segment.end),
+                })
+                .collect(),
+            commands: self
+                .commands
+                .iter()
+                .map(|command| match command {
+                    PathCommand::MoveTo(point) => PathCommand::MoveTo(map(*point)),
+                    PathCommand::LineTo(point) => PathCommand::LineTo(map(*point)),
+                    PathCommand::QuadTo { control, to } => PathCommand::QuadTo {
+                        control: map(*control),
+                        to: map(*to),
+                    },
+                    PathCommand::CubicTo {
+                        control1,
+                        control2,
+                        to,
+                    } => PathCommand::CubicTo {
+                        control1: map(*control1),
+                        control2: map(*control2),
+                        to: map(*to),
+                    },
+                    PathCommand::Close => PathCommand::Close,
+                })
+                .collect(),
+            fill_rule: self.fill_rule,
+        }
+    }
+
+    fn points(&self) -> impl Iterator<Item = Point> + '_ {
+        self.commands.iter().flat_map(|command| match command {
+            PathCommand::MoveTo(point) | PathCommand::LineTo(point) => vec![*point],
+            PathCommand::QuadTo { control, to } => vec![*control, *to],
+            PathCommand::CubicTo {
+                control1,
+                control2,
+                to,
+            } => vec![*control1, *control2, *to],
+            PathCommand::Close => Vec::new(),
+        })
+    }
+
+    fn to_lyon(&self) -> Option<LyonPath> {
+        let mut builder = LyonPath::builder();
+        let mut open = false;
+        for command in &self.commands {
+            match command {
+                PathCommand::MoveTo(point) => {
+                    if open {
+                        builder.end(false);
+                    }
+                    builder.begin(lyon_point(point.x.0, point.y.0));
+                    open = true;
+                }
+                PathCommand::LineTo(point) if open => {
+                    builder.line_to(lyon_point(point.x.0, point.y.0));
+                }
+                PathCommand::QuadTo { control, to } if open => {
+                    builder.quadratic_bezier_to(
+                        lyon_point(control.x.0, control.y.0),
+                        lyon_point(to.x.0, to.y.0),
+                    );
+                }
+                PathCommand::CubicTo {
+                    control1,
+                    control2,
+                    to,
+                } if open => {
+                    builder.cubic_bezier_to(
+                        lyon_point(control1.x.0, control1.y.0),
+                        lyon_point(control2.x.0, control2.y.0),
+                        lyon_point(to.x.0, to.y.0),
+                    );
+                }
+                PathCommand::Close if open => {
+                    builder.end(true);
+                    open = false;
+                }
+                _ => return None,
+            }
+        }
+        if open {
+            builder.end(false);
+        }
+        Some(builder.build())
+    }
+}
+
+impl Default for IconPath {
+    fn default() -> Self {
+        Self::new(Vec::new())
     }
 }
 
@@ -444,6 +593,7 @@ impl ResourceCache {
 pub struct ResourceManager {
     cpu: ResourceCache,
     gpu_images: HashMap<ImageId, GpuImage>,
+    image_atlases: Vec<ImageAtlas>,
     image_bind_groups: HashMap<(WindowId, ImageId), wgpu::BindGroup>,
     last_used: HashMap<ImageId, u64>,
     clock: u64,
@@ -454,12 +604,17 @@ pub struct ResourceManager {
     fonts: &'static [fontdue::Font],
     glyph_cache: HashMap<(usize, char, u32, u32), CachedGlyph>,
     font_cache: HashMap<char, Option<usize>>,
+    path_cache: HashMap<u64, Vec<RectVertex>>,
+    next_internal_image_id: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResourceBudget {
     pub max_gpu_images: usize,
     pub max_gpu_image_bytes: usize,
+    /// Total bytes reserved by atlas pages. This is separate from image
+    /// payload bytes because an atlas has unavoidable unused space.
+    pub max_gpu_atlas_bytes: usize,
 }
 
 impl Default for ResourceBudget {
@@ -467,6 +622,7 @@ impl Default for ResourceBudget {
         Self {
             max_gpu_images: 256,
             max_gpu_image_bytes: 256 * 1024 * 1024,
+            max_gpu_atlas_bytes: 256 * 1024 * 1024,
         }
     }
 }
@@ -475,9 +631,12 @@ impl Default for ResourceBudget {
 pub struct ResourceUsage {
     pub cpu_image_bytes: usize,
     pub gpu_image_bytes: usize,
+    pub gpu_atlas_bytes: usize,
+    pub gpu_atlas_page_count: usize,
     pub gpu_image_count: usize,
     pub icon_count: usize,
     pub cached_glyph_count: usize,
+    pub cached_path_count: usize,
 }
 
 impl ResourceManager {
@@ -485,6 +644,7 @@ impl ResourceManager {
         Self {
             cpu: ResourceCache::default(),
             gpu_images: HashMap::new(),
+            image_atlases: Vec::new(),
             image_bind_groups: HashMap::new(),
             last_used: HashMap::new(),
             clock: 0,
@@ -500,6 +660,8 @@ impl ResourceManager {
             fonts,
             glyph_cache: HashMap::new(),
             font_cache: HashMap::new(),
+            path_cache: HashMap::new(),
+            next_internal_image_id: u64::MAX,
         }
     }
 
@@ -513,6 +675,7 @@ impl ResourceManager {
         self.budget = ResourceBudget {
             max_gpu_images: budget.max_gpu_images.max(1),
             max_gpu_image_bytes: budget.max_gpu_image_bytes.max(4),
+            max_gpu_atlas_bytes: budget.max_gpu_atlas_bytes.max(4),
         };
         self.max_gpu_images = self.budget.max_gpu_images;
         self.evict_gpu_images();
@@ -531,9 +694,12 @@ impl ResourceManager {
                 .map(|image| image.rgba8.len())
                 .sum(),
             gpu_image_bytes: self.gpu_images.values().map(|image| image.bytes).sum(),
+            gpu_atlas_bytes: self.atlas_bytes(),
+            gpu_atlas_page_count: self.image_atlases.len(),
             gpu_image_count: self.gpu_images.len(),
             icon_count: self.icons.len(),
             cached_glyph_count: self.glyph_cache.len(),
+            cached_path_count: self.path_cache.len(),
         }
     }
 
@@ -565,25 +731,16 @@ impl ResourceManager {
         id: ImageId,
         image: &ImageResource,
     ) {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("zui-render image"),
-            size: wgpu::Extent3d {
-                width: image.width,
-                height: image.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        let Some(slot) = self.allocate_atlas_slot(device, image.width, image.height) else {
+            // Keep the CPU copy registered. A later eviction or a larger
+            // resource budget may make this image resident again.
+            return;
+        };
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture,
+                texture: &self.image_atlases[slot.page].texture,
                 mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
+                origin: slot.origin,
                 aspect: wgpu::TextureAspect::All,
             },
             &image.rgba8,
@@ -598,19 +755,82 @@ impl ResourceManager {
                 depth_or_array_layers: 1,
             },
         );
-        let view = texture_view(&texture);
+        let uv = [
+            slot.origin.x as f32 / slot.atlas_width as f32,
+            slot.origin.y as f32 / slot.atlas_height as f32,
+            (slot.origin.x + image.width) as f32 / slot.atlas_width as f32,
+            (slot.origin.y + image.height) as f32 / slot.atlas_height as f32,
+        ];
+        let uv_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("zui-render image atlas uv"),
+            contents: bytemuck::cast_slice(&uv),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
         self.gpu_images.insert(
             id,
             GpuImage {
-                _texture: texture,
-                view,
+                uv_buffer,
                 bytes: image.rgba8.len(),
+                slot,
             },
         );
         self.image_bind_groups
             .retain(|(_, image_id), _| *image_id != id);
         self.touch(id);
         self.evict_gpu_images();
+    }
+
+    fn allocate_atlas_slot(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+    ) -> Option<AtlasSlot> {
+        const ATLAS_PAGE_SIZE: u32 = 2048;
+        if width > ATLAS_PAGE_SIZE || height > ATLAS_PAGE_SIZE {
+            return None;
+        }
+        if let Some(slot) = self.allocate_from_existing_pages(width, height) {
+            return Some(slot);
+        }
+
+        let page_bytes = ATLAS_PAGE_SIZE as usize * ATLAS_PAGE_SIZE as usize * 4;
+        if self.atlas_bytes().saturating_add(page_bytes) > self.budget.max_gpu_atlas_bytes {
+            while self.evict_one_gpu_image() {
+                if let Some(slot) = self.allocate_from_existing_pages(width, height) {
+                    return Some(slot);
+                }
+            }
+            return None;
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("zui-render image atlas page"),
+            size: wgpu::Extent3d {
+                width: ATLAS_PAGE_SIZE,
+                height: ATLAS_PAGE_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let page = self.image_atlases.len();
+        self.image_atlases.push(ImageAtlas::new(texture));
+        self.image_atlases[page].allocate(page, width, height)
+    }
+
+    fn allocate_from_existing_pages(&mut self, width: u32, height: u32) -> Option<AtlasSlot> {
+        self.image_atlases
+            .iter_mut()
+            .enumerate()
+            .find_map(|(page, atlas)| atlas.allocate(page, width, height))
+    }
+
+    fn atlas_bytes(&self) -> usize {
+        self.image_atlases.iter().map(ImageAtlas::bytes).sum()
     }
 
     fn touch(&mut self, id: ImageId) {
@@ -627,26 +847,72 @@ impl ResourceManager {
                 .sum::<usize>()
                 > self.budget.max_gpu_image_bytes
         {
-            let Some(oldest) = self
-                .last_used
-                .iter()
-                .min_by_key(|(_, stamp)| *stamp)
-                .map(|(id, _)| *id)
-            else {
+            if !self.evict_one_gpu_image() {
                 break;
-            };
-            self.gpu_images.remove(&oldest);
-            self.last_used.remove(&oldest);
-            self.image_bind_groups.retain(|(_, id), _| *id != oldest);
+            }
         }
     }
 
+    fn evict_one_gpu_image(&mut self) -> bool {
+        let Some(oldest) = self.last_used.iter().min_by_key(|(_, stamp)| *stamp).map(|(id, _)| *id) else {
+            return false;
+        };
+        if let Some(image) = self.gpu_images.remove(&oldest) {
+            if let Some(atlas) = self.image_atlases.get_mut(image.slot.page) {
+                atlas.release(image.slot);
+            }
+        }
+        self.last_used.remove(&oldest);
+        self.image_bind_groups.retain(|(_, id), _| *id != oldest);
+        true
+    }
+
     fn remove_image(&mut self, id: ImageId) -> Option<ImageResource> {
-        self.gpu_images.remove(&id);
+        if let Some(image) = self.gpu_images.remove(&id) {
+            if let Some(atlas) = self.image_atlases.get_mut(image.slot.page) {
+                atlas.release(image.slot);
+            }
+        }
         self.last_used.remove(&id);
         self.image_bind_groups
             .retain(|(_, image_id), _| *image_id != id);
         self.cpu.remove_image(id)
+    }
+
+    fn register_glyph(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        alpha: &[u8],
+    ) -> ImageId {
+        let id = ImageId(self.next_internal_image_id);
+        self.next_internal_image_id = self.next_internal_image_id.wrapping_sub(1);
+        let mut rgba8 = Vec::with_capacity(alpha.len() * 4);
+        for alpha in alpha {
+            rgba8.extend_from_slice(&[255, 255, 255, *alpha]);
+        }
+        // Rasterizers may report an empty bitmap for whitespace. Keep a
+        // transparent texel so the atlas contract always has valid geometry.
+        let image = ImageResource::new(width.max(1), height.max(1), if rgba8.is_empty() {
+            vec![0; 4]
+        } else {
+            rgba8
+        })
+        .expect("glyph bitmap dimensions are valid");
+        self.register_image(device, queue, id, image);
+        id
+    }
+
+    fn tessellate_path(&mut self, path: &IconPath) -> Vec<RectVertex> {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        format!("{path:?}").hash(&mut hasher);
+        let key = hasher.finish();
+        self.path_cache
+            .entry(key)
+            .or_insert_with(|| path_mask_vertices(path))
+            .clone()
     }
 
     pub fn image(&self, id: ImageId) -> Option<&ImageResource> {
@@ -682,11 +948,17 @@ impl ResourceManager {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&image.view),
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.image_atlases.get(image.slot.page)?.view,
+                        ),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
                         resource: wgpu::BindingResource::Sampler(&self.image_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: image.uv_buffer.as_entire_binding(),
                     },
                 ],
             });
@@ -902,7 +1174,6 @@ pub struct RenderNode {
 
 #[derive(Clone, Debug)]
 struct RenderNodeItem {
-    key: u64,
     bounds: Rect,
     transform: Transform,
     opacity: f32,
@@ -1331,11 +1602,7 @@ fn build_render_item(
         clips.push(RenderClip { shape, transform });
     }
     let inherited_clips = clips.clone();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    node.local_gpu_cache_key().hash(&mut hasher);
-    format!("{:?}{:?}{:?}{:?}", transform, clip, opacity, clips).hash(&mut hasher);
     let item = RenderNodeItem {
-        key: hasher.finish(),
         bounds: clip
             .map(|clip| intersect_rect(transform.rect(node.local_bounds), clip))
             .unwrap_or_else(|| transform.rect(node.local_bounds)),
@@ -1366,6 +1633,7 @@ fn update_retained_subtree(
     parent_opacity: f32,
     parent_clips: &[RenderClip],
     force_rebuild: bool,
+    changed_paths: &mut Vec<Vec<usize>>,
 ) {
     let state_change = node.dirty.flags.contains(DirtyFlags::PAINT)
         || node.dirty.flags.contains(DirtyFlags::LAYOUT)
@@ -1384,6 +1652,7 @@ fn update_retained_subtree(
     );
     if rebuild_subtree {
         cache.insert(path.clone(), item);
+        changed_paths.push(path.clone());
     }
 
     // Remove cached children which no longer exist after a structural update.
@@ -1405,23 +1674,31 @@ fn update_retained_subtree(
                 opacity,
                 &clips,
                 rebuild_subtree,
+                changed_paths,
             );
         }
         path.pop();
     }
 }
 
-fn coalesce_damage_for_items(regions: &[Rect], segments: &[RenderNodeItem]) -> Vec<Rect> {
+fn coalesce_damage_for_spatial_index(regions: &[Rect], index: Option<&SpatialIndex>) -> Vec<Rect> {
     let mut result = regions.to_vec();
     let mut changed = true;
     while changed {
         changed = false;
         'outer: for left in 0..result.len() {
             for right in (left + 1)..result.len() {
-                if segments.iter().any(|segment| {
-                    rect_intersects(segment.bounds, result[left])
-                        && rect_intersects(segment.bounds, result[right])
-                }) {
+                if index
+                    .map(|index| {
+                        index.query(result[left]).into_iter().any(|item| {
+                            index
+                                .bounds
+                                .get(item)
+                                .is_some_and(|bounds| rect_intersects(*bounds, result[right]))
+                        })
+                    })
+                    .unwrap_or(false)
+                {
                     let merged = union_rect(result[left], result[right]);
                     result[left] = merged;
                     result.remove(right);
@@ -1544,7 +1821,7 @@ struct SurfaceState {
     retained_items: Option<BTreeMap<Vec<usize>, RenderNodeItem>>,
     /// GPU draw data keyed by retained-node path. Only nodes whose render key
     /// changes rebuild these batches; partial replay reads this table directly.
-    retained_gpu_items: Option<Vec<RetainedGpuItem>>,
+    retained_gpu_items: Option<BTreeMap<Vec<usize>, RetainedGpuItem>>,
     spatial_index: Option<SpatialIndex>,
 }
 
@@ -1555,8 +1832,6 @@ struct GpuBatchCacheEntry {
 
 #[derive(Clone)]
 struct RetainedGpuItem {
-    path: Vec<usize>,
-    key: u64,
     bounds: Rect,
     batches: Vec<GpuBatch>,
 }
@@ -1624,6 +1899,7 @@ struct ImageVertex {
     position: [f32; 2],
     uv: [f32; 2],
     opacity: f32,
+    color: [f32; 4],
 }
 
 enum RenderBatch {
@@ -1729,21 +2005,122 @@ pub struct Renderer {
 }
 
 struct GpuImage {
-    // Kept alive for the view and bind groups.
-    _texture: wgpu::Texture,
-    view: wgpu::TextureView,
+    uv_buffer: wgpu::Buffer,
     bytes: usize,
+    slot: AtlasSlot,
+}
+
+struct ImageAtlas {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    width: u32,
+    height: u32,
+    x: u32,
+    y: u32,
+    row_height: u32,
+    free: Vec<AtlasSlot>,
+}
+
+#[derive(Clone, Copy)]
+struct AtlasSlot {
+    page: usize,
+    origin: wgpu::Origin3d,
+    width: u32,
+    height: u32,
+    atlas_width: u32,
+    atlas_height: u32,
+}
+
+impl ImageAtlas {
+    fn new(texture: wgpu::Texture) -> Self {
+        let width = texture.width();
+        let height = texture.height();
+        Self {
+            view: texture_view(&texture),
+            texture,
+            width,
+            height,
+            x: 0,
+            y: 0,
+            row_height: 0,
+            free: Vec::new(),
+        }
+    }
+
+    fn bytes(&self) -> usize {
+        self.width as usize * self.height as usize * 4
+    }
+
+    fn allocate(&mut self, page: usize, width: u32, height: u32) -> Option<AtlasSlot> {
+        if let Some(index) = self
+            .free
+            .iter()
+            .position(|slot| slot.width >= width && slot.height >= height)
+        {
+            let slot = self.free.swap_remove(index);
+            // Keep the unused part available for later allocations.
+            if slot.width > width {
+                self.free.push(AtlasSlot {
+                    origin: wgpu::Origin3d {
+                        x: slot.origin.x + width,
+                        ..slot.origin
+                    },
+                    width: slot.width - width,
+                    height,
+                    ..slot
+                });
+            }
+            if slot.height > height {
+                self.free.push(AtlasSlot {
+                    origin: wgpu::Origin3d {
+                        y: slot.origin.y + height,
+                        ..slot.origin
+                    },
+                    width: slot.width,
+                    height: slot.height - height,
+                    ..slot
+                });
+            }
+            return Some(AtlasSlot {
+                page,
+                width,
+                height,
+                ..slot
+            });
+        }
+        if self.x + width > self.width {
+            self.x = 0;
+            self.y += self.row_height;
+            self.row_height = 0;
+        }
+        if self.y + height > self.height {
+            return None;
+        }
+        let slot = AtlasSlot {
+            page,
+            origin: wgpu::Origin3d {
+                x: self.x,
+                y: self.y,
+                z: 0,
+            },
+            width,
+            height,
+            atlas_width: self.width,
+            atlas_height: self.height,
+        };
+        self.x += width;
+        self.row_height = self.row_height.max(height);
+        Some(slot)
+    }
+
+    fn release(&mut self, slot: AtlasSlot) {
+        self.free.push(slot);
+    }
 }
 
 struct CachedGlyph {
     metrics: fontdue::Metrics,
-    pixels: Vec<CachedGlyphPixel>,
-}
-
-struct CachedGlyphPixel {
-    x: u16,
-    y: u16,
-    alpha: f32,
+    image: ImageId,
 }
 
 impl Renderer {
@@ -1997,9 +2374,7 @@ impl Renderer {
     }
 
     fn build_render_batches(
-        fonts: &'static [fontdue::Font],
-        glyph_cache: &mut HashMap<(usize, char, u32, u32), CachedGlyph>,
-        font_cache: &mut HashMap<char, Option<usize>>,
+        &mut self,
         commands: &[PaintCommand],
         _render_size: PhysicalSize,
         scale_factor: f32,
@@ -2009,6 +2384,7 @@ impl Renderer {
         let mut batches = Vec::new();
         let mut command_transform = Transform::IDENTITY;
         let mut opacity = initial_opacity;
+        let mut clip_stack: Vec<(ClipGeometry, Transform)> = Vec::new();
         for command in commands {
             match command {
                 PaintCommand::Transform(next) => {
@@ -2019,9 +2395,8 @@ impl Renderer {
                     opacity *= value.clamp(0.0, 1.0);
                     continue;
                 }
-                PaintCommand::Clip { shape } => {
-                    batches.push(RenderBatch::Clip(
-                        match shape {
+                PaintCommand::Clip { shape } | PaintCommand::PushClip(shape) => {
+                    let geometry = match shape {
                             ClipShape::Rect(rect) => ClipGeometry::Rect(*rect),
                             ClipShape::RoundedRect { rect, radius } => ClipGeometry::Rounded {
                                 rect: *rect,
@@ -2029,11 +2404,22 @@ impl Renderer {
                             },
                             ClipShape::Path { path } => ClipGeometry::Path {
                                 bounds: path_bounds(path),
-                                vertices: path_mask_vertices(path),
+                                vertices: self.resources.tessellate_path(path),
                             },
-                        },
-                        compose_transform(clip_transform, command_transform),
-                    ));
+                        };
+                    let transform = compose_transform(clip_transform, command_transform);
+                    batches.push(RenderBatch::Clip(geometry.clone(), transform));
+                    if matches!(command, PaintCommand::PushClip(_)) {
+                        clip_stack.push((geometry, transform));
+                    }
+                    continue;
+                }
+                PaintCommand::PopClip => {
+                    batches.push(RenderBatch::Clip(ClipGeometry::Reset, clip_transform));
+                    clip_stack.pop();
+                    for (geometry, transform) in &clip_stack {
+                        batches.push(RenderBatch::Clip(geometry.clone(), *transform));
+                    }
                     continue;
                 }
                 _ => {}
@@ -2075,15 +2461,16 @@ impl Renderer {
                     color,
                     scale,
                 } => append_text(
-                    rect_batch(&mut batches, transform),
-                    fonts,
-                    glyph_cache,
-                    font_cache,
+                    &mut batches,
+                    &mut self.resources,
+                    &self.device,
+                    &self.queue,
                     text,
                     *origin,
                     apply_opacity(*color, opacity),
                     *scale,
                     scale_factor,
+                    transform,
                 ),
                 PaintCommand::Icon {
                     path,
@@ -2109,9 +2496,13 @@ impl Renderer {
                     image_batch(&mut batches, *image, transform),
                     *rect,
                     *image_opacity * opacity,
+                    Color::WHITE,
                 ),
-                PaintCommand::Transform(_) | PaintCommand::Opacity(_) | PaintCommand::Clear(_) => {}
-                PaintCommand::Clip { .. } => unreachable!(),
+                PaintCommand::Transform(_)
+                | PaintCommand::Opacity(_)
+                | PaintCommand::Clear(_)
+                | PaintCommand::PopClip => {}
+                PaintCommand::Clip { .. } | PaintCommand::PushClip(_) => unreachable!(),
             }
         }
         batches
@@ -2133,6 +2524,31 @@ impl Renderer {
                 }
             }
         }
+        let (render_size, render_scale_factor) = {
+            let surface = self
+                .surfaces
+                .get(&window)
+                .ok_or(RenderError::SurfaceNotAttached(window))?;
+            let scale = surface.scale_factor.0.max(1.0);
+            (
+                PhysicalSize {
+                    width: (surface.size.width as f64 / scale).round().max(1.0) as u32,
+                    height: (surface.size.height as f64 / scale).round().max(1.0) as u32,
+                },
+                surface.scale_factor.0 as f32,
+            )
+        };
+        let batches = if segments.is_none() {
+            Some(self.build_render_batches(
+                commands,
+                render_size,
+                render_scale_factor,
+                Transform::IDENTITY,
+                1.0,
+            ))
+        } else {
+            None
+        };
         let state = self
             .surfaces
             .get_mut(&window)
@@ -2200,23 +2616,6 @@ impl Renderer {
                 label: Some("zui-render frame"),
             });
         {
-            let scale = state.scale_factor.0.max(1.0);
-            let render_size = PhysicalSize {
-                width: (state.size.width as f64 / scale).round().max(1.0) as u32,
-                height: (state.size.height as f64 / scale).round().max(1.0) as u32,
-            };
-            let batches = segments.is_none().then(|| {
-                Self::build_render_batches(
-                    self.resources.fonts,
-                    &mut self.resources.glyph_cache,
-                    &mut self.resources.font_cache,
-                    commands,
-                    render_size,
-                    state.scale_factor.0 as f32,
-                    Transform::IDENTITY,
-                    1.0,
-                )
-            });
             let node_batches = segments.map(|_| {
                 retained_gpu_items
                     .as_ref()
@@ -2224,7 +2623,7 @@ impl Renderer {
             });
             let gpu_batches = if let Some(node_batches) = &node_batches {
                 let mut all = Vec::new();
-                for item in node_batches.iter() {
+                for item in node_batches.values() {
                     let batches = &item.batches;
                     let has_clip = batches
                         .iter()
@@ -2265,7 +2664,9 @@ impl Renderer {
                             .map(|index| index.query(*region))
                             .unwrap_or_else(|| (0..node_batches.len()).collect());
                         for item_index in candidates {
-                            let item = &node_batches[item_index];
+                            let Some(item) = node_batches.values().nth(item_index) else {
+                                continue;
+                            };
                             if rect_intersects(item.bounds, *region) {
                                 let batches = &item.batches;
                                 let has_clip = batches
@@ -2510,6 +2911,20 @@ impl Renderer {
         damage_regions: &[Rect],
         clear: Color,
     ) -> Result<(), RenderError> {
+        self.render_node_with_damage_regions_indexed(window, node, damage_regions, clear, None)
+    }
+
+    /// Same retained rendering path, with explicit WidgetId-derived node
+    /// paths supplied by `WidgetTree::render_index`. These paths let the GPU
+    /// retained table update only the invalidated RenderNode subtrees.
+    pub fn render_node_with_damage_regions_indexed(
+        &mut self,
+        window: WindowId,
+        node: &RenderNode,
+        damage_regions: &[Rect],
+        clear: Color,
+        dirty_paths: Option<&[Vec<usize>]>,
+    ) -> Result<(), RenderError> {
         let mut retained = self
             .surfaces
             .get_mut(&window)
@@ -2517,6 +2932,7 @@ impl Renderer {
             .unwrap_or_default();
         let initial_scene = retained.is_empty();
         let scene_changed = node.dirty.is_dirty() || initial_scene;
+        let mut changed_paths = Vec::new();
         if scene_changed {
             let mut path = Vec::new();
             update_retained_subtree(
@@ -2528,10 +2944,14 @@ impl Renderer {
                 1.0,
                 &[],
                 initial_scene,
+                &mut changed_paths,
             );
         }
-        let items = retained.values().cloned().collect::<Vec<_>>();
+        if let Some(dirty_paths) = dirty_paths.filter(|_| !initial_scene) {
+            changed_paths.extend_from_slice(dirty_paths);
+        }
         if scene_changed {
+            let items = retained.values().cloned().collect::<Vec<_>>();
             if let Some(state) = self.surfaces.get_mut(&window) {
                 state.spatial_index = Some(SpatialIndex::build(&items));
             }
@@ -2551,10 +2971,7 @@ impl Renderer {
                 .get_mut(&window)
                 .and_then(|state| state.retained_gpu_items.take())
                 .unwrap_or_default();
-            let old_gpu_by_path = old_gpu_items
-                .into_iter()
-                .map(|item| (item.path.clone(), item))
-                .collect::<BTreeMap<_, _>>();
+            let mut retained_gpu_items = old_gpu_items;
             let (render_size, scale_factor) = {
                 let state = self
                     .surfaces
@@ -2569,21 +2986,37 @@ impl Renderer {
                     state.scale_factor.0 as f32,
                 )
             };
-            let mut retained_gpu_items = Vec::with_capacity(retained.len());
-            for (path, item) in &retained {
-                if let Some(previous) = old_gpu_by_path
-                    .get(path)
-                    .filter(|previous| previous.key == item.key)
+            if changed_paths.is_empty() {
+                changed_paths.push(Vec::new());
+            }
+            changed_paths.sort_by_key(Vec::len);
+            changed_paths.dedup();
+            let mut minimal_paths: Vec<Vec<usize>> = Vec::new();
+            for path in changed_paths {
+                if !minimal_paths
+                    .iter()
+                    .any(|ancestor| path_starts_with(&path, ancestor))
                 {
-                    retained_gpu_items.push(previous.clone());
-                    continue;
+                    minimal_paths.push(path);
+                }
+            }
+            for changed_path in minimal_paths {
+                retained_gpu_items.retain(|path, _| !path_starts_with(path, &changed_path));
+                for (path, item) in retained
+                    .iter()
+                    .filter(|(path, _)| path_starts_with(path, &changed_path))
+                {
+                item.commands.iter().try_for_each(PaintCommand::validate)?;
+                for command in &item.commands {
+                    if let PaintCommand::Image { image, .. } = command {
+                        if !self.resources.contains_image(*image) {
+                            return Err(RenderError::MissingImage(*image));
+                        }
+                    }
                 }
                 let mut batches = Vec::new();
                 for clip in &item.clips {
-                    batches.extend(Self::build_render_batches(
-                        self.resources.fonts,
-                        &mut self.resources.glyph_cache,
-                        &mut self.resources.font_cache,
+                    batches.extend(self.build_render_batches(
                         &[PaintCommand::Clip {
                             shape: clip.shape.clone(),
                         }],
@@ -2593,38 +3026,38 @@ impl Renderer {
                         1.0,
                     ));
                 }
-                batches.extend(Self::build_render_batches(
-                    self.resources.fonts,
-                    &mut self.resources.glyph_cache,
-                    &mut self.resources.font_cache,
+                batches.extend(self.build_render_batches(
                     &item.commands,
                     render_size,
                     scale_factor,
                     item.transform,
                     item.opacity,
                 ));
-                retained_gpu_items.push(RetainedGpuItem {
-                    path: path.clone(),
-                    key: item.key,
+                    retained_gpu_items.insert(path.clone(), RetainedGpuItem {
                     bounds: item.bounds,
                     batches: build_gpu_batches(&self.device, batches),
-                });
+                    });
+                }
             }
             if let Some(state) = self.surfaces.get_mut(&window) {
                 state.retained_gpu_items = Some(retained_gpu_items);
             }
         }
-        let damage_regions = coalesce_damage_for_items(damage_regions, &items);
-        let mut commands = vec![PaintCommand::Clear(clear)];
-        for item in &items {
-            commands.extend(item.commands.iter().cloned());
-        }
+        let damage_regions = coalesce_damage_for_spatial_index(
+            damage_regions,
+            self.surfaces
+                .get(&window)
+                .and_then(|state| state.spatial_index.as_ref()),
+        );
+        // Retained batches have already been validated when they were built.
+        // Clean and partial frames need only carry their clear color here.
+        let commands = [PaintCommand::Clear(clear)];
         let result = self.render_commands_with_damage_regions_key(
             window,
             &commands,
             &damage_regions,
             None,
-            Some(&items),
+            Some(&[]),
         );
         if result.is_ok() {
             if let Some(state) = self.surfaces.get_mut(&window) {
@@ -2632,6 +3065,31 @@ impl Renderer {
             }
         }
         result
+    }
+
+    /// Resolves dirty WidgetIds through the retained RenderNode index before
+    /// updating GPU batches. This is the normal WidgetTree integration point.
+    pub fn render_node_with_dirty_widgets(
+        &mut self,
+        window: WindowId,
+        node: &RenderNode,
+        damage_regions: &[Rect],
+        clear: Color,
+        index: &RenderNodeIndex,
+        dirty_widgets: &[u64],
+    ) -> Result<(), RenderError> {
+        let dirty_paths = dirty_widgets
+            .iter()
+            .filter_map(|id| index.path_for(*id))
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        self.render_node_with_damage_regions_indexed(
+            window,
+            node,
+            damage_regions,
+            clear,
+            Some(&dirty_paths),
+        )
     }
 
     pub fn device(&self) -> &wgpu::Device {
@@ -2813,16 +3271,18 @@ fn load_system_fonts() -> Vec<fontdue::Font> {
 }
 
 fn append_text(
-    vertices: &mut Vec<RectVertex>,
-    fonts: &[fontdue::Font],
-    glyph_cache: &mut HashMap<(usize, char, u32, u32), CachedGlyph>,
-    font_cache: &mut HashMap<char, Option<usize>>,
+    batches: &mut Vec<RenderBatch>,
+    resources: &mut ResourceManager,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
     text: &str,
     origin: Point,
     color: Color,
     scale: u32,
     scale_factor: f32,
+    transform: Transform,
 ) {
+    let fonts = resources.fonts;
     if !fonts.is_empty() {
         let scale_factor = scale_factor.max(1.0);
         let logical_font_size = (scale.max(1) * 7) as f32;
@@ -2830,7 +3290,7 @@ fn append_text(
         let baseline = (origin.y.0 + logical_font_size * 0.8) * scale_factor;
         let mut x = origin.x.0;
         for character in text.chars() {
-            let font_id = *font_cache.entry(character).or_insert_with(|| {
+            let font_id = *resources.font_cache.entry(character).or_insert_with(|| {
                 fonts
                     .iter()
                     .enumerate()
@@ -2842,54 +3302,47 @@ fn append_text(
                 continue;
             };
             let font = &fonts[font_id];
-            let glyph = glyph_cache
-                .entry((
-                    font_id,
-                    character,
-                    scale.max(1),
-                    (scale_factor * 100.0).round() as u32,
-                ))
-                .or_insert_with(|| {
-                    let (metrics, bitmap) = font.rasterize(character, font_size);
-                    let mut pixels = Vec::new();
-                    for row in 0..metrics.height {
-                        for column in 0..metrics.width {
-                            let alpha = bitmap[row * metrics.width + column] as f32 / 255.0;
-                            if alpha > 0.01 {
-                                pixels.push(CachedGlyphPixel {
-                                    x: column as u16,
-                                    y: row as u16,
-                                    alpha,
-                                });
-                            }
-                        }
-                    }
-                    CachedGlyph { metrics, pixels }
-                });
+            let key = (
+                font_id,
+                character,
+                scale.max(1),
+                (scale_factor * 100.0).round() as u32,
+            );
+            if !resources.glyph_cache.contains_key(&key) {
+                let (metrics, bitmap) = font.rasterize(character, font_size);
+                let image = resources.register_glyph(
+                    device,
+                    queue,
+                    metrics.width as u32,
+                    metrics.height as u32,
+                    &bitmap,
+                );
+                resources.glyph_cache.insert(key, CachedGlyph { metrics, image });
+            }
+            let glyph = resources
+                .glyph_cache
+                .get(&key)
+                .expect("glyph was inserted into the cache");
             let metrics = glyph.metrics;
             // Fontdue reports glyph bounds relative to the baseline. Keeping
             // one baseline for the complete run prevents punctuation and
             // lowercase glyphs from drifting vertically.
             let top = baseline - metrics.height as f32 - metrics.ymin as f32;
-            for pixel in &glyph.pixels {
-                append_rect(
-                    vertices,
-                    Rect {
-                        origin: Point {
-                            x: Dip((x * scale_factor + pixel.x as f32) / scale_factor),
-                            y: Dip((top + pixel.y as f32) / scale_factor),
-                        },
-                        size: zui_core::Size {
-                            width: Dip(1.0 / scale_factor),
-                            height: Dip(1.0 / scale_factor),
-                        },
+            append_image(
+                image_batch(batches, glyph.image, transform),
+                Rect {
+                    origin: Point {
+                        x: Dip(x),
+                        y: Dip(top / scale_factor),
                     },
-                    Color {
-                        a: color.a * pixel.alpha,
-                        ..color
+                    size: zui_core::Size {
+                        width: Dip(metrics.width as f32 / scale_factor),
+                        height: Dip(metrics.height as f32 / scale_factor),
                     },
-                );
-            }
+                },
+                1.0,
+                color,
+            );
             x += metrics.advance_width / scale_factor;
         }
         return;
@@ -2902,7 +3355,7 @@ fn append_text(
             for column in 0..5 {
                 if bits & (1 << (4 - column)) != 0 {
                     append_rect(
-                        vertices,
+                        rect_batch(batches, transform),
                         Rect {
                             origin: Point {
                                 x: Dip(x + column as f32 * scale as f32),
@@ -2961,82 +3414,36 @@ fn path_bounds(path: &IconPath) -> Rect {
 }
 
 fn path_mask_vertices(path: &IconPath) -> Vec<RectVertex> {
-    let mut points = path
-        .segments
-        .iter()
-        .map(|segment| segment.start)
-        .collect::<Vec<_>>();
-    if points.len() < 3 {
+    let Some(lyon_path) = path.to_lyon() else {
+        return Vec::new();
+    };
+    let options = FillOptions::tolerance(0.1).with_fill_rule(match path.fill_rule {
+        FillRule::EvenOdd => LyonFillRule::EvenOdd,
+        FillRule::NonZero => LyonFillRule::NonZero,
+    });
+    let mut geometry: VertexBuffers<[f32; 2], u32> = VertexBuffers::new();
+    if FillTessellator::new()
+        .tessellate_path(
+            &lyon_path,
+            &options,
+            &mut BuffersBuilder::new(&mut geometry, |vertex: FillVertex| {
+                let point = vertex.position();
+                [point.x, point.y]
+            }),
+        )
+        .is_err()
+    {
         return Vec::new();
     }
-    points.dedup_by(|left, right| left == right);
-    if points.len() >= 2 && points.first() == points.last() {
-        points.pop();
-    }
-    if points.len() < 3 {
-        return Vec::new();
-    }
-    let area = points
-        .iter()
-        .enumerate()
-        .map(|(index, point)| {
-            let next = points[(index + 1) % points.len()];
-            point.x.0 * next.y.0 - next.x.0 * point.y.0
+    geometry
+        .indices
+        .chunks_exact(3)
+        .flat_map(|triangle| triangle.iter().map(|index| geometry.vertices[*index as usize]))
+        .map(|position| RectVertex {
+            position,
+            color: [1.0; 4],
         })
-        .sum::<f32>();
-    if area.abs() <= f32::EPSILON {
-        return Vec::new();
-    }
-    let winding = if area > 0.0 { 1.0 } else { -1.0 };
-    let to_position = |point: Point| [point.x.0, point.y.0];
-    let mut remaining = (0..points.len()).collect::<Vec<_>>();
-    let mut vertices = Vec::with_capacity((points.len() - 2) * 3);
-    let mut guard = 0;
-    while remaining.len() > 2 && guard < points.len() * points.len() {
-        let mut clipped = false;
-        for offset in 0..remaining.len() {
-            let previous = remaining[(offset + remaining.len() - 1) % remaining.len()];
-            let current = remaining[offset];
-            let next = remaining[(offset + 1) % remaining.len()];
-            let a = points[previous];
-            let b = points[current];
-            let c = points[next];
-            let cross = (b.x.0 - a.x.0) * (c.y.0 - a.y.0) - (b.y.0 - a.y.0) * (c.x.0 - a.x.0);
-            if cross * winding <= 0.0 {
-                continue;
-            }
-            let contains_point = remaining.iter().any(|candidate| {
-                if *candidate == previous || *candidate == current || *candidate == next {
-                    return false;
-                }
-                point_in_triangle(points[*candidate], a, b, c, winding)
-            });
-            if contains_point {
-                continue;
-            }
-            for point in [a, b, c] {
-                vertices.push(RectVertex {
-                    position: to_position(point),
-                    color: [1.0; 4],
-                });
-            }
-            remaining.remove(offset);
-            clipped = true;
-            break;
-        }
-        if !clipped {
-            break;
-        }
-        guard += 1;
-    }
-    vertices
-}
-
-fn point_in_triangle(point: Point, a: Point, b: Point, c: Point, winding: f32) -> bool {
-    let ab = (b.x.0 - a.x.0) * (point.y.0 - a.y.0) - (b.y.0 - a.y.0) * (point.x.0 - a.x.0);
-    let bc = (c.x.0 - b.x.0) * (point.y.0 - b.y.0) - (c.y.0 - b.y.0) * (point.x.0 - b.x.0);
-    let ca = (a.x.0 - c.x.0) * (point.y.0 - c.y.0) - (a.y.0 - c.y.0) * (point.x.0 - c.x.0);
-    ab * winding >= 0.0 && bc * winding >= 0.0 && ca * winding >= 0.0
+        .collect()
 }
 
 fn append_line(vertices: &mut Vec<LineVertex>, start: Point, end: Point, width: Dip, color: Color) {
@@ -3085,7 +3492,7 @@ fn append_line(vertices: &mut Vec<LineVertex>, start: Point, end: Point, width: 
     ]);
 }
 
-fn append_image(vertices: &mut Vec<ImageVertex>, rect: Rect, opacity: f32) {
+fn append_image(vertices: &mut Vec<ImageVertex>, rect: Rect, opacity: f32, color: Color) {
     let left = rect.origin.x.0;
     let right = rect.origin.x.0 + rect.size.width.0;
     let top = rect.origin.y.0;
@@ -3095,31 +3502,37 @@ fn append_image(vertices: &mut Vec<ImageVertex>, rect: Rect, opacity: f32) {
             position: [left, top],
             uv: [0.0, 0.0],
             opacity,
+            color: [color.r, color.g, color.b, color.a],
         },
         ImageVertex {
             position: [right, top],
             uv: [1.0, 0.0],
             opacity,
+            color: [color.r, color.g, color.b, color.a],
         },
         ImageVertex {
             position: [right, bottom],
             uv: [1.0, 1.0],
             opacity,
+            color: [color.r, color.g, color.b, color.a],
         },
         ImageVertex {
             position: [left, top],
             uv: [0.0, 0.0],
             opacity,
+            color: [color.r, color.g, color.b, color.a],
         },
         ImageVertex {
             position: [right, bottom],
             uv: [1.0, 1.0],
             opacity,
+            color: [color.r, color.g, color.b, color.a],
         },
         ImageVertex {
             position: [left, bottom],
             uv: [0.0, 1.0],
             opacity,
+            color: [color.r, color.g, color.b, color.a],
         },
     ]);
 }
@@ -3776,11 +4189,13 @@ fn create_image_pipeline(
             @group(0) @binding(0) var<uniform> transform: Transform;
             @group(1) @binding(0) var image: texture_2d<f32>;
             @group(1) @binding(1) var image_sampler: sampler;
+            @group(1) @binding(2) var<uniform> image_uv: vec4<f32>;
 
             struct VertexOutput {
                 @builtin(position) position: vec4<f32>,
                 @location(0) uv: vec2<f32>,
                 @location(1) opacity: f32,
+                @location(2) color: vec4<f32>,
             };
 
             @vertex
@@ -3788,18 +4203,20 @@ fn create_image_pipeline(
                 @location(0) position: vec2<f32>,
                 @location(1) uv: vec2<f32>,
                 @location(2) opacity: f32,
+                @location(3) color: vec4<f32>,
             ) -> VertexOutput {
                 var output: VertexOutput;
                 output.position = transform.matrix * vec4<f32>(position, 0.0, 1.0);
-                output.uv = uv;
+                output.uv = mix(image_uv.xy, image_uv.zw, uv);
                 output.opacity = opacity;
+                output.color = color;
                 return output;
             }
 
             @fragment
             fn fs(input: VertexOutput) -> @location(0) vec4<f32> {
                 let color = textureSample(image, image_sampler, input.uv);
-                return vec4<f32>(color.rgb, color.a * input.opacity);
+                return vec4<f32>(color.rgb * input.color.rgb, color.a * input.color.a * input.opacity);
             }
         "#
             .into(),
@@ -3824,6 +4241,16 @@ fn create_image_pipeline(
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(16),
+                },
+                count: None,
+            },
         ],
     });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -3841,7 +4268,7 @@ fn create_image_pipeline(
             buffers: &[wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<ImageVertex>() as u64,
                 step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32],
+                attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32, 3 => Float32x4],
             }],
         },
         fragment: Some(wgpu::FragmentState {
@@ -4297,7 +4724,6 @@ mod tests {
     #[test]
     fn shared_item_damage_is_coalesced_once() {
         let items = vec![RenderNodeItem {
-            key: 1,
             bounds: Rect {
                 origin: Point {
                     x: Dip(4.0),
@@ -4332,7 +4758,8 @@ mod tests {
                 },
             },
         ];
-        let merged = coalesce_damage_for_items(&regions, &items);
+        let index = SpatialIndex::build(&items);
+        let merged = coalesce_damage_for_spatial_index(&regions, Some(&index));
         assert_eq!(merged.len(), 1);
     }
 
@@ -4469,12 +4896,10 @@ mod tests {
             },
             color: Color::WHITE,
         });
-        let mut glyph_cache = HashMap::new();
-        let mut font_cache = HashMap::new();
-        let batches = Renderer::build_render_batches(
-            &[],
-            &mut glyph_cache,
-            &mut font_cache,
+        let Ok(mut renderer) = Renderer::new_blocking() else {
+            return;
+        };
+        let batches = renderer.build_render_batches(
             &commands,
             PhysicalSize {
                 width: 100,

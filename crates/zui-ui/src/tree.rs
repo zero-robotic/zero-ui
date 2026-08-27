@@ -186,4 +186,10 @@ impl WidgetTree {
     pub fn render_index(&self) -> &RenderNodeIndex {
         &self.render_index
     }
+
+    /// Widget identities whose RenderNode subtrees changed since the last
+    /// completed frame. The renderer resolves these through `render_index`.
+    pub fn dirty_widget_ids(&self) -> Vec<u64> {
+        self.dirty_widget_ids.iter().copied().collect()
+    }
 }

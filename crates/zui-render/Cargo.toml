@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 bytemuck.workspace = true
 fontdue = "0.9.3"
+lyon_path = "1.0"
+lyon_tessellation = "1.0"
 pollster.workspace = true
 wgpu.workspace = true
 zui-core.workspace = true

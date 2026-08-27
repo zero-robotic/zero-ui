@@ -178,31 +178,25 @@ impl<'a> PaintContext<'a> {
         });
     }
     pub fn push_clip(&mut self, rect: Rect) {
-        self.commands.push(PaintCommand::Clip {
-            shape: ClipShape::Rect(self.local_rect(rect)),
-        });
+        self.commands
+            .push(PaintCommand::PushClip(ClipShape::Rect(self.local_rect(rect))));
     }
     pub fn push_rounded_clip(&mut self, rect: Rect, radius: zui_core::Dip) {
-        self.commands.push(PaintCommand::Clip {
-            shape: ClipShape::RoundedRect {
+        self.commands.push(PaintCommand::PushClip(ClipShape::RoundedRect {
                 rect: self.local_rect(rect),
                 radius,
-            },
-        });
+            }));
     }
     pub fn push_path_clip(&mut self, path: IconPath) {
-        let path = IconPath::new(
-            path.segments
-                .into_iter()
-                .map(|segment| zui_render::LineSegment {
-                    start: self.local_point(segment.start),
-                    end: self.local_point(segment.end),
-                })
-                .collect::<Vec<_>>(),
-        );
-        self.commands.push(PaintCommand::Clip {
-            shape: ClipShape::Path { path },
-        });
+        let path = path.transformed(Transform::translate(
+            zui_core::Dip(-self.origin.x.0),
+            zui_core::Dip(-self.origin.y.0),
+        ));
+        self.commands
+            .push(PaintCommand::PushClip(ClipShape::Path { path }));
+    }
+    pub fn pop_clip(&mut self) {
+        self.commands.push(PaintCommand::PopClip);
     }
     pub fn push_transform(&mut self, transform: Transform) {
         self.commands.push(PaintCommand::Transform(transform));
