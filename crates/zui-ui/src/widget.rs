@@ -95,6 +95,21 @@ pub(crate) fn build_render_node_with_commands(
     ));
     builder.finish()
 }
+
+/// Explicit leaf-node incremental policy: a clean leaf reuses its prior node;
+/// a dirty leaf rebuilds its local command list.
+pub(crate) fn build_leaf_render_node_incremental(
+    id: WidgetId,
+    context: &mut RenderBuildContext<'_>,
+    build: impl FnOnce(&Theme) -> RenderNode,
+) -> RenderNode {
+    if !context.subtree_is_dirty(id) {
+        if let Some(previous) = context.previous() {
+            return previous.clone();
+        }
+    }
+    build(context.theme())
+}
 impl<'a> PaintContext<'a> {
     pub fn new(commands: &'a mut Vec<PaintCommand>, theme: &'a Theme) -> Self {
         Self {
@@ -241,12 +256,5 @@ pub trait Widget {
     }
     fn set_theme(&mut self, _theme: &Theme) {}
     fn build_render_node(&self, theme: &Theme) -> RenderNode;
-    fn build_render_node_incremental(&self, context: &mut RenderBuildContext<'_>) -> RenderNode {
-        if !context.subtree_is_dirty(self.id()) {
-            if let Some(previous) = context.previous() {
-                return previous.clone();
-            }
-        }
-        self.build_render_node(context.theme())
-    }
+    fn build_render_node_incremental(&self, context: &mut RenderBuildContext<'_>) -> RenderNode;
 }

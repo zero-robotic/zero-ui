@@ -2153,10 +2153,6 @@ impl Renderer {
         let mut opacity_stack = Vec::new();
         for command in commands {
             match command {
-                PaintCommand::Transform(next) => {
-                    command_transform = compose_transform(command_transform, *next);
-                    continue;
-                }
                 PaintCommand::PushTransform(next) => {
                     transform_stack.push(command_transform);
                     command_transform = compose_transform(command_transform, *next);
@@ -2164,10 +2160,6 @@ impl Renderer {
                 }
                 PaintCommand::PopTransform => {
                     command_transform = transform_stack.pop().expect("validated transform stack");
-                    continue;
-                }
-                PaintCommand::Opacity(value) => {
-                    opacity *= value.clamp(0.0, 1.0);
                     continue;
                 }
                 PaintCommand::PushOpacity(value) => {
@@ -2179,7 +2171,7 @@ impl Renderer {
                     opacity = opacity_stack.pop().expect("validated opacity stack");
                     continue;
                 }
-                PaintCommand::Clip { shape } | PaintCommand::PushClip(shape) => {
+                PaintCommand::PushClip(shape) => {
                     let geometry = match shape {
                             ClipShape::Rect(rect) => ClipGeometry::Rect(*rect),
                             ClipShape::RoundedRect { rect, radius } => ClipGeometry::Rounded {
@@ -2193,9 +2185,7 @@ impl Renderer {
                         };
                     let transform = compose_transform(clip_transform, command_transform);
                     batches.push(RenderBatch::Clip(geometry.clone(), transform));
-                    if matches!(command, PaintCommand::PushClip(_)) {
-                        clip_stack.push((geometry, transform));
-                    }
+                    clip_stack.push((geometry, transform));
                     continue;
                 }
                 PaintCommand::PopClip => {
@@ -2295,18 +2285,31 @@ impl Renderer {
                     *image_opacity * opacity,
                     Color::WHITE,
                 ),
-                PaintCommand::Transform(_)
-                | PaintCommand::Opacity(_)
-                | PaintCommand::PushTransform(_)
+                PaintCommand::PushTransform(_)
                 | PaintCommand::PopTransform
                 | PaintCommand::PushOpacity(_)
                 | PaintCommand::PopOpacity
                 | PaintCommand::Clear(_)
                 | PaintCommand::PopClip => {}
-                PaintCommand::Clip { .. } | PaintCommand::PushClip(_) => unreachable!(),
+                PaintCommand::PushClip(_) => unreachable!(),
             }
         }
         batches
+    }
+
+    fn build_clip_batch(&mut self, shape: &ClipShape, transform: Transform) -> RenderBatch {
+        let geometry = match shape {
+            ClipShape::Rect(rect) => ClipGeometry::Rect(*rect),
+            ClipShape::RoundedRect { rect, radius } => ClipGeometry::Rounded {
+                rect: *rect,
+                radius: *radius,
+            },
+            ClipShape::Path { path } => ClipGeometry::Path {
+                bounds: path_bounds(path),
+                vertices: self.resources.tessellate_path(path),
+            },
+        };
+        RenderBatch::Clip(geometry, transform)
     }
 
     fn render_commands_with_damage_regions_key(
@@ -2707,29 +2710,16 @@ impl Renderer {
         Ok(())
     }
 
-    /// Renders a retained node tree. The node can be kept by the UI layer
-    /// between frames; unchanged fingerprints reuse the renderer's GPU batch
-    /// cache while damage regions limit the canvas writes.
-    pub fn render_node_with_damage_regions(
+    /// Internal retained rendering path. Widget ids have already been
+    /// resolved to RenderNode paths, so incremental updates never need a
+    /// compatibility full-tree fallback.
+    fn render_node_with_damage_regions_indexed(
         &mut self,
         window: WindowId,
         node: &RenderNode,
         damage_regions: &[Rect],
         clear: Color,
-    ) -> Result<(), RenderError> {
-        self.render_node_with_damage_regions_indexed(window, node, damage_regions, clear, None)
-    }
-
-    /// Same retained rendering path, with explicit WidgetId-derived node
-    /// paths supplied by `WidgetTree::render_index`. These paths let the GPU
-    /// retained table update only the invalidated RenderNode subtrees.
-    pub fn render_node_with_damage_regions_indexed(
-        &mut self,
-        window: WindowId,
-        node: &RenderNode,
-        damage_regions: &[Rect],
-        clear: Color,
-        dirty_paths: Option<&[Vec<usize>]>,
+        dirty_paths: &[Vec<usize>],
     ) -> Result<(), RenderError> {
         let mut retained = self
             .surfaces
@@ -2753,7 +2743,7 @@ impl Renderer {
                 &mut changed_paths,
             );
         }
-        if let Some(dirty_paths) = dirty_paths.filter(|_| !initial_scene) {
+        if !initial_scene {
             changed_paths.extend_from_slice(dirty_paths);
         }
         if scene_changed {
@@ -2843,15 +2833,7 @@ impl Renderer {
                 }
                 let mut batches = Vec::new();
                 for clip in &item.clips {
-                    batches.extend(self.build_render_batches(
-                        &[PaintCommand::Clip {
-                            shape: clip.shape.clone(),
-                        }],
-                        render_size,
-                        scale_factor,
-                        clip.transform,
-                        1.0,
-                    ));
+                    batches.push(self.build_clip_batch(&clip.shape, clip.transform));
                 }
                 batches.extend(self.build_render_batches(
                     &item.commands,
@@ -2929,7 +2911,7 @@ impl Renderer {
             node,
             damage_regions,
             clear,
-            Some(&dirty_paths),
+            &dirty_paths,
         )
     }
 

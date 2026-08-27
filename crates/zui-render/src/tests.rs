@@ -297,14 +297,13 @@ use super::*;
     }
 
     #[test]
-    fn command_transforms_are_preserved_for_gpu_batches() {
+    fn scoped_command_transforms_are_preserved_for_gpu_batches() {
         let mut commands = Vec::new();
-        commands.push(PaintCommand::Transform(Transform::translate(
+        commands.push(PaintCommand::PushTransform(Transform::translate(
             Dip(3.0),
             Dip(4.0),
         )));
-        commands.push(PaintCommand::Clip {
-            shape: ClipShape::Rect(Rect {
+        commands.push(PaintCommand::PushClip(ClipShape::Rect(Rect {
                 origin: Point {
                     x: Dip(1.0),
                     y: Dip(2.0),
@@ -313,8 +312,7 @@ use super::*;
                     width: Dip(10.0),
                     height: Dip(11.0),
                 },
-            }),
-        });
+            })));
         commands.push(PaintCommand::Rect {
             rect: Rect {
                 origin: Point {
@@ -328,6 +326,8 @@ use super::*;
             },
             color: Color::WHITE,
         });
+        commands.push(PaintCommand::PopClip);
+        commands.push(PaintCommand::PopTransform);
         let Ok(mut renderer) = Renderer::new_blocking() else {
             return;
         };

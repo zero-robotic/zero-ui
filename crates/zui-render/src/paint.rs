@@ -96,15 +96,6 @@ pub enum PaintCommand {
     /// Begins a nested clip scope. `PopClip` restores the previous scope.
     PushClip(ClipShape),
     PopClip,
-    /// Compatibility alias for a clip that remains active until a reset or
-    /// the end of its RenderNode.
-    Clip {
-        shape: ClipShape,
-    },
-    /// Compatibility transform that remains active until the node ends.
-    Transform(Transform),
-    /// Compatibility opacity that remains active until the node ends.
-    Opacity(f32),
     PushTransform(Transform),
     PopTransform,
     PushOpacity(f32),
@@ -115,8 +106,6 @@ impl PaintCommand {
     pub fn bounds(&self) -> Option<Rect> {
         match self {
             Self::Clear(_)
-            | Self::Transform(_)
-            | Self::Opacity(_)
             | Self::PushTransform(_)
             | Self::PopTransform
             | Self::PushOpacity(_)
@@ -125,7 +114,7 @@ impl PaintCommand {
             Self::Rect { rect, .. } | Self::RoundedRect { rect, .. } | Self::Image { rect, .. } => {
                 Some(*rect)
             }
-            Self::Clip { shape } | Self::PushClip(shape) => Some(shape.bounds()),
+            Self::PushClip(shape) => Some(shape.bounds()),
             Self::Line {
                 start, end, width, ..
             } => Some(line_bounds(*start, *end, *width)),
@@ -235,7 +224,7 @@ impl PaintCommand {
                 }
                 Ok(())
             }
-            Self::Clip { shape } | Self::PushClip(shape) => {
+            Self::PushClip(shape) => {
                 validate_rect(shape.bounds())?;
                 if let ClipShape::RoundedRect { radius, .. } = shape {
                     if !radius.0.is_finite() || radius.0 < 0.0 {
@@ -256,7 +245,7 @@ impl PaintCommand {
                 Ok(())
             }
             Self::PopClip | Self::PopTransform | Self::PopOpacity => Ok(()),
-            Self::Transform(transform) | Self::PushTransform(transform) => {
+            Self::PushTransform(transform) => {
                 if transform.matrix.iter().all(|value| value.is_finite()) {
                     Ok(())
                 } else {
@@ -265,7 +254,7 @@ impl PaintCommand {
                     ))
                 }
             }
-            Self::Opacity(value) | Self::PushOpacity(value) => {
+            Self::PushOpacity(value) => {
                 if value.is_finite() && (0.0..=1.0).contains(value) {
                     Ok(())
                 } else {
@@ -315,11 +304,8 @@ impl PaintCommand {
         !matches!(
             self,
             Self::Clear(_)
-                | Self::Clip { .. }
                 | Self::PushClip(_)
                 | Self::PopClip
-                | Self::Transform(_)
-                | Self::Opacity(_)
                 | Self::PushTransform(_)
                 | Self::PopTransform
                 | Self::PushOpacity(_)
