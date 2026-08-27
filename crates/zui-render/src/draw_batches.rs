@@ -2,48 +2,33 @@
 
 use super::*;
 
-pub(crate) fn build_gpu_batches(device: &wgpu::Device, batches: Vec<RenderBatch>) -> Vec<GpuBatch> {
-    coalesce_gpu_batches(
-        device,
-        batches
+pub(crate) fn build_gpu_batches(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    arenas: &mut VertexArenas,
+    batches: Vec<RenderBatch>,
+) -> Vec<GpuBatch> {
+    batches
             .into_iter()
             .filter_map(|batch| match batch {
                 RenderBatch::Rect(vertices, transform) if !vertices.is_empty() => {
                     Some(GpuBatch::Draw(
                         BatchKind::Rect,
-                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("zui-render rectangles"),
-                            contents: bytemuck::cast_slice(&vertices),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        }),
-                        vertices.len() as u32,
-                        bytemuck::cast_slice(&vertices).to_vec(),
+                        arenas.upload(device, queue, VertexArenaKind::Rect, bytemuck::cast_slice(&vertices), vertices.len() as u32),
                         transform,
                     ))
                 }
                 RenderBatch::Rounded(vertices, transform) if !vertices.is_empty() => {
                     Some(GpuBatch::Draw(
                         BatchKind::Rounded,
-                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("zui-render rounded rectangles"),
-                            contents: bytemuck::cast_slice(&vertices),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        }),
-                        vertices.len() as u32,
-                        bytemuck::cast_slice(&vertices).to_vec(),
+                        arenas.upload(device, queue, VertexArenaKind::Rounded, bytemuck::cast_slice(&vertices), vertices.len() as u32),
                         transform,
                     ))
                 }
                 RenderBatch::Line(vertices, transform) if !vertices.is_empty() => {
                     Some(GpuBatch::Draw(
                         BatchKind::Line,
-                        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("zui-render lines"),
-                            contents: bytemuck::cast_slice(&vertices),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        }),
-                        vertices.len() as u32,
-                        bytemuck::cast_slice(&vertices).to_vec(),
+                        arenas.upload(device, queue, VertexArenaKind::Line, bytemuck::cast_slice(&vertices), vertices.len() as u32),
                         transform,
                     ))
                 }
@@ -53,13 +38,7 @@ pub(crate) fn build_gpu_batches(device: &wgpu::Device, batches: Vec<RenderBatch>
                     transform,
                 } if !vertices.is_empty() => Some(GpuBatch::Draw(
                     BatchKind::Image(image),
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("zui-render images"),
-                        contents: bytemuck::cast_slice(&vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    }),
-                    vertices.len() as u32,
-                    bytemuck::cast_slice(&vertices).to_vec(),
+                    arenas.upload(device, queue, VertexArenaKind::Image, bytemuck::cast_slice(&vertices), vertices.len() as u32),
                     transform,
                 )),
                 RenderBatch::Clip(geometry, clip_transform) => {
@@ -68,77 +47,22 @@ pub(crate) fn build_gpu_batches(device: &wgpu::Device, batches: Vec<RenderBatch>
                         ClipGeometry::Rect(rect) => {
                             let mut vertices = Vec::new();
                             append_rect(&mut vertices, rect, Color::WHITE);
-                            let buffer =
-                                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                    label: Some("zui-render stencil clip"),
-                                    contents: bytemuck::cast_slice(&vertices),
-                                    usage: wgpu::BufferUsages::VERTEX,
-                                });
-                            Some((buffer, vertices.len() as u32))
+                            Some(arenas.upload(device, queue, VertexArenaKind::Rect, bytemuck::cast_slice(&vertices), vertices.len() as u32))
                         }
                         ClipGeometry::Rounded { rect, radius } => {
                             let mut vertices = Vec::new();
                             append_rounded_rect(&mut vertices, rect, radius, Color::WHITE);
-                            let buffer =
-                                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                    label: Some("zui-render rounded stencil clip"),
-                                    contents: bytemuck::cast_slice(&vertices),
-                                    usage: wgpu::BufferUsages::VERTEX,
-                                });
-                            Some((buffer, vertices.len() as u32))
+                            Some(arenas.upload(device, queue, VertexArenaKind::Rounded, bytemuck::cast_slice(&vertices), vertices.len() as u32))
                         }
                         ClipGeometry::Path { ref vertices, .. } => {
-                            let buffer =
-                                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                    label: Some("zui-render path stencil clip"),
-                                    contents: bytemuck::cast_slice(&vertices),
-                                    usage: wgpu::BufferUsages::VERTEX,
-                                });
-                            Some((buffer, vertices.len() as u32))
+                            Some(arenas.upload(device, queue, VertexArenaKind::Rect, bytemuck::cast_slice(vertices), vertices.len() as u32))
                         }
                     };
                     Some(GpuBatch::Clip(geometry, mask, clip_transform))
                 }
                 _ => None,
             })
-            .collect(),
-    )
-}
-
-pub(crate) fn coalesce_gpu_batches(device: &wgpu::Device, batches: Vec<GpuBatch>) -> Vec<GpuBatch> {
-    let mut result = Vec::with_capacity(batches.len());
-    for batch in batches {
-        match batch {
-            GpuBatch::Draw(kind, buffer, count, bytes, transform) => {
-                let mut merged = false;
-                if let Some(GpuBatch::Draw(
-                    previous_kind,
-                    previous_buffer,
-                    previous_count,
-                    previous_bytes,
-                    previous_transform,
-                )) = result.last_mut()
-                {
-                    if *previous_kind == kind && *previous_transform == transform {
-                        previous_bytes.extend_from_slice(&bytes);
-                        *previous_count += count;
-                        *previous_buffer =
-                            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                                label: Some("zui-render merged vertex batch"),
-                                contents: previous_bytes,
-                                usage: wgpu::BufferUsages::VERTEX,
-                            });
-                        merged = true;
-                    }
-                }
-                if !merged {
-                    result.push(GpuBatch::Draw(kind, buffer, count, bytes, transform));
-                }
-            }
-            other => result.push(other),
-        }
-    }
-    result
+            .collect()
 }
 
 pub(crate) fn cached_system_fonts() -> &'static [fontdue::Font] {

@@ -4,6 +4,7 @@
 //! drawing data; `Renderer` owns the GPU and the per-window swap-chain surfaces.
 
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
 use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
 
@@ -1380,11 +1381,15 @@ struct SurfaceState {
     /// GPU draw data keyed by retained-node path. Only nodes whose render key
     /// changes rebuild these batches; partial replay reads this table directly.
     retained_gpu_items: Option<BTreeMap<Vec<usize>, RetainedGpuItem>>,
+    /// Long-lived vertex storage for retained draw batches. Dirty nodes replace
+    /// only their allocated ranges instead of allocating a buffer per batch.
+    vertex_arenas: VertexArenas,
     spatial_index: Option<SpatialIndex>,
 }
 
 struct GpuBatchCacheEntry {
     batches: Vec<GpuBatch>,
+    vertex_allocations: Vec<VertexArenaAllocation>,
     last_used: u64,
 }
 
@@ -1392,6 +1397,175 @@ struct GpuBatchCacheEntry {
 struct RetainedGpuItem {
     bounds: Rect,
     batches: Vec<GpuBatch>,
+    /// Allocations are owned by this retained node and released when its
+    /// subtree is invalidated.
+    vertex_allocations: Vec<VertexArenaAllocation>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VertexArenaKind {
+    Rect,
+    Rounded,
+    Line,
+    Image,
+}
+
+#[derive(Clone, Debug)]
+struct VertexArenaAllocation {
+    kind: VertexArenaKind,
+    page: usize,
+    range: Range<u64>,
+    vertex_count: u32,
+}
+
+struct VertexArenaPage {
+    buffer: wgpu::Buffer,
+    capacity: u64,
+    used: u64,
+    free: Vec<Range<u64>>,
+}
+
+struct VertexArena {
+    label: &'static str,
+    pages: Vec<VertexArenaPage>,
+}
+
+struct VertexArenas {
+    rect: VertexArena,
+    rounded: VertexArena,
+    line: VertexArena,
+    image: VertexArena,
+}
+
+impl VertexArenas {
+    fn new(device: &wgpu::Device) -> Self {
+        Self {
+            rect: VertexArena::new(device, "zui-render retained rect arena"),
+            rounded: VertexArena::new(device, "zui-render retained rounded arena"),
+            line: VertexArena::new(device, "zui-render retained line arena"),
+            image: VertexArena::new(device, "zui-render retained image arena"),
+        }
+    }
+
+    fn arena_mut(&mut self, kind: VertexArenaKind) -> &mut VertexArena {
+        match kind {
+            VertexArenaKind::Rect => &mut self.rect,
+            VertexArenaKind::Rounded => &mut self.rounded,
+            VertexArenaKind::Line => &mut self.line,
+            VertexArenaKind::Image => &mut self.image,
+        }
+    }
+
+    fn buffer(&self, allocation: &VertexArenaAllocation) -> &wgpu::Buffer {
+        let arena = match allocation.kind {
+            VertexArenaKind::Rect => &self.rect,
+            VertexArenaKind::Rounded => &self.rounded,
+            VertexArenaKind::Line => &self.line,
+            VertexArenaKind::Image => &self.image,
+        };
+        &arena.pages[allocation.page].buffer
+    }
+
+    fn upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        kind: VertexArenaKind,
+        bytes: &[u8],
+        vertex_count: u32,
+    ) -> VertexArenaAllocation {
+        let allocation = self
+            .arena_mut(kind)
+            .allocate(device, kind, bytes.len() as u64);
+        queue.write_buffer(self.buffer(&allocation), allocation.range.start, bytes);
+        VertexArenaAllocation {
+            vertex_count,
+            ..allocation
+        }
+    }
+
+    fn release(&mut self, allocation: VertexArenaAllocation) {
+        self.arena_mut(allocation.kind).release(allocation);
+    }
+}
+
+impl VertexArena {
+    const INITIAL_PAGE_SIZE: u64 = 256 * 1024;
+
+    fn new(device: &wgpu::Device, label: &'static str) -> Self {
+        Self {
+            label,
+            pages: vec![Self::page(device, label, Self::INITIAL_PAGE_SIZE)],
+        }
+    }
+
+    fn page(device: &wgpu::Device, label: &'static str, capacity: u64) -> VertexArenaPage {
+        VertexArenaPage {
+            buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: capacity,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            capacity,
+            used: 0,
+            free: Vec::new(),
+        }
+    }
+
+    fn allocate(
+        &mut self,
+        device: &wgpu::Device,
+        kind: VertexArenaKind,
+        bytes: u64,
+    ) -> VertexArenaAllocation {
+        let bytes = bytes.max(4).next_multiple_of(4);
+        for (page, entry) in self.pages.iter_mut().enumerate() {
+            if let Some(index) = entry.free.iter().position(|range| range.end - range.start >= bytes) {
+                let range = entry.free[index].start..entry.free[index].start + bytes;
+                entry.free[index].start += bytes;
+                if entry.free[index].is_empty() {
+                    entry.free.swap_remove(index);
+                }
+                return VertexArenaAllocation {
+                    kind,
+                    page,
+                    range,
+                    vertex_count: 0,
+                };
+            }
+            if entry.capacity - entry.used >= bytes {
+                let range = entry.used..entry.used + bytes;
+                entry.used += bytes;
+                return VertexArenaAllocation {
+                    kind,
+                    page,
+                    range,
+                    vertex_count: 0,
+                };
+            }
+        }
+        let capacity = self
+            .pages
+            .last()
+            .map(|page| page.capacity.saturating_mul(2).max(bytes))
+            .unwrap_or(Self::INITIAL_PAGE_SIZE)
+            .max(Self::INITIAL_PAGE_SIZE);
+        self.pages.push(Self::page(device, self.label, capacity));
+        let page = self.pages.len() - 1;
+        self.pages[page].used = bytes;
+        VertexArenaAllocation {
+            kind,
+            page,
+            range: 0..bytes,
+            vertex_count: 0,
+        }
+    }
+
+    fn release(&mut self, allocation: VertexArenaAllocation) {
+        let page = &mut self.pages[allocation.page];
+        page.free.push(allocation.range);
+    }
 }
 
 struct TransformBinding {
@@ -1407,9 +1581,22 @@ fn take_gpu_cache(state: &mut SurfaceState, key: u64) -> Option<Vec<GpuBatch>> {
 fn insert_gpu_cache(state: &mut SurfaceState, key: u64, batches: Vec<GpuBatch>) {
     state.cache_clock = state.cache_clock.wrapping_add(1);
     let last_used = state.cache_clock;
-    state
+    let vertex_allocations = batch_vertex_allocations(&batches);
+    if let Some(replaced) = state
         .node_gpu_cache
-        .insert(key, GpuBatchCacheEntry { batches, last_used });
+        .insert(
+            key,
+            GpuBatchCacheEntry {
+                batches,
+                vertex_allocations,
+                last_used,
+            },
+        )
+    {
+        for allocation in replaced.vertex_allocations {
+            state.vertex_arenas.release(allocation);
+        }
+    }
     while state.node_gpu_cache.len() > state.max_gpu_cache_entries {
         let Some(oldest_key) = state
             .node_gpu_cache
@@ -1419,7 +1606,11 @@ fn insert_gpu_cache(state: &mut SurfaceState, key: u64, batches: Vec<GpuBatch>) 
         else {
             break;
         };
-        state.node_gpu_cache.remove(&oldest_key);
+        if let Some(evicted) = state.node_gpu_cache.remove(&oldest_key) {
+            for allocation in evicted.vertex_allocations {
+                state.vertex_arenas.release(allocation);
+            }
+        }
     }
 }
 
@@ -1496,9 +1687,21 @@ enum BatchKind {
 
 #[derive(Clone)]
 enum GpuBatch {
-    Draw(BatchKind, wgpu::Buffer, u32, Vec<u8>, Transform),
-    Clip(ClipGeometry, Option<(wgpu::Buffer, u32)>, Transform),
+    Draw(BatchKind, VertexArenaAllocation, Transform),
+    Clip(ClipGeometry, Option<VertexArenaAllocation>, Transform),
     Scissor(Rect),
+}
+
+fn batch_vertex_allocations(batches: &[GpuBatch]) -> Vec<VertexArenaAllocation> {
+    batches
+        .iter()
+        .filter_map(|batch| match batch {
+            GpuBatch::Draw(_, allocation, _) | GpuBatch::Clip(_, Some(allocation), _) => {
+                Some(allocation.clone())
+            }
+            GpuBatch::Clip(_, None, _) | GpuBatch::Scissor(_) => None,
+        })
+        .collect()
 }
 
 fn rect_batch(batches: &mut Vec<RenderBatch>, transform: Transform) -> &mut Vec<RectVertex> {
@@ -1807,6 +2010,7 @@ impl Renderer {
                 max_gpu_cache_entries: 256,
                 retained_items: None,
                 retained_gpu_items: None,
+                vertex_arenas: VertexArenas::new(&self.device),
                 spatial_index: None,
             },
         );
@@ -1885,6 +2089,7 @@ impl Renderer {
                 max_gpu_cache_entries: 256,
                 retained_items: None,
                 retained_gpu_items: None,
+                vertex_arenas: VertexArenas::new(&self.device),
                 spatial_index: None,
             },
         );
@@ -1922,6 +2127,7 @@ impl Renderer {
         state.transform_bindings.clear();
         state.retained_items = None;
         state.retained_gpu_items = None;
+        state.vertex_arenas = VertexArenas::new(&self.device);
         state.spatial_index = None;
         state.cache_clock = 0;
         Ok(())
@@ -2239,11 +2445,13 @@ impl Renderer {
                         ));
                     }
                 }
-                coalesce_gpu_batches(&self.device, all)
+                all
             } else {
                 take_gpu_cache(state, batch_hash).unwrap_or_else(|| {
                     build_gpu_batches(
                         &self.device,
+                        &self.queue,
+                        &mut state.vertex_arenas,
                         batches.expect("command batches are built without node items"),
                     )
                 })
@@ -2285,7 +2493,7 @@ impl Renderer {
                             }
                         }
                     }
-                    coalesce_gpu_batches(&self.device, replay)
+                    replay
                 } else {
                     damage_regions
                         .iter()
@@ -2301,7 +2509,7 @@ impl Renderer {
             let mut transform_groups = HashMap::new();
             for batch in &replay_batches {
                 let transform = match batch {
-                    GpuBatch::Draw(_, _, _, _, transform) | GpuBatch::Clip(_, _, transform) => {
+                    GpuBatch::Draw(_, _, transform) | GpuBatch::Clip(_, _, transform) => {
                         Some(*transform)
                     }
                     GpuBatch::Scissor(_) => None,
@@ -2357,7 +2565,7 @@ impl Renderer {
                     continue;
                 }
                 if let GpuBatch::Clip(geometry, mask, transform) = batch {
-                    if let Some((buffer, count)) = mask {
+                    if let Some(allocation) = mask {
                         pass.set_pipeline(match geometry {
                             ClipGeometry::Rounded { .. } => &state.stencil_rounded_pipeline,
                             _ => &state.stencil_mask_pipeline,
@@ -2370,8 +2578,14 @@ impl Renderer {
                                 .expect("clip transform binding is prepared"),
                             &[],
                         );
-                        pass.set_vertex_buffer(0, buffer.slice(..));
-                        pass.draw(0..*count, 0..1);
+                        pass.set_vertex_buffer(
+                            0,
+                            state
+                                .vertex_arenas
+                                .buffer(allocation)
+                                .slice(allocation.range.clone()),
+                        );
+                        pass.draw(0..allocation.vertex_count, 0..1);
                         active_clip_depth = active_clip_depth.saturating_add(1);
                     } else {
                         set_scissor(&mut pass, None, state.size, state.scale_factor);
@@ -2390,13 +2604,14 @@ impl Renderer {
                     };
                     continue;
                 }
-                let (kind, draws, transform): (&BatchKind, Vec<(&wgpu::Buffer, u32)>, Transform) =
+                let (kind, allocation, transform): (&BatchKind, &VertexArenaAllocation, Transform) =
                     match batch {
-                        GpuBatch::Draw(kind, buffer, count, _, transform) => {
-                            (kind, vec![(buffer, *count)], *transform)
+                        GpuBatch::Draw(kind, allocation, transform) => {
+                            (kind, allocation, *transform)
                         }
                         _ => continue,
                     };
+                let vertex_buffer = state.vertex_arenas.buffer(allocation);
                 let scissor = intersect_clip(active_clip, active_damage);
                 set_scissor(&mut pass, scissor, state.size, state.scale_factor);
                 pass.set_stencil_reference(active_clip_depth);
@@ -2420,16 +2635,12 @@ impl Renderer {
                             .bind_group(&self.device, &self.queue, window, image, &layout)
                     {
                         pass.set_bind_group(1, &bind_group, &[]);
-                        for (vertex_buffer, count) in draws {
-                            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                            pass.draw(0..count, 0..1);
-                        }
+                        pass.set_vertex_buffer(0, vertex_buffer.slice(allocation.range.clone()));
+                        pass.draw(0..allocation.vertex_count, 0..1);
                     }
                 } else {
-                    for (vertex_buffer, count) in draws {
-                        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                        pass.draw(0..count, 0..1);
-                    }
+                    pass.set_vertex_buffer(0, vertex_buffer.slice(allocation.range.clone()));
+                    pass.draw(0..allocation.vertex_count, 0..1);
                 }
             }
             if node_batches.is_none() {
@@ -2599,7 +2810,25 @@ impl Renderer {
                 }
             }
             for changed_path in minimal_paths {
-                retained_gpu_items.retain(|path, _| !path_starts_with(path, &changed_path));
+                let removed_paths: Vec<_> = retained_gpu_items
+                    .keys()
+                    .filter(|path| path_starts_with(path, &changed_path))
+                    .cloned()
+                    .collect();
+                let released: Vec<_> = removed_paths
+                    .into_iter()
+                    .filter_map(|path| retained_gpu_items.remove(&path))
+                    .flat_map(|item| item.vertex_allocations)
+                    .collect();
+                if !released.is_empty() {
+                    let state = self
+                        .surfaces
+                        .get_mut(&window)
+                        .ok_or(RenderError::SurfaceNotAttached(window))?;
+                    for allocation in released {
+                        state.vertex_arenas.release(allocation);
+                    }
+                }
                 for (path, item) in retained
                     .iter()
                     .filter(|(path, _)| path_starts_with(path, &changed_path))
@@ -2631,9 +2860,23 @@ impl Renderer {
                     item.transform,
                     item.opacity,
                 ));
+                    let gpu_batches = {
+                        let state = self
+                            .surfaces
+                            .get_mut(&window)
+                            .ok_or(RenderError::SurfaceNotAttached(window))?;
+                        build_gpu_batches(
+                            &self.device,
+                            &self.queue,
+                            &mut state.vertex_arenas,
+                            batches,
+                        )
+                    };
+                    let vertex_allocations = batch_vertex_allocations(&gpu_batches);
                     retained_gpu_items.insert(path.clone(), RetainedGpuItem {
-                    bounds: item.bounds,
-                    batches: build_gpu_batches(&self.device, batches),
+                        bounds: item.bounds,
+                        batches: gpu_batches,
+                        vertex_allocations,
                     });
                 }
             }
