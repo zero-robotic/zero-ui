@@ -839,6 +839,35 @@ fn tile_submission_index_updates_only_changed_subtree_paths() {
 }
 
 #[test]
+fn retained_submission_table_replaces_only_dirty_subtree_segments() {
+    let item = || RetainedGpuItem {
+        bounds: Rect::default(),
+        batches: Vec::new(),
+        vertex_allocations: Vec::new(),
+        index_allocations: Vec::new(),
+        indirect_allocations: Vec::new(),
+        resources: Vec::new(),
+    };
+    let mut items = BTreeMap::new();
+    items.insert(vec![0, 0], item());
+    items.insert(vec![0, 1], item());
+    items.insert(vec![1], item());
+    let mut table = RetainedSubmissionTable::rebuild(&items);
+    assert_eq!(table.segments.len(), 3);
+
+    items.remove(&vec![0, 0]);
+    items.insert(vec![0, 2], item());
+    table.replace_subtrees(&items, &[vec![0]]);
+
+    assert!(!table.segments.contains_key(&vec![0, 0]));
+    assert!(table.segments.contains_key(&vec![0, 1]));
+    assert!(table.segments.contains_key(&vec![0, 2]));
+    // The sibling segment was retained instead of participating in the
+    // dirty subtree replacement.
+    assert!(table.segments.contains_key(&vec![1]));
+}
+
+#[test]
 fn resource_eviction_never_discards_a_retained_image() {
     let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     let mut resources = ResourceManager::new(&device, &[]);

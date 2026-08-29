@@ -1620,9 +1620,11 @@ struct SurfaceState {
     /// GPU draw data keyed by retained-node path. Only nodes whose render key
     /// changes rebuild these batches; partial replay reads this table directly.
     retained_gpu_items: Option<BTreeMap<Vec<usize>, RetainedGpuItem>>,
-    /// Globally ordered retained submissions, built only when retained GPU
-    /// items change. This preserves cross-node batching on clean frames.
-    retained_submission_batches: Option<Vec<GpuBatch>>,
+    /// Ordered GPU submission segments keyed by RenderNode path. Replacing a
+    /// dirty subtree updates only the affected path range; clean and partial
+    /// frames borrow these segments directly instead of rebuilding a global
+    /// submission vector.
+    retained_submission_batches: Option<RetainedSubmissionTable>,
     /// Long-lived vertex storage for retained draw batches. Dirty nodes replace
     /// only their allocated ranges instead of allocating a buffer per batch.
     vertex_arenas: VertexArenas,
@@ -1841,6 +1843,66 @@ struct RetainedGpuItem {
     index_allocations: Vec<IndexArenaAllocation>,
     indirect_allocations: Vec<IndirectArenaAllocation>,
     resources: Vec<ResourceHandle>,
+}
+
+/// Persistent, path-addressable GPU submission table.
+///
+/// A segment owns the clip resets required by one retained node. Keeping that
+/// scope local means replacing a node never requires regrouping unrelated
+/// nodes merely to repair clip state at a global-batch boundary.
+#[derive(Default)]
+struct RetainedSubmissionTable {
+    segments: BTreeMap<Vec<usize>, Vec<GpuBatch>>,
+}
+
+impl RetainedSubmissionTable {
+    fn rebuild(items: &BTreeMap<Vec<usize>, RetainedGpuItem>) -> Self {
+        let mut table = Self::default();
+        table.replace_subtrees(items, &[Vec::new()]);
+        table
+    }
+
+    fn replace_subtrees(
+        &mut self,
+        items: &BTreeMap<Vec<usize>, RetainedGpuItem>,
+        paths: &[Vec<usize>],
+    ) {
+        for prefix in paths {
+            loop {
+                let path = self
+                    .segments
+                    .range(prefix.clone()..)
+                    .next()
+                    .map(|(path, _)| path.clone());
+                let Some(path) = path.filter(|path| path_starts_with(path, prefix)) else {
+                    break;
+                };
+                self.segments.remove(&path);
+            }
+            for (path, item) in items.range(prefix.clone()..) {
+                if !path_starts_with(path, prefix) {
+                    break;
+                }
+                self.segments.insert(path.clone(), submission_segment(item));
+            }
+        }
+    }
+
+    fn for_each_batch(&self, mut visit: impl FnMut(&GpuBatch)) {
+        for segment in self.segments.values() {
+            for batch in segment {
+                visit(batch);
+            }
+        }
+    }
+
+    fn for_each_batch_mut(&mut self, mut visit: impl FnMut(&mut GpuBatch)) {
+        for segment in self.segments.values_mut() {
+            for batch in segment {
+                visit(batch);
+            }
+        }
+    }
 }
 
 fn path_resource_handle(path: &IconPath) -> ResourceHandle {
@@ -2433,6 +2495,15 @@ enum GpuBatch {
     Scissor(Rect),
 }
 
+fn gpu_batch_transform(batch: &GpuBatch) -> Option<Transform> {
+    match batch {
+        GpuBatch::Draw(_, _, _, transform)
+        | GpuBatch::DrawGroup(_, _, transform, _)
+        | GpuBatch::Clip(_, _, transform) => Some(*transform),
+        GpuBatch::Scissor(_) => None,
+    }
+}
+
 /// A replay entry either owns transient batches or borrows immutable retained
 /// batches. Dirty-tile replay uses the borrowed form so it never clones the
 /// node's draw lists just to encode a frame.
@@ -2547,32 +2618,31 @@ fn merge_batch_resources(into: &mut BatchKind, from: &BatchKind) {
     }
 }
 
-fn build_retained_submission_batches(
-    items: &BTreeMap<Vec<usize>, RetainedGpuItem>,
-) -> Vec<GpuBatch> {
-    let mut batches = Vec::new();
-    for item in items.values() {
-        let has_clip = item
-            .batches
-            .iter()
-            .any(|batch| matches!(batch, GpuBatch::Clip(_, _, _)));
-        if has_clip {
-            batches.push(GpuBatch::Clip(
-                ClipGeometry::Reset,
-                None,
-                Transform::IDENTITY,
-            ));
-        }
-        batches.extend(item.batches.iter().cloned());
-        if has_clip {
-            batches.push(GpuBatch::Clip(
-                ClipGeometry::Reset,
-                None,
-                Transform::IDENTITY,
-            ));
-        }
+fn submission_segment(item: &RetainedGpuItem) -> Vec<GpuBatch> {
+    let has_clip = item
+        .batches
+        .iter()
+        .any(|batch| matches!(batch, GpuBatch::Clip(_, _, _)));
+    let mut batches = Vec::with_capacity(item.batches.len() + usize::from(has_clip) * 2);
+    if has_clip {
+        batches.push(GpuBatch::Clip(
+            ClipGeometry::Reset,
+            None,
+            Transform::IDENTITY,
+        ));
     }
-    group_ordered_draws(batches)
+    batches.extend(item.batches.iter().cloned());
+    if has_clip {
+        batches.push(GpuBatch::Clip(
+            ClipGeometry::Reset,
+            None,
+            Transform::IDENTITY,
+        ));
+    }
+    // GPU batches have already been grouped within this retained node. Do
+    // not join adjacent nodes here: doing so makes one dirty node force a
+    // full-scene submission rebuild to repair the cross-node group.
+    batches
 }
 
 fn vertex_stride(kind: &BatchKind) -> u64 {
@@ -3578,53 +3648,35 @@ impl Renderer {
                     )
                 })
             });
-            let replay_uses_retained_submission =
-                node_batches.is_some() && !(state.has_contents && !damage_regions.is_empty());
             // An arena growth replaces its backing buffer. Re-upload the
             // persistent full submission table once before borrowing partial
             // node spans from it again.
             if self.indirect_execution && state.indirect_arena.needs_reupload {
                 if let Some(submissions) = state.retained_submission_batches.as_mut() {
-                    transient_indirect_allocations = prepare_indirect_draws(
-                        submissions,
-                        &mut state.indirect_arena,
-                        &self.device,
-                        &self.queue,
-                        true,
-                    );
+                    // `prepare_indirect_draws` consumes this flag. Segments
+                    // are visited independently, so restore it for every
+                    // segment batch that must rewrite its existing command
+                    // range after an arena buffer growth.
+                    submissions.for_each_batch_mut(|batch| {
+                        state.indirect_arena.needs_reupload = true;
+                        transient_indirect_allocations.extend(prepare_indirect_draws(
+                            std::slice::from_mut(batch),
+                            &mut state.indirect_arena,
+                            &self.device,
+                            &self.queue,
+                            true,
+                        ));
+                    });
                 }
             }
             let mut replay_batches: Vec<ReplayBatch<'_>> =
                 if state.has_contents && !damage_regions.is_empty() {
                     if let Some(node_batches) = &node_batches {
-                        let mut replay = Vec::new();
-                        for region in damage_regions {
-                            replay.push(ReplayBatch::Scissor(*region));
-                            let index = state
-                                .tile_submission_index
-                                .as_ref()
-                                .expect("retained GPU items always have a tile submission index");
-                            frame_stats.retained_candidate_count +=
-                                index.for_each_borrowed(*region, |path| {
-                                    let Some(item) = node_batches.get(path) else {
-                                        return;
-                                    };
-                                    if rect_intersects(item.bounds, *region) {
-                                        let batches = &item.batches;
-                                        let has_clip = batches
-                                            .iter()
-                                            .any(|batch| matches!(batch, GpuBatch::Clip(_, _, _)));
-                                        if has_clip {
-                                            replay.push(ReplayBatch::ResetClip);
-                                        }
-                                        replay.extend(batches.iter().map(ReplayBatch::Borrowed));
-                                        if has_clip {
-                                            replay.push(ReplayBatch::ResetClip);
-                                        }
-                                    }
-                                });
-                        }
-                        replay
+                        // Retained partial replay is encoded straight from the
+                        // tile index below. Do not materialize a per-frame
+                        // Vec<ReplayBatch> proportional to visible nodes.
+                        let _ = node_batches;
+                        Vec::new()
                     } else {
                         let gpu_batches = transient_gpu_batches
                             .as_ref()
@@ -3643,13 +3695,10 @@ impl Renderer {
                     }
                 } else {
                     if let Some(node_batches) = &node_batches {
-                        state
-                            .retained_submission_batches
-                            .take()
-                            .unwrap_or_else(|| build_retained_submission_batches(node_batches))
-                            .into_iter()
-                            .map(ReplayBatch::Owned)
-                            .collect()
+                        // The full retained scene is also borrowed from the
+                        // persistent submission table during encoding.
+                        let _ = node_batches;
+                        Vec::new()
                     } else {
                         let batches = transient_gpu_batches
                             .as_ref()
@@ -3684,7 +3733,7 @@ impl Renderer {
                 );
                 replay_batches = owned_batches.into_iter().map(ReplayBatch::Owned).collect();
             }
-            frame_stats.replay_entry_count = replay_batches.len();
+            frame_stats.replay_entry_count = 0;
             for batch in &replay_batches {
                 let transform = match batch.batch() {
                     Some(batch) => match batch {
@@ -3735,7 +3784,8 @@ impl Renderer {
             let mut active_pipeline = None;
             let mut active_transform = None;
             let mut active_image = None;
-            for replay in &replay_batches {
+            let mut encode_replay = |replay: &ReplayBatch<'_>| {
+                frame_stats.replay_entry_count += 1;
                 let scissor = match replay {
                     ReplayBatch::Scissor(region) => Some(*region),
                     _ => replay.batch().and_then(|batch| match batch {
@@ -3756,7 +3806,7 @@ impl Renderer {
                     active_pipeline = None;
                     active_transform = None;
                     active_image = None;
-                    continue;
+                    return;
                 }
                 if matches!(replay, ReplayBatch::ResetClip) {
                     set_scissor(&mut pass, None, state.size, state.scale_factor);
@@ -3770,7 +3820,7 @@ impl Renderer {
                     active_pipeline = None;
                     active_transform = None;
                     active_image = None;
-                    continue;
+                    return;
                 }
                 let batch = replay
                     .batch()
@@ -3788,7 +3838,7 @@ impl Renderer {
                                 .unwrap_or(rect),
                         );
                         frame_stats.scissor_clip_count += 1;
-                        continue;
+                        return;
                     }
                     if let Some(mask) = mask {
                         let pipeline_key = match geometry {
@@ -3854,7 +3904,7 @@ impl Renderer {
                     }
                     if matches!(geometry, ClipGeometry::Reset) {
                         active_clip = None;
-                        continue;
+                        return;
                     }
                     let next_clip = match geometry {
                         ClipGeometry::Rounded { rect, .. } => transform.rect(*rect),
@@ -3866,7 +3916,7 @@ impl Renderer {
                             .map(|previous| intersect_rect(previous, next_clip))
                             .unwrap_or(next_clip),
                     );
-                    continue;
+                    return;
                 }
                 let (kind, draws, transform, indirect): (
                     &BatchKind,
@@ -3881,7 +3931,7 @@ impl Renderer {
                     // before replay; retained submissions never allocate a
                     // temporary vector of draw references here.
                     GpuBatch::Draw(..) => unreachable!("draw batches are grouped before replay"),
-                    _ => continue,
+                    _ => return,
                 };
                 let scissor = intersect_clip(active_clip, active_damage);
                 set_scissor(&mut pass, scissor, state.size, state.scale_factor);
@@ -4003,22 +4053,52 @@ impl Renderer {
                         }
                     }
                 }
+            };
+            if let Some(node_batches) = node_batches {
+                if state.has_contents && !damage_regions.is_empty() {
+                    let index = state
+                        .tile_submission_index
+                        .as_ref()
+                        .expect("retained GPU items always have a tile submission index");
+                    for region in damage_regions {
+                        encode_replay(&ReplayBatch::Scissor(*region));
+                        frame_stats.retained_candidate_count +=
+                            index.for_each_borrowed(*region, |path| {
+                                let Some(item) = node_batches.get(path) else {
+                                    return;
+                                };
+                                if !rect_intersects(item.bounds, *region) {
+                                    return;
+                                }
+                                let has_clip = item
+                                    .batches
+                                    .iter()
+                                    .any(|batch| matches!(batch, GpuBatch::Clip(_, _, _)));
+                                if has_clip {
+                                    encode_replay(&ReplayBatch::ResetClip);
+                                }
+                                for batch in &item.batches {
+                                    encode_replay(&ReplayBatch::Borrowed(batch));
+                                }
+                                if has_clip {
+                                    encode_replay(&ReplayBatch::ResetClip);
+                                }
+                            });
+                    }
+                } else {
+                    let table = state
+                        .retained_submission_batches
+                        .as_ref()
+                        .expect("retained GPU batches have a submission table");
+                    table.for_each_batch(|batch| encode_replay(&ReplayBatch::Borrowed(batch)));
+                }
+            } else {
+                for replay in &replay_batches {
+                    encode_replay(replay);
+                }
             }
             drop(pass);
             prune_transform_bindings(state);
-            if replay_uses_retained_submission {
-                state.retained_submission_batches = Some(
-                    replay_batches
-                        .into_iter()
-                        .filter_map(|entry| match entry {
-                            ReplayBatch::Owned(batch) => Some(batch),
-                            ReplayBatch::Borrowed(_)
-                            | ReplayBatch::Scissor(_)
-                            | ReplayBatch::ResetClip => None,
-                        })
-                        .collect(),
-                );
-            }
             if node_batches.is_none() {
                 insert_gpu_cache(
                     state,
@@ -4202,7 +4282,7 @@ impl Renderer {
                     minimal_paths.push(path);
                 }
             }
-            for changed_path in minimal_paths {
+            for changed_path in &minimal_paths {
                 // BTreeMap keeps descendants contiguous after their prefix.
                 // Remove exactly that span instead of filtering every retained
                 // item on each dirty subtree update.
@@ -4211,7 +4291,7 @@ impl Renderer {
                         .range(changed_path.clone()..)
                         .next()
                         .map(|(path, _)| path.clone());
-                    let Some(path) = next_path.filter(|path| path_starts_with(path, &changed_path))
+                    let Some(path) = next_path.filter(|path| path_starts_with(path, changed_path))
                     else {
                         break;
                     };
@@ -4234,7 +4314,7 @@ impl Renderer {
                     }
                 }
                 for (path, item) in retained.range(changed_path.clone()..) {
-                    if !path_starts_with(path, &changed_path) {
+                    if !path_starts_with(path, changed_path) {
                         break;
                     }
                     PaintCommand::validate_sequence(&item.commands)?;
@@ -4275,6 +4355,26 @@ impl Renderer {
                     // resources on that page.
                     let gpu_batch_resources = batch_resource_handles(&gpu_batches);
                     gpu_batches = group_ordered_draws(gpu_batches);
+                    // Transform bindings belong to the retained node update,
+                    // not to frame replay. Unchanged nodes keep their
+                    // bindings, so a partial frame never pre-scans every
+                    // candidate batch merely to prepare uniforms.
+                    {
+                        let state = self
+                            .surfaces
+                            .get_mut(&window)
+                            .ok_or(RenderError::SurfaceNotAttached(window))?;
+                        for batch in &gpu_batches {
+                            if let Some(transform) = gpu_batch_transform(batch) {
+                                transform_bind_group_for(
+                                    state,
+                                    &self.device,
+                                    transform,
+                                    render_size,
+                                );
+                            }
+                        }
+                    }
                     let indirect_allocations = if self.indirect_execution {
                         let state = self
                             .surfaces
@@ -4313,9 +4413,11 @@ impl Renderer {
                 }
             }
             if let Some(state) = self.surfaces.get_mut(&window) {
-                let submissions = build_retained_submission_batches(&retained_gpu_items);
+                let submissions = state
+                    .retained_submission_batches
+                    .get_or_insert_with(|| RetainedSubmissionTable::rebuild(&retained_gpu_items));
+                submissions.replace_subtrees(&retained_gpu_items, &minimal_paths);
                 state.retained_gpu_items = Some(retained_gpu_items);
-                state.retained_submission_batches = Some(submissions);
             }
         }
         let damage_regions = coalesce_damage_for_spatial_index(
