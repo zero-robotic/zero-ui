@@ -1,0 +1,13 @@
+[package]
+name = "zui-render-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+zui-core.workspace = true
+zui-platform.workspace = true
+zui-render.workspace = true
+zui-render-software-gpu.workspace = true
+zui-render-cpu.workspace = true

@@ -4,14 +4,15 @@ use std::time::Instant;
 use zui_backend_winit::WinitBackend;
 use zui_core::{Dip, PhysicalSize, Point};
 use zui_platform::{Host, InputEvent, PlatformEvent, WindowOptions};
-use zui_render::{RenderError, Renderer};
+use zui_render::RenderError;
+use zui_render_runtime::{ActiveRenderer, RendererError};
 use zui_ui::{
     Button, Checkbox, ColumnLayout, Constraints, IconButton, IconName, Layout, Padding, Switch,
     Text, TextInput, Theme, UiEvent, WidgetTree,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let renderer = RefCell::new(Renderer::new_blocking()?);
+    let renderer = RefCell::new(ActiveRenderer::new_blocking()?);
     let mut tree = WidgetTree::new(Padding::new(
         Layout::new(ColumnLayout::new().spacing(Dip(8.0)))
             .child(Text::new("zero-ui controls"))
@@ -69,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &scene_update,
             ) {
                 match error {
-                    RenderError::SurfaceLost => {
+                    RendererError::HardwareGpu(RenderError::SurfaceLost) => {
                         eprintln!("render surface lost; waiting for resize")
                     }
                     error => eprintln!("failed to render frame: {error}"),

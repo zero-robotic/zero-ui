@@ -388,6 +388,7 @@ dependencies = [
  "zui-core",
  "zui-platform",
  "zui-render",
+ "zui-render-runtime",
  "zui-ui",
 ]
 
@@ -2666,6 +2667,25 @@ dependencies = [
  "zui-core",
  "zui-platform",
 ]
+
+[[package]]
+name = "zui-render-cpu"
+version = "0.1.0"
+
+[[package]]
+name = "zui-render-runtime"
+version = "0.1.0"
+dependencies = [
+ "zui-core",
+ "zui-platform",
+ "zui-render",
+ "zui-render-cpu",
+ "zui-render-software-gpu",
+]
+
+[[package]]
+name = "zui-render-software-gpu"
+version = "0.1.0"
 
 [[package]]
 name = "zui-ui"

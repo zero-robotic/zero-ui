@@ -10,4 +10,5 @@ zui-backend-winit = { path = "../../crates/zui-backend-winit" }
 zui-core = { path = "../../crates/zui-core" }
 zui-platform = { path = "../../crates/zui-platform" }
 zui-render = { path = "../../crates/zui-render" }
+zui-render-runtime = { path = "../../crates/zui-render-runtime" }
 zui-ui = { path = "../../crates/zui-ui" }

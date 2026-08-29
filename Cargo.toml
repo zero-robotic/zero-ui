@@ -4,6 +4,9 @@ members = [
     "crates/zui-core",
     "crates/zui-platform",
     "crates/zui-render",
+    "crates/zui-render-software-gpu",
+    "crates/zui-render-cpu",
+    "crates/zui-render-runtime",
     "crates/zui-ui",
     "crates/zui-backend-headless",
     "crates/zui-backend-winit",
@@ -19,6 +22,10 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 zui-core = { package = "zui-core", path = "crates/zui-core", version = "0.1.0" }
 zui-platform = { package = "zui-platform", path = "crates/zui-platform", version = "0.1.0" }
+zui-render = { package = "zui-render", path = "crates/zui-render", version = "0.1.0" }
+zui-render-software-gpu = { package = "zui-render-software-gpu", path = "crates/zui-render-software-gpu", version = "0.1.0" }
+zui-render-cpu = { package = "zui-render-cpu", path = "crates/zui-render-cpu", version = "0.1.0" }
+zui-render-runtime = { package = "zui-render-runtime", path = "crates/zui-render-runtime", version = "0.1.0" }
 winit = "0.30.13"
 wgpu = { version = "29.0.4", features = ["noop"] }
 pollster = "0.4.0"
