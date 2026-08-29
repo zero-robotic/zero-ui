@@ -29,7 +29,10 @@ pub(crate) fn create_canvas(
     (texture, view)
 }
 
-pub(crate) fn create_stencil(device: &wgpu::Device, size: PhysicalSize) -> (wgpu::Texture, wgpu::TextureView) {
+pub(crate) fn create_stencil(
+    device: &wgpu::Device,
+    size: PhysicalSize,
+) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("zui-render clip stencil"),
         size: wgpu::Extent3d {

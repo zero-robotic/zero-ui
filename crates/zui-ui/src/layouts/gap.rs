@@ -57,7 +57,12 @@ impl Widget for Gap {
     fn build_render_node(&self, theme: &Theme) -> zui_render::RenderNode {
         build_render_node_with_commands(self.id, self.bounds, theme, |_ctx| {})
     }
-    fn build_render_node_incremental(&self, context: &mut crate::RenderBuildContext<'_>) -> zui_render::RenderNode {
-        crate::widget::build_leaf_render_node_incremental(self.id, context, |theme| self.build_render_node(theme))
+    fn build_render_node_incremental(
+        &self,
+        context: &mut crate::RenderBuildContext<'_>,
+    ) -> zui_render::RenderNode {
+        crate::widget::build_leaf_render_node_incremental(self.id, context, |theme| {
+            self.build_render_node(theme)
+        })
     }
 }

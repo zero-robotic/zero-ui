@@ -211,7 +211,9 @@ impl PaintCommand {
             Self::PathStroke { path, width, color } => {
                 validate_path(path)?;
                 if !width.0.is_finite() || width.0 <= 0.0 {
-                    return Err(RenderError::InvalidCommand("path stroke width is invalid".into()));
+                    return Err(RenderError::InvalidCommand(
+                        "path stroke width is invalid".into(),
+                    ));
                 }
                 validate_color(*color)
             }
@@ -281,12 +283,16 @@ impl PaintCommand {
                 Self::PopClip => clips -= 1,
                 Self::PushTransform(_) => transforms += 1,
                 Self::PopTransform if transforms == 0 => {
-                    return Err(RenderError::InvalidCommand("transform stack underflow".into()))
+                    return Err(RenderError::InvalidCommand(
+                        "transform stack underflow".into(),
+                    ))
                 }
                 Self::PopTransform => transforms -= 1,
                 Self::PushOpacity(_) => opacities += 1,
                 Self::PopOpacity if opacities == 0 => {
-                    return Err(RenderError::InvalidCommand("opacity stack underflow".into()))
+                    return Err(RenderError::InvalidCommand(
+                        "opacity stack underflow".into(),
+                    ))
                 }
                 Self::PopOpacity => opacities -= 1,
                 _ => {}
@@ -382,7 +388,10 @@ pub enum FillRule {
 pub enum PathCommand {
     MoveTo(Point),
     LineTo(Point),
-    QuadTo { control: Point, to: Point },
+    QuadTo {
+        control: Point,
+        to: Point,
+    },
     CubicTo {
         control1: Point,
         control2: Point,

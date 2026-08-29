@@ -10,93 +10,142 @@ pub(crate) fn build_gpu_batches(
     batches: Vec<RenderBatch>,
 ) -> Vec<GpuBatch> {
     batches
-            .into_iter()
-            .filter_map(|batch| match batch {
-                RenderBatch::Rect(vertices, transform) if !vertices.is_empty() => {
-                    Some(GpuBatch::Draw(
-                        BatchKind::Rect,
-                        arenas.upload(device, queue, VertexArenaKind::Rect, bytemuck::cast_slice(&vertices), vertices.len() as u32),
-                        index_arena.upload(device, queue, &sequential_indices(vertices.len())),
-                        transform,
-                    ))
-                }
-                RenderBatch::IndexedRect(vertices, indices, transform)
-                    if !vertices.is_empty() && !indices.is_empty() =>
-                {
-                    Some(GpuBatch::Draw(
-                        BatchKind::Rect,
-                        arenas.upload(
+        .into_iter()
+        .filter_map(|batch| match batch {
+            RenderBatch::Rect(vertices, indices, transform) if !vertices.is_empty() => {
+                Some(GpuBatch::Draw(
+                    BatchKind::Rect,
+                    arenas.upload(
+                        device,
+                        queue,
+                        VertexArenaKind::Rect,
+                        bytemuck::cast_slice(&vertices),
+                        vertices.len() as u32,
+                    ),
+                    index_arena.upload(device, queue, &indices),
+                    transform,
+                ))
+            }
+            RenderBatch::IndexedRect(vertices, indices, transform)
+                if !vertices.is_empty() && !indices.is_empty() =>
+            {
+                Some(GpuBatch::Draw(
+                    BatchKind::Rect,
+                    arenas.upload(
+                        device,
+                        queue,
+                        VertexArenaKind::Rect,
+                        bytemuck::cast_slice(&vertices),
+                        vertices.len() as u32,
+                    ),
+                    index_arena.upload(device, queue, &indices),
+                    transform,
+                ))
+            }
+            RenderBatch::Rounded(vertices, indices, transform) if !vertices.is_empty() => {
+                Some(GpuBatch::Draw(
+                    BatchKind::Rounded,
+                    arenas.upload(
+                        device,
+                        queue,
+                        VertexArenaKind::Rounded,
+                        bytemuck::cast_slice(&vertices),
+                        vertices.len() as u32,
+                    ),
+                    index_arena.upload(device, queue, &indices),
+                    transform,
+                ))
+            }
+            RenderBatch::Line(vertices, indices, transform) if !vertices.is_empty() => {
+                Some(GpuBatch::Draw(
+                    BatchKind::Line,
+                    arenas.upload(
+                        device,
+                        queue,
+                        VertexArenaKind::Line,
+                        bytemuck::cast_slice(&vertices),
+                        vertices.len() as u32,
+                    ),
+                    index_arena.upload(device, queue, &indices),
+                    transform,
+                ))
+            }
+            RenderBatch::Image {
+                image,
+                vertices,
+                indices,
+                transform,
+            } if !vertices.is_empty() => Some(GpuBatch::Draw(
+                BatchKind::Image(image),
+                arenas.upload(
+                    device,
+                    queue,
+                    VertexArenaKind::Image,
+                    bytemuck::cast_slice(&vertices),
+                    vertices.len() as u32,
+                ),
+                index_arena.upload(device, queue, &indices),
+                transform,
+            )),
+            RenderBatch::Clip(geometry, clip_transform) => {
+                let mask = match geometry {
+                    ClipGeometry::Reset => None,
+                    ClipGeometry::Rect(rect) => {
+                        let mut vertices = Vec::new();
+                        let mut indices = Vec::new();
+                        append_rect(&mut vertices, &mut indices, rect, Color::WHITE);
+                        Some(ClipGpuGeometry {
+                            vertices: arenas.upload(
+                                device,
+                                queue,
+                                VertexArenaKind::Rect,
+                                bytemuck::cast_slice(&vertices),
+                                vertices.len() as u32,
+                            ),
+                            indices: Some(index_arena.upload(device, queue, &indices)),
+                        })
+                    }
+                    ClipGeometry::Rounded { rect, radius } => {
+                        let mut vertices = Vec::new();
+                        let mut indices = Vec::new();
+                        append_rounded_rect(
+                            &mut vertices,
+                            &mut indices,
+                            rect,
+                            radius,
+                            Color::WHITE,
+                        );
+                        Some(ClipGpuGeometry {
+                            vertices: arenas.upload(
+                                device,
+                                queue,
+                                VertexArenaKind::Rounded,
+                                bytemuck::cast_slice(&vertices),
+                                vertices.len() as u32,
+                            ),
+                            indices: Some(index_arena.upload(device, queue, &indices)),
+                        })
+                    }
+                    ClipGeometry::Path {
+                        ref vertices,
+                        ref indices,
+                        ..
+                    } => Some(ClipGpuGeometry {
+                        vertices: arenas.upload(
                             device,
                             queue,
                             VertexArenaKind::Rect,
-                            bytemuck::cast_slice(&vertices),
+                            bytemuck::cast_slice(vertices),
                             vertices.len() as u32,
                         ),
-                        index_arena.upload(device, queue, &indices),
-                        transform,
-                    ))
-                }
-                RenderBatch::Rounded(vertices, transform) if !vertices.is_empty() => {
-                    Some(GpuBatch::Draw(
-                        BatchKind::Rounded,
-                        arenas.upload(device, queue, VertexArenaKind::Rounded, bytemuck::cast_slice(&vertices), vertices.len() as u32),
-                        index_arena.upload(device, queue, &sequential_indices(vertices.len())),
-                        transform,
-                    ))
-                }
-                RenderBatch::Line(vertices, transform) if !vertices.is_empty() => {
-                    Some(GpuBatch::Draw(
-                        BatchKind::Line,
-                        arenas.upload(device, queue, VertexArenaKind::Line, bytemuck::cast_slice(&vertices), vertices.len() as u32),
-                        index_arena.upload(device, queue, &sequential_indices(vertices.len())),
-                        transform,
-                    ))
-                }
-                RenderBatch::Image {
-                    image,
-                    vertices,
-                    transform,
-                } if !vertices.is_empty() => Some(GpuBatch::Draw(
-                    BatchKind::Image(image),
-                    arenas.upload(device, queue, VertexArenaKind::Image, bytemuck::cast_slice(&vertices), vertices.len() as u32),
-                    index_arena.upload(device, queue, &sequential_indices(vertices.len())),
-                    transform,
-                )),
-                RenderBatch::Clip(geometry, clip_transform) => {
-                    let mask = match geometry {
-                        ClipGeometry::Reset => None,
-                        ClipGeometry::Rect(rect) => {
-                            let mut vertices = Vec::new();
-                            append_rect(&mut vertices, rect, Color::WHITE);
-                            Some(ClipGpuGeometry {
-                                vertices: arenas.upload(device, queue, VertexArenaKind::Rect, bytemuck::cast_slice(&vertices), vertices.len() as u32),
-                                indices: None,
-                            })
-                        }
-                        ClipGeometry::Rounded { rect, radius } => {
-                            let mut vertices = Vec::new();
-                            append_rounded_rect(&mut vertices, rect, radius, Color::WHITE);
-                            Some(ClipGpuGeometry {
-                                vertices: arenas.upload(device, queue, VertexArenaKind::Rounded, bytemuck::cast_slice(&vertices), vertices.len() as u32),
-                                indices: None,
-                            })
-                        }
-                        ClipGeometry::Path { ref vertices, ref indices, .. } => {
-                            Some(ClipGpuGeometry {
-                                vertices: arenas.upload(device, queue, VertexArenaKind::Rect, bytemuck::cast_slice(vertices), vertices.len() as u32),
-                                indices: Some(index_arena.upload(device, queue, indices)),
-                            })
-                        }
-                    };
-                    Some(GpuBatch::Clip(geometry, mask, clip_transform))
-                }
-                _ => None,
-            })
-            .collect()
-}
-
-fn sequential_indices(vertex_count: usize) -> Vec<u32> {
-    (0..vertex_count as u32).collect()
+                        indices: Some(index_arena.upload(device, queue, indices)),
+                    }),
+                };
+                Some(GpuBatch::Clip(geometry, mask, clip_transform))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 pub(crate) fn cached_system_fonts() -> &'static [fontdue::Font] {
@@ -177,7 +226,9 @@ pub(crate) fn append_text(
                     metrics.height as u32,
                     &bitmap,
                 );
-                resources.glyph_cache.insert(key, CachedGlyph { metrics, image });
+                resources
+                    .glyph_cache
+                    .insert(key, CachedGlyph { metrics, image });
             }
             let glyph = resources
                 .glyph_cache
@@ -188,8 +239,10 @@ pub(crate) fn append_text(
             // one baseline for the complete run prevents punctuation and
             // lowercase glyphs from drifting vertically.
             let top = baseline - metrics.height as f32 - metrics.ymin as f32;
+            let (vertices, indices) = image_batch(batches, glyph.image, transform);
             append_image(
-                image_batch(batches, glyph.image, transform),
+                vertices,
+                indices,
                 Rect {
                     origin: Point {
                         x: Dip(x),
@@ -214,8 +267,10 @@ pub(crate) fn append_text(
         for (row, bits) in glyph_rows(character).iter().enumerate() {
             for column in 0..5 {
                 if bits & (1 << (4 - column)) != 0 {
+                    let (vertices, indices) = rect_batch(batches, transform);
                     append_rect(
-                        rect_batch(batches, transform),
+                        vertices,
+                        indices,
                         Rect {
                             origin: Point {
                                 x: Dip(x + column as f32 * scale as f32),
@@ -235,12 +290,18 @@ pub(crate) fn append_text(
     }
 }
 
-pub(crate) fn append_rect(vertices: &mut Vec<RectVertex>, rect: Rect, color: Color) {
+pub(crate) fn append_rect(
+    vertices: &mut Vec<RectVertex>,
+    indices: &mut Vec<u32>,
+    rect: Rect,
+    color: Color,
+) {
     let left = rect.origin.x.0;
     let right = rect.origin.x.0 + rect.size.width.0;
     let top = rect.origin.y.0;
     let bottom = rect.origin.y.0 + rect.size.height.0;
     let color = [color.r, color.g, color.b, color.a];
+    let base = vertices.len() as u32;
     vertices.extend([
         RectVertex {
             position: [left, top],
@@ -255,18 +316,11 @@ pub(crate) fn append_rect(vertices: &mut Vec<RectVertex>, rect: Rect, color: Col
             color,
         },
         RectVertex {
-            position: [left, top],
-            color,
-        },
-        RectVertex {
-            position: [right, bottom],
-            color,
-        },
-        RectVertex {
             position: [left, bottom],
             color,
         },
     ]);
+    indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
 pub(crate) fn path_bounds(path: &IconPath) -> Rect {
@@ -308,11 +362,7 @@ pub(crate) fn path_fill_mesh(path: &IconPath, color: Color) -> PathMesh {
     }
 }
 
-pub(crate) fn path_stroke_mesh(
-    path: &IconPath,
-    width: Dip,
-    color: Color,
-) -> PathMesh {
+pub(crate) fn path_stroke_mesh(path: &IconPath, width: Dip, color: Color) -> PathMesh {
     let Some(lyon_path) = path.to_lyon() else {
         return PathMesh::default();
     };
@@ -343,7 +393,14 @@ pub(crate) fn path_stroke_mesh(
     }
 }
 
-pub(crate) fn append_line(vertices: &mut Vec<LineVertex>, start: Point, end: Point, width: Dip, color: Color) {
+pub(crate) fn append_line(
+    vertices: &mut Vec<LineVertex>,
+    indices: &mut Vec<u32>,
+    start: Point,
+    end: Point,
+    width: Dip,
+    color: Color,
+) {
     let dx = end.x.0 - start.x.0;
     let dy = end.y.0 - start.y.0;
     let length = (dx * dx + dy * dy).sqrt();
@@ -379,21 +436,28 @@ pub(crate) fn append_line(vertices: &mut Vec<LineVertex>, start: Point, end: Poi
         width: width.0,
         color: [color.r, color.g, color.b, color.a],
     };
+    let base = vertices.len() as u32;
     vertices.extend([
         to_vertex(points[0]),
         to_vertex(points[1]),
         to_vertex(points[2]),
-        to_vertex(points[0]),
-        to_vertex(points[2]),
         to_vertex(points[3]),
     ]);
+    indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
-pub(crate) fn append_image(vertices: &mut Vec<ImageVertex>, rect: Rect, opacity: f32, color: Color) {
+pub(crate) fn append_image(
+    vertices: &mut Vec<ImageVertex>,
+    indices: &mut Vec<u32>,
+    rect: Rect,
+    opacity: f32,
+    color: Color,
+) {
     let left = rect.origin.x.0;
     let right = rect.origin.x.0 + rect.size.width.0;
     let top = rect.origin.y.0;
     let bottom = rect.origin.y.0 + rect.size.height.0;
+    let base = vertices.len() as u32;
     vertices.extend([
         ImageVertex {
             position: [left, top],
@@ -414,24 +478,13 @@ pub(crate) fn append_image(vertices: &mut Vec<ImageVertex>, rect: Rect, opacity:
             color: [color.r, color.g, color.b, color.a],
         },
         ImageVertex {
-            position: [left, top],
-            uv: [0.0, 0.0],
-            opacity,
-            color: [color.r, color.g, color.b, color.a],
-        },
-        ImageVertex {
-            position: [right, bottom],
-            uv: [1.0, 1.0],
-            opacity,
-            color: [color.r, color.g, color.b, color.a],
-        },
-        ImageVertex {
             position: [left, bottom],
             uv: [0.0, 1.0],
             opacity,
             color: [color.r, color.g, color.b, color.a],
         },
     ]);
+    indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
 pub(crate) fn set_scissor(
@@ -467,6 +520,7 @@ pub(crate) fn command_list_hash(commands: &[PaintCommand]) -> u64 {
 
 pub(crate) fn append_rounded_rect(
     vertices: &mut Vec<RoundedRectVertex>,
+    indices: &mut Vec<u32>,
     rect: Rect,
     radius: Dip,
     color: Color,
@@ -488,14 +542,14 @@ pub(crate) fn append_rounded_rect(
         radius,
         color,
     };
+    let base = vertices.len() as u32;
     vertices.extend([
         make_vertex([left, top], [0.0, 0.0]),
         make_vertex([right, top], [rect.size.width.0, 0.0]),
         make_vertex([right, bottom], [rect.size.width.0, rect.size.height.0]),
-        make_vertex([left, top], [0.0, 0.0]),
-        make_vertex([right, bottom], [rect.size.width.0, rect.size.height.0]),
         make_vertex([left, bottom], [0.0, rect.size.height.0]),
     ]);
+    indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
 fn glyph_rows(character: char) -> [u8; 7] {

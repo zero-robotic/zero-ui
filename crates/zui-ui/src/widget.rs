@@ -193,11 +193,13 @@ impl<'a> PaintContext<'a> {
         });
     }
     pub fn push_clip(&mut self, rect: Rect) {
-        self.commands
-            .push(PaintCommand::PushClip(ClipShape::Rect(self.local_rect(rect))));
+        self.commands.push(PaintCommand::PushClip(ClipShape::Rect(
+            self.local_rect(rect),
+        )));
     }
     pub fn push_rounded_clip(&mut self, rect: Rect, radius: zui_core::Dip) {
-        self.commands.push(PaintCommand::PushClip(ClipShape::RoundedRect {
+        self.commands
+            .push(PaintCommand::PushClip(ClipShape::RoundedRect {
                 rect: self.local_rect(rect),
                 radius,
             }));

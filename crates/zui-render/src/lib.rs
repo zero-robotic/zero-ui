@@ -3,9 +3,9 @@
 //! This crate deliberately exposes no `wgpu::Device` to widgets. Widgets produce
 //! drawing data; `Renderer` owns the GPU and the per-window swap-chain surfaces.
 
-use std::collections::{BTreeMap, HashMap};
-use std::ops::Range;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
+use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
 
 use lyon_path::{math::point as lyon_point, Path as LyonPath};
@@ -19,16 +19,16 @@ use zui_platform::spi::RawWindowHandleProvider;
 
 pub use wgpu;
 
-mod error;
 mod draw_batches;
+mod error;
 mod gpu_pipeline;
 mod paint;
 
-pub use error::RenderError;
-pub use paint::{ClipShape, FillRule, IconPath, LineSegment, PaintCommand, PathCommand};
-use paint::transform_clip_shape;
-use gpu_pipeline::*;
 use draw_batches::*;
+pub use error::RenderError;
+use gpu_pipeline::*;
+use paint::transform_clip_shape;
+pub use paint::{ClipShape, FillRule, IconPath, LineSegment, PaintCommand, PathCommand};
 
 static SYSTEM_FONTS: OnceLock<Vec<fontdue::Font>> = OnceLock::new();
 static TEXT_MEASURE_CACHE: OnceLock<Mutex<HashMap<(String, u32), Dip>>> = OnceLock::new();
@@ -70,6 +70,16 @@ pub fn measure_text(text: &str, scale: u32) -> Dip {
 // Paint commands and vector path types live in `paint.rs`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ImageId(pub u64);
+
+/// Stable renderer-owned reference used for resource lifetime accounting.
+/// Widgets keep value IDs in paint commands; retained RenderNodes retain these
+/// handles while their GPU records are resident.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ResourceHandle {
+    Image(ImageId),
+    Icon(u64),
+    Path(u64),
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImageResource {
@@ -132,6 +142,8 @@ pub struct ResourceManager {
     glyph_cache: HashMap<(usize, char, u32, u32), CachedGlyph>,
     font_cache: HashMap<char, Option<usize>>,
     path_cache: HashMap<u64, PathMesh>,
+    references: HashMap<ResourceHandle, usize>,
+    auxiliary_last_used: HashMap<ResourceHandle, u64>,
     next_internal_image_id: u64,
 }
 
@@ -188,6 +200,8 @@ impl ResourceManager {
             glyph_cache: HashMap::new(),
             font_cache: HashMap::new(),
             path_cache: HashMap::new(),
+            references: HashMap::new(),
+            auxiliary_last_used: HashMap::new(),
             next_internal_image_id: u64::MAX,
         }
     }
@@ -230,13 +244,50 @@ impl ResourceManager {
         }
     }
 
+    pub fn retain(&mut self, handle: ResourceHandle) {
+        *self.references.entry(handle).or_default() += 1;
+        self.touch_handle(handle);
+    }
+
+    pub fn release(&mut self, handle: ResourceHandle) {
+        let Some(references) = self.references.get_mut(&handle) else {
+            return;
+        };
+        *references = references.saturating_sub(1);
+        if *references == 0 {
+            self.references.remove(&handle);
+        }
+        self.evict_auxiliary_resources();
+    }
+
+    pub fn reference_count(&self, handle: ResourceHandle) -> usize {
+        self.references.get(&handle).copied().unwrap_or(0)
+    }
+
+    fn retain_all(&mut self, handles: &[ResourceHandle]) {
+        for handle in handles {
+            self.retain(*handle);
+        }
+    }
+
+    fn release_all(&mut self, handles: &[ResourceHandle]) {
+        for handle in handles {
+            self.release(*handle);
+        }
+    }
+
     pub fn register_icon(&mut self, id: u64, path: IconPath) {
         self.icons.insert(id, path);
+        self.touch_handle(ResourceHandle::Icon(id));
     }
     pub fn icon(&self, id: u64) -> Option<&IconPath> {
         self.icons.get(&id)
     }
     pub fn remove_icon(&mut self, id: u64) -> Option<IconPath> {
+        if self.reference_count(ResourceHandle::Icon(id)) != 0 {
+            return None;
+        }
+        self.auxiliary_last_used.remove(&ResourceHandle::Icon(id));
         self.icons.remove(&id)
     }
 
@@ -365,6 +416,11 @@ impl ResourceManager {
         self.last_used.insert(id, self.clock);
     }
 
+    fn touch_handle(&mut self, handle: ResourceHandle) {
+        self.clock = self.clock.wrapping_add(1);
+        self.auxiliary_last_used.insert(handle, self.clock);
+    }
+
     fn evict_gpu_images(&mut self) {
         while self.gpu_images.len() > self.max_gpu_images
             || self
@@ -381,7 +437,14 @@ impl ResourceManager {
     }
 
     fn evict_one_gpu_image(&mut self) -> bool {
-        let Some(oldest) = self.last_used.iter().min_by_key(|(_, stamp)| *stamp).map(|(id, _)| *id) else {
+        let Some(oldest) = self
+            .last_used
+            .iter()
+            .filter(|(id, _)| self.reference_count(ResourceHandle::Image(**id)) == 0)
+            .min_by_key(|(_, stamp)| *stamp)
+            .or_else(|| self.last_used.iter().min_by_key(|(_, stamp)| *stamp))
+            .map(|(id, _)| *id)
+        else {
             return false;
         };
         if let Some(image) = self.gpu_images.remove(&oldest) {
@@ -396,6 +459,9 @@ impl ResourceManager {
     }
 
     fn remove_image(&mut self, id: ImageId) -> Option<ImageResource> {
+        if self.reference_count(ResourceHandle::Image(id)) != 0 {
+            return None;
+        }
         if let Some(image) = self.gpu_images.remove(&id) {
             if let Some(atlas) = self.image_atlases.get_mut(image.slot.page) {
                 atlas.release(image.slot);
@@ -413,7 +479,11 @@ impl ResourceManager {
     fn reclaim_empty_atlas_tail(&mut self) {
         while self.image_atlases.len() > 1 {
             let page = self.image_atlases.len() - 1;
-            if self.gpu_images.values().any(|image| image.slot.page == page) {
+            if self
+                .gpu_images
+                .values()
+                .any(|image| image.slot.page == page)
+            {
                 break;
             }
             self.image_atlases.pop();
@@ -436,11 +506,11 @@ impl ResourceManager {
         }
         // Rasterizers may report an empty bitmap for whitespace. Keep a
         // transparent texel so the atlas contract always has valid geometry.
-        let image = ImageResource::new(width.max(1), height.max(1), if rgba8.is_empty() {
-            vec![0; 4]
-        } else {
-            rgba8
-        })
+        let image = ImageResource::new(
+            width.max(1),
+            height.max(1),
+            if rgba8.is_empty() { vec![0; 4] } else { rgba8 },
+        )
         .expect("glyph bitmap dimensions are valid");
         self.register_image(device, queue, id, image);
         id
@@ -450,10 +520,49 @@ impl ResourceManager {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         format!("{path:?}").hash(&mut hasher);
         let key = hasher.finish();
+        self.touch_handle(ResourceHandle::Path(key));
         self.path_cache
             .entry(key)
             .or_insert_with(|| path_fill_mesh(path, Color::WHITE))
             .clone()
+    }
+
+    fn evict_auxiliary_resources(&mut self) {
+        let capacity = self.max_gpu_images;
+        while self.path_cache.len() > capacity {
+            let Some(handle) = self
+                .auxiliary_last_used
+                .iter()
+                .filter(|(handle, _)| {
+                    matches!(handle, ResourceHandle::Path(_)) && self.reference_count(**handle) == 0
+                })
+                .min_by_key(|(_, stamp)| *stamp)
+                .map(|(handle, _)| *handle)
+            else {
+                break;
+            };
+            if let ResourceHandle::Path(key) = handle {
+                self.path_cache.remove(&key);
+            }
+            self.auxiliary_last_used.remove(&handle);
+        }
+        while self.icons.len() > capacity {
+            let Some(handle) = self
+                .auxiliary_last_used
+                .iter()
+                .filter(|(handle, _)| {
+                    matches!(handle, ResourceHandle::Icon(_)) && self.reference_count(**handle) == 0
+                })
+                .min_by_key(|(_, stamp)| *stamp)
+                .map(|(handle, _)| *handle)
+            else {
+                break;
+            };
+            if let ResourceHandle::Icon(id) = handle {
+                self.icons.remove(&id);
+            }
+            self.auxiliary_last_used.remove(&handle);
+        }
     }
 
     pub fn image(&self, id: ImageId) -> Option<&ImageResource> {
@@ -703,7 +812,8 @@ pub struct RenderNode {
     /// The originating widget identity, when this node was built by a Widget.
     pub source_id: Option<u64>,
     pub transform: Transform,
-    pub clip: Option<ClipShape>,
+    /// Node-owned clip scopes. They compose with inherited clips in order.
+    pub clips: Vec<ClipShape>,
     pub opacity: f32,
     pub commands: Vec<PaintCommand>,
     pub children: Vec<Self>,
@@ -762,8 +872,13 @@ impl SpatialIndex {
         self.bounds.insert(path, bounds);
     }
 
-    fn update_subtrees(&mut self, items: &BTreeMap<Vec<usize>, RenderNodeItem>, paths: &[Vec<usize>]) {
-        self.bounds.retain(|path, _| !paths.iter().any(|prefix| path_starts_with(path, prefix)));
+    fn update_subtrees(
+        &mut self,
+        items: &BTreeMap<Vec<usize>, RenderNodeItem>,
+        paths: &[Vec<usize>],
+    ) {
+        self.bounds
+            .retain(|path, _| !paths.iter().any(|prefix| path_starts_with(path, prefix)));
         self.cells.retain(|_, entries| {
             entries.retain(|path| !paths.iter().any(|prefix| path_starts_with(path, prefix)));
             !entries.is_empty()
@@ -781,11 +896,16 @@ impl SpatialIndex {
         for y in min_y..=max_y {
             for x in min_x..=max_x {
                 if let Some(paths) = self.cells.get(&(x, y)) {
-                    result.extend(paths.iter().filter(|path| {
-                        self.bounds
-                            .get(*path)
-                            .is_some_and(|bounds| rect_intersects(*bounds, region))
-                    }).cloned());
+                    result.extend(
+                        paths
+                            .iter()
+                            .filter(|path| {
+                                self.bounds
+                                    .get(*path)
+                                    .is_some_and(|bounds| rect_intersects(*bounds, region))
+                            })
+                            .cloned(),
+                    );
                 }
             }
         }
@@ -801,7 +921,6 @@ impl SpatialIndex {
         let max_y = ((rect.origin.y.0 + rect.size.height.0) / self.cell_size).floor() as i32;
         (min_x, min_y, max_x, max_y)
     }
-
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -829,7 +948,7 @@ impl RenderNode {
             local_bounds: bounds,
             source_id: None,
             transform: Transform::IDENTITY,
-            clip: None,
+            clips: Vec::new(),
             opacity: 1.0,
             commands: Vec::new(),
             children: Vec::new(),
@@ -999,7 +1118,7 @@ impl RenderNode {
             self.source_id,
             self.local_bounds,
             self.transform,
-            self.clip,
+            self.clips,
             self.opacity,
             &self.commands
         )
@@ -1032,7 +1151,17 @@ impl RenderNode {
     }
 
     pub fn set_clip(&mut self, clip: Option<ClipShape>) {
-        self.clip = clip;
+        self.clips = clip.into_iter().collect();
+        self.mark_dirty(DirtyFlags::PAINT);
+    }
+
+    pub fn push_clip(&mut self, clip: ClipShape) {
+        self.clips.push(clip);
+        self.mark_dirty(DirtyFlags::PAINT);
+    }
+
+    pub fn clear_clips(&mut self) {
+        self.clips.clear();
         self.mark_dirty(DirtyFlags::PAINT);
     }
 
@@ -1150,15 +1279,15 @@ fn build_render_item(
     Vec<RenderClip>,
 ) {
     let transform = compose_transform(parent_transform, node.transform);
-    let node_clip_bounds = node
-        .clip
-        .as_ref()
-        .map(|clip| transform_clip_shape(clip, transform).bounds());
-    let clip = intersect_clip(parent_clip, node_clip_bounds);
+    let mut clip = parent_clip;
     let opacity = parent_opacity * node.opacity;
     let mut clips = parent_clips.to_vec();
-    if let Some(shape) = node.clip.clone() {
-        clips.push(RenderClip { shape, transform });
+    for shape in &node.clips {
+        clip = intersect_clip(clip, Some(transform_clip_shape(shape, transform).bounds()));
+        clips.push(RenderClip {
+            shape: shape.clone(),
+            transform,
+        });
     }
     let inherited_clips = clips.clone();
     let item = RenderNodeItem {
@@ -1256,13 +1385,8 @@ fn update_retained_dirty_path(
     let mut opacity = 1.0;
     let mut clips = Vec::new();
     for child_index in dirty_path {
-        let (_, next_transform, next_clip, next_opacity, next_clips) = build_render_item(
-            node,
-            transform,
-            clip,
-            opacity,
-            &clips,
-        );
+        let (_, next_transform, next_clip, next_opacity, next_clips) =
+            build_render_item(node, transform, clip, opacity, &clips);
         let Some(child) = node.children.get(*child_index) else {
             return;
         };
@@ -1372,7 +1496,7 @@ impl RenderNodeBuilder {
     }
 
     pub fn clip(&mut self, clip: Option<ClipShape>) -> &mut Self {
-        self.node.clip = clip;
+        self.node.clips = clip.into_iter().collect();
         self
     }
 
@@ -1431,7 +1555,82 @@ struct SurfaceState {
     /// only their allocated ranges instead of allocating a buffer per batch.
     vertex_arenas: VertexArenas,
     index_arena: IndexArena,
+    indirect_arena: IndirectArena,
+    composition_tiles: CompositionTiles,
     spatial_index: Option<SpatialIndex>,
+}
+
+/// The persistent canvas is composed in fixed physical tiles. A dirty widget
+/// therefore invalidates a stable GPU layer unit rather than an arbitrary
+/// floating-point rectangle; adjacent damage naturally coalesces before replay.
+struct CompositionTiles {
+    size: PhysicalSize,
+    tile_size: u32,
+}
+
+impl CompositionTiles {
+    const TILE_SIZE: u32 = 128;
+
+    fn new(size: PhysicalSize) -> Self {
+        Self {
+            size,
+            tile_size: Self::TILE_SIZE,
+        }
+    }
+
+    fn regions(&self, damage: &[Rect], scale_factor: ScaleFactor, full: bool) -> Vec<Rect> {
+        let scale = scale_factor.0.max(1.0) as f32;
+        if full {
+            return vec![Rect {
+                origin: Point::default(),
+                size: Size {
+                    width: Dip(self.size.width.max(1) as f32 / scale),
+                    height: Dip(self.size.height.max(1) as f32 / scale),
+                },
+            }];
+        }
+        let mut tiles = BTreeSet::new();
+        for rect in damage {
+            let left = (rect.origin.x.0 * scale).floor().max(0.0) as u32;
+            let top = (rect.origin.y.0 * scale).floor().max(0.0) as u32;
+            let right = ((rect.origin.x.0 + rect.size.width.0) * scale)
+                .ceil()
+                .max(left as f32) as u32;
+            let bottom = ((rect.origin.y.0 + rect.size.height.0) * scale)
+                .ceil()
+                .max(top as f32) as u32;
+            let x_start = left / self.tile_size;
+            let x_end = right.min(self.size.width).div_ceil(self.tile_size);
+            let y_start = top / self.tile_size;
+            let y_end = bottom.min(self.size.height).div_ceil(self.tile_size);
+            for y in y_start..y_end {
+                for x in x_start..x_end {
+                    tiles.insert((x, y));
+                }
+            }
+        }
+        tiles
+            .into_iter()
+            .map(|(x, y)| {
+                let left = x * self.tile_size;
+                let top = y * self.tile_size;
+                Rect {
+                    origin: Point {
+                        x: Dip(left as f32 / scale),
+                        y: Dip(top as f32 / scale),
+                    },
+                    size: Size {
+                        width: Dip((self.size.width.saturating_sub(left).min(self.tile_size))
+                            as f32
+                            / scale),
+                        height: Dip((self.size.height.saturating_sub(top).min(self.tile_size))
+                            as f32
+                            / scale),
+                    },
+                }
+            })
+            .collect()
+    }
 }
 
 struct GpuBatchCacheEntry {
@@ -1449,6 +1648,38 @@ struct RetainedGpuItem {
     /// subtree is invalidated.
     vertex_allocations: Vec<VertexArenaAllocation>,
     index_allocations: Vec<IndexArenaAllocation>,
+    indirect_allocations: Vec<IndirectArenaAllocation>,
+    resources: Vec<ResourceHandle>,
+}
+
+fn path_resource_handle(path: &IconPath) -> ResourceHandle {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    format!("{path:?}").hash(&mut hasher);
+    ResourceHandle::Path(hasher.finish())
+}
+
+fn item_resource_handles(item: &RenderNodeItem) -> Vec<ResourceHandle> {
+    let mut handles = Vec::new();
+    let mut add = |handle| {
+        if !handles.contains(&handle) {
+            handles.push(handle);
+        }
+    };
+    for command in &item.commands {
+        match command {
+            PaintCommand::Image { image, .. } => add(ResourceHandle::Image(*image)),
+            PaintCommand::Icon { path, .. }
+            | PaintCommand::PathFill { path, .. }
+            | PaintCommand::PathStroke { path, .. } => add(path_resource_handle(path)),
+            _ => {}
+        }
+    }
+    for clip in &item.clips {
+        if let ClipShape::Path { path } = &clip.shape {
+            add(path_resource_handle(path));
+        }
+    }
+    handles
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1497,13 +1728,87 @@ struct IndexArena {
     pages: Vec<IndexArenaPage>,
 }
 
+/// A reusable command buffer for ordered indexed indirect draws. Unlike the
+/// vertex/index arenas, commands are frame-local, but its GPU allocation is
+/// intentionally persistent so a dirty frame never creates per-batch buffers.
+struct IndirectArena {
+    buffer: wgpu::Buffer,
+    capacity: u64,
+    used: u64,
+    free: Vec<Range<u64>>,
+    needs_reupload: bool,
+}
+
+#[derive(Clone, Debug)]
+struct IndirectArenaAllocation {
+    range: Range<u64>,
+}
+
+impl IndirectArena {
+    const INITIAL_CAPACITY: u64 = 16 * 1024;
+
+    fn new(device: &wgpu::Device) -> Self {
+        Self {
+            buffer: Self::create_buffer(device, Self::INITIAL_CAPACITY),
+            capacity: Self::INITIAL_CAPACITY,
+            used: 0,
+            free: Vec::new(),
+            needs_reupload: false,
+        }
+    }
+
+    fn create_buffer(device: &wgpu::Device, capacity: u64) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("zui-render indexed indirect arena"),
+            size: capacity,
+            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn allocate(&mut self, device: &wgpu::Device, bytes: u64) -> IndirectArenaAllocation {
+        let bytes = bytes.max(4).next_multiple_of(4);
+        if let Some(index) = self
+            .free
+            .iter()
+            .position(|range| range.end.saturating_sub(range.start) >= bytes)
+        {
+            let range = self.free[index].start..self.free[index].start + bytes;
+            self.free[index].start += bytes;
+            if self.free[index].is_empty() {
+                self.free.swap_remove(index);
+            }
+            return IndirectArenaAllocation { range };
+        }
+        if self.capacity.saturating_sub(self.used) >= bytes {
+            let range = self.used..self.used + bytes;
+            self.used += bytes;
+            return IndirectArenaAllocation { range };
+        }
+        self.capacity = (self.used + bytes)
+            .next_power_of_two()
+            .max(Self::INITIAL_CAPACITY);
+        self.buffer = Self::create_buffer(device, self.capacity);
+        // Reallocating the backing buffer invalidates prior commands. This
+        // only happens when the retained command arena grows; callers rebuild
+        // all currently-live ranges before submitting the next frame.
+        self.needs_reupload = true;
+        let range = self.used..self.used + bytes;
+        self.used += bytes;
+        IndirectArenaAllocation { range }
+    }
+
+    fn release(&mut self, allocation: IndirectArenaAllocation) {
+        self.free.push(allocation.range);
+    }
+}
+
 struct VertexArenas {
     rect: VertexArena,
     rounded: VertexArena,
     line: VertexArena,
     image: VertexArena,
 }
-
 
 impl VertexArenas {
     fn new(device: &wgpu::Device) -> Self {
@@ -1589,7 +1894,11 @@ impl VertexArena {
     ) -> VertexArenaAllocation {
         let bytes = bytes.max(4).next_multiple_of(4);
         for (page, entry) in self.pages.iter_mut().enumerate() {
-            if let Some(index) = entry.free.iter().position(|range| range.end - range.start >= bytes) {
+            if let Some(index) = entry
+                .free
+                .iter()
+                .position(|range| range.end - range.start >= bytes)
+            {
                 let range = entry.free[index].start..entry.free[index].start + bytes;
                 entry.free[index].start += bytes;
                 if entry.free[index].is_empty() {
@@ -1659,10 +1968,19 @@ impl IndexArena {
         }
     }
 
-    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, indices: &[u32]) -> IndexArenaAllocation {
+    fn upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        indices: &[u32],
+    ) -> IndexArenaAllocation {
         let bytes = bytemuck::cast_slice(indices);
         let allocation = self.allocate(device, bytes.len() as u64);
-        queue.write_buffer(&self.pages[allocation.page].buffer, allocation.range.start, bytes);
+        queue.write_buffer(
+            &self.pages[allocation.page].buffer,
+            allocation.range.start,
+            bytes,
+        );
         IndexArenaAllocation {
             index_count: indices.len() as u32,
             ..allocation
@@ -1676,25 +1994,46 @@ impl IndexArena {
     fn allocate(&mut self, device: &wgpu::Device, bytes: u64) -> IndexArenaAllocation {
         let bytes = bytes.max(4).next_multiple_of(4);
         for (page, entry) in self.pages.iter_mut().enumerate() {
-            if let Some(index) = entry.free.iter().position(|range| range.end - range.start >= bytes) {
+            if let Some(index) = entry
+                .free
+                .iter()
+                .position(|range| range.end - range.start >= bytes)
+            {
                 let range = entry.free[index].start..entry.free[index].start + bytes;
                 entry.free[index].start += bytes;
                 if entry.free[index].is_empty() {
                     entry.free.swap_remove(index);
                 }
-                return IndexArenaAllocation { page, range, index_count: 0 };
+                return IndexArenaAllocation {
+                    page,
+                    range,
+                    index_count: 0,
+                };
             }
             if entry.capacity - entry.used >= bytes {
                 let range = entry.used..entry.used + bytes;
                 entry.used += bytes;
-                return IndexArenaAllocation { page, range, index_count: 0 };
+                return IndexArenaAllocation {
+                    page,
+                    range,
+                    index_count: 0,
+                };
             }
         }
-        let capacity = self.pages.last().map(|page| page.capacity.saturating_mul(2).max(bytes)).unwrap_or(Self::INITIAL_PAGE_SIZE).max(Self::INITIAL_PAGE_SIZE);
+        let capacity = self
+            .pages
+            .last()
+            .map(|page| page.capacity.saturating_mul(2).max(bytes))
+            .unwrap_or(Self::INITIAL_PAGE_SIZE)
+            .max(Self::INITIAL_PAGE_SIZE);
         self.pages.push(Self::page(device, capacity));
         let page = self.pages.len() - 1;
         self.pages[page].used = bytes;
-        IndexArenaAllocation { page, range: 0..bytes, index_count: 0 }
+        IndexArenaAllocation {
+            page,
+            range: 0..bytes,
+            index_count: 0,
+        }
     }
 
     fn release(&mut self, allocation: IndexArenaAllocation) {
@@ -1717,18 +2056,15 @@ fn insert_gpu_cache(state: &mut SurfaceState, key: u64, batches: Vec<GpuBatch>) 
     let last_used = state.cache_clock;
     let vertex_allocations = batch_vertex_allocations(&batches);
     let index_allocations = batch_index_allocations(&batches);
-    if let Some(replaced) = state
-        .node_gpu_cache
-        .insert(
-            key,
-            GpuBatchCacheEntry {
-                batches,
-                vertex_allocations,
-                index_allocations,
-                last_used,
-            },
-        )
-    {
+    if let Some(replaced) = state.node_gpu_cache.insert(
+        key,
+        GpuBatchCacheEntry {
+            batches,
+            vertex_allocations,
+            index_allocations,
+            last_used,
+        },
+    ) {
         for allocation in replaced.vertex_allocations {
             state.vertex_arenas.release(allocation);
         }
@@ -1794,13 +2130,14 @@ struct ImageVertex {
 }
 
 enum RenderBatch {
-    Rect(Vec<RectVertex>, Transform),
+    Rect(Vec<RectVertex>, Vec<u32>, Transform),
     IndexedRect(Vec<RectVertex>, Vec<u32>, Transform),
-    Rounded(Vec<RoundedRectVertex>, Transform),
-    Line(Vec<LineVertex>, Transform),
+    Rounded(Vec<RoundedRectVertex>, Vec<u32>, Transform),
+    Line(Vec<LineVertex>, Vec<u32>, Transform),
     Image {
         image: ImageId,
         vertices: Vec<ImageVertex>,
+        indices: Vec<u32>,
         transform: Transform,
     },
     Clip(ClipGeometry, Transform),
@@ -1837,16 +2174,28 @@ enum BatchKind {
 
 #[derive(Clone)]
 enum GpuBatch {
-    Draw(BatchKind, VertexArenaAllocation, IndexArenaAllocation, Transform),
+    Draw(
+        BatchKind,
+        VertexArenaAllocation,
+        IndexArenaAllocation,
+        Transform,
+    ),
     /// Adjacent compatible draws retain their command order but share one
     /// pipeline/material binding during replay.
     DrawGroup(
         BatchKind,
         Vec<(VertexArenaAllocation, IndexArenaAllocation)>,
         Transform,
+        Option<IndirectDrawRange>,
     ),
     Clip(ClipGeometry, Option<ClipGpuGeometry>, Transform),
     Scissor(Rect),
+}
+
+#[derive(Clone, Copy)]
+struct IndirectDrawRange {
+    offset: u64,
+    count: u32,
 }
 
 #[derive(Clone)]
@@ -1862,15 +2211,85 @@ fn group_ordered_draws(batches: Vec<GpuBatch>) -> Vec<GpuBatch> {
             grouped.push(batch);
             continue;
         };
-        if let Some(GpuBatch::DrawGroup(previous_kind, draws, previous_transform)) = grouped.last_mut() {
-            if *previous_kind == kind && *previous_transform == transform {
+        if let Some(GpuBatch::DrawGroup(previous_kind, draws, previous_transform, _)) =
+            grouped.last_mut()
+        {
+            let same_page = draws
+                .first()
+                .is_some_and(|(previous_vertices, previous_indices)| {
+                    previous_vertices.page == vertices.page && previous_indices.page == indices.page
+                });
+            if *previous_kind == kind && *previous_transform == transform && same_page {
                 draws.push((vertices, indices));
                 continue;
             }
         }
-        grouped.push(GpuBatch::DrawGroup(kind, vec![(vertices, indices)], transform));
+        grouped.push(GpuBatch::DrawGroup(
+            kind,
+            vec![(vertices, indices)],
+            transform,
+            None,
+        ));
     }
     grouped
+}
+
+fn vertex_stride(kind: BatchKind) -> u64 {
+    match kind {
+        BatchKind::Rect => std::mem::size_of::<RectVertex>() as u64,
+        BatchKind::Rounded => std::mem::size_of::<RoundedRectVertex>() as u64,
+        BatchKind::Line => std::mem::size_of::<LineVertex>() as u64,
+        BatchKind::Image(_) => std::mem::size_of::<ImageVertex>() as u64,
+    }
+}
+
+/// Upload indirect arguments for each page-local ordered draw group. Index
+/// data in the arena is local to each mesh, therefore `base_vertex` moves the
+/// index stream to the matching vertex allocation while `first_index` selects
+/// the allocation inside the shared index page.
+fn prepare_indirect_draws(
+    batches: &mut [GpuBatch],
+    arena: &mut IndirectArena,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    replaying_full_table: bool,
+) -> Vec<IndirectArenaAllocation> {
+    let force_reupload = replaying_full_table && std::mem::take(&mut arena.needs_reupload);
+    let mut allocations = Vec::new();
+    for batch in batches {
+        let GpuBatch::DrawGroup(kind, draws, _, indirect) = batch else {
+            continue;
+        };
+        if indirect.is_some() && !force_reupload {
+            continue;
+        }
+        let bytes = (draws.len() * std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>()) as u64;
+        let start = indirect
+            .map(|range| range.offset)
+            .unwrap_or_else(|| {
+                let allocation = arena.allocate(device, bytes);
+                let offset = allocation.range.start;
+                allocations.push(allocation);
+                offset
+            });
+        let stride = vertex_stride(*kind);
+        let mut commands = Vec::with_capacity(draws.len());
+        for (vertices, indices) in draws.iter() {
+            commands.push(wgpu::util::DrawIndexedIndirectArgs {
+                index_count: indices.index_count,
+                instance_count: 1,
+                first_index: (indices.range.start / std::mem::size_of::<u32>() as u64) as u32,
+                base_vertex: (vertices.range.start / stride) as i32,
+                first_instance: 0,
+            });
+        }
+        *indirect = Some(IndirectDrawRange {
+            offset: start,
+            count: draws.len() as u32,
+        });
+        queue.write_buffer(&arena.buffer, start, bytemuck::cast_slice(&commands));
+    }
+    allocations
 }
 
 fn batch_vertex_allocations(batches: &[GpuBatch]) -> Vec<VertexArenaAllocation> {
@@ -1878,10 +2297,17 @@ fn batch_vertex_allocations(batches: &[GpuBatch]) -> Vec<VertexArenaAllocation> 
         .iter()
         .filter_map(|batch| match batch {
             GpuBatch::Draw(_, allocation, _, _)
-            | GpuBatch::Clip(_, Some(ClipGpuGeometry { vertices: allocation, .. }), _) => {
-                Some(allocation.clone())
+            | GpuBatch::Clip(
+                _,
+                Some(ClipGpuGeometry {
+                    vertices: allocation,
+                    ..
+                }),
+                _,
+            ) => Some(allocation.clone()),
+            GpuBatch::DrawGroup(_, draws, _, _) => {
+                draws.iter().map(|(vertices, _)| vertices.clone()).next()
             }
-            GpuBatch::DrawGroup(_, draws, _) => draws.iter().map(|(vertices, _)| vertices.clone()).next(),
             GpuBatch::Clip(_, None, _) | GpuBatch::Scissor(_) => None,
         })
         .collect()
@@ -1892,19 +2318,31 @@ fn batch_index_allocations(batches: &[GpuBatch]) -> Vec<IndexArenaAllocation> {
         .iter()
         .filter_map(|batch| match batch {
             GpuBatch::Draw(_, _, allocation, _) => Some(allocation.clone()),
-            GpuBatch::Clip(_, Some(ClipGpuGeometry { indices: Some(allocation), .. }), _) => Some(allocation.clone()),
-            GpuBatch::DrawGroup(_, draws, _) => draws.iter().map(|(_, indices)| indices.clone()).next(),
+            GpuBatch::Clip(
+                _,
+                Some(ClipGpuGeometry {
+                    indices: Some(allocation),
+                    ..
+                }),
+                _,
+            ) => Some(allocation.clone()),
+            GpuBatch::DrawGroup(_, draws, _, _) => {
+                draws.iter().map(|(_, indices)| indices.clone()).next()
+            }
             GpuBatch::Clip(_, _, _) | GpuBatch::Scissor(_) => None,
         })
         .collect()
 }
 
-fn rect_batch(batches: &mut Vec<RenderBatch>, transform: Transform) -> &mut Vec<RectVertex> {
-    if !matches!(batches.last(), Some(RenderBatch::Rect(_, current)) if *current == transform) {
-        batches.push(RenderBatch::Rect(Vec::new(), transform));
+fn rect_batch(
+    batches: &mut Vec<RenderBatch>,
+    transform: Transform,
+) -> (&mut Vec<RectVertex>, &mut Vec<u32>) {
+    if !matches!(batches.last(), Some(RenderBatch::Rect(_, _, current)) if *current == transform) {
+        batches.push(RenderBatch::Rect(Vec::new(), Vec::new(), transform));
     }
     match batches.last_mut().expect("rect batch was just added") {
-        RenderBatch::Rect(vertices, _) => vertices,
+        RenderBatch::Rect(vertices, indices, _) => (vertices, indices),
         _ => unreachable!(),
     }
 }
@@ -1912,22 +2350,26 @@ fn rect_batch(batches: &mut Vec<RenderBatch>, transform: Transform) -> &mut Vec<
 fn rounded_batch(
     batches: &mut Vec<RenderBatch>,
     transform: Transform,
-) -> &mut Vec<RoundedRectVertex> {
-    if !matches!(batches.last(), Some(RenderBatch::Rounded(_, current)) if *current == transform) {
-        batches.push(RenderBatch::Rounded(Vec::new(), transform));
+) -> (&mut Vec<RoundedRectVertex>, &mut Vec<u32>) {
+    if !matches!(batches.last(), Some(RenderBatch::Rounded(_, _, current)) if *current == transform)
+    {
+        batches.push(RenderBatch::Rounded(Vec::new(), Vec::new(), transform));
     }
     match batches.last_mut().expect("rounded batch was just added") {
-        RenderBatch::Rounded(vertices, _) => vertices,
+        RenderBatch::Rounded(vertices, indices, _) => (vertices, indices),
         _ => unreachable!(),
     }
 }
 
-fn line_batch(batches: &mut Vec<RenderBatch>, transform: Transform) -> &mut Vec<LineVertex> {
-    if !matches!(batches.last(), Some(RenderBatch::Line(_, current)) if *current == transform) {
-        batches.push(RenderBatch::Line(Vec::new(), transform));
+fn line_batch(
+    batches: &mut Vec<RenderBatch>,
+    transform: Transform,
+) -> (&mut Vec<LineVertex>, &mut Vec<u32>) {
+    if !matches!(batches.last(), Some(RenderBatch::Line(_, _, current)) if *current == transform) {
+        batches.push(RenderBatch::Line(Vec::new(), Vec::new(), transform));
     }
     match batches.last_mut().expect("line batch was just added") {
-        RenderBatch::Line(vertices, _) => vertices,
+        RenderBatch::Line(vertices, indices, _) => (vertices, indices),
         _ => unreachable!(),
     }
 }
@@ -1936,17 +2378,20 @@ fn image_batch(
     batches: &mut Vec<RenderBatch>,
     image: ImageId,
     transform: Transform,
-) -> &mut Vec<ImageVertex> {
+) -> (&mut Vec<ImageVertex>, &mut Vec<u32>) {
     if !matches!(batches.last(), Some(RenderBatch::Image { image: current, transform: current_transform, .. }) if *current == image && *current_transform == transform)
     {
         batches.push(RenderBatch::Image {
             image,
             vertices: Vec::new(),
+            indices: Vec::new(),
             transform,
         });
     }
     match batches.last_mut().expect("image batch was just added") {
-        RenderBatch::Image { vertices, .. } => vertices,
+        RenderBatch::Image {
+            vertices, indices, ..
+        } => (vertices, indices),
         _ => unreachable!(),
     }
 }
@@ -1958,6 +2403,7 @@ pub struct Renderer {
     pub(crate) queue: wgpu::Queue,
     surfaces: HashMap<WindowId, SurfaceState>,
     resources: ResourceManager,
+    indirect_execution: bool,
 }
 
 struct GpuImage {
@@ -2086,6 +2532,10 @@ impl Renderer {
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await
             .map_err(|_| RenderError::AdapterUnavailable)?;
+        let indirect_execution = adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("zui-render device"),
@@ -2105,6 +2555,7 @@ impl Renderer {
             queue,
             surfaces: HashMap::new(),
             resources,
+            indirect_execution,
         })
     }
 
@@ -2119,6 +2570,18 @@ impl Renderer {
 
     pub fn remove_image(&mut self, id: ImageId) -> Option<ImageResource> {
         self.resources.remove_image(id)
+    }
+
+    pub fn retain_resource(&mut self, handle: ResourceHandle) {
+        self.resources.retain(handle);
+    }
+
+    pub fn release_resource(&mut self, handle: ResourceHandle) {
+        self.resources.release(handle);
+    }
+
+    pub fn resource_reference_count(&self, handle: ResourceHandle) -> usize {
+        self.resources.reference_count(handle)
     }
 
     pub fn resource_manager(&mut self) -> &mut ResourceManager {
@@ -2207,6 +2670,8 @@ impl Renderer {
                 retained_gpu_items: None,
                 vertex_arenas: VertexArenas::new(&self.device),
                 index_arena: IndexArena::new(&self.device),
+                indirect_arena: IndirectArena::new(&self.device),
+                composition_tiles: CompositionTiles::new(size),
                 spatial_index: None,
             },
         );
@@ -2287,6 +2752,8 @@ impl Renderer {
                 retained_gpu_items: None,
                 vertex_arenas: VertexArenas::new(&self.device),
                 index_arena: IndexArena::new(&self.device),
+                indirect_arena: IndirectArena::new(&self.device),
+                composition_tiles: CompositionTiles::new(size),
                 spatial_index: None,
             },
         );
@@ -2323,16 +2790,33 @@ impl Renderer {
         state.node_gpu_cache.clear();
         state.transform_bindings.clear();
         state.retained_items = None;
-        state.retained_gpu_items = None;
+        let released_resources = state
+            .retained_gpu_items
+            .take()
+            .into_iter()
+            .flat_map(|items| items.into_values())
+            .flat_map(|item| item.resources)
+            .collect::<Vec<_>>();
+        self.resources.release_all(&released_resources);
         state.vertex_arenas = VertexArenas::new(&self.device);
         state.index_arena = IndexArena::new(&self.device);
+        state.indirect_arena = IndirectArena::new(&self.device);
+        state.composition_tiles = CompositionTiles::new(size);
         state.spatial_index = None;
         state.cache_clock = 0;
         Ok(())
     }
 
     pub fn detach_surface(&mut self, window: WindowId) {
-        self.surfaces.remove(&window);
+        if let Some(state) = self.surfaces.remove(&window) {
+            let resources = state
+                .retained_gpu_items
+                .into_iter()
+                .flat_map(|items| items.into_values())
+                .flat_map(|item| item.resources)
+                .collect::<Vec<_>>();
+            self.resources.release_all(&resources);
+        }
     }
 
     fn build_render_batches(
@@ -2371,20 +2855,20 @@ impl Renderer {
                 }
                 PaintCommand::PushClip(shape) => {
                     let geometry = match shape {
-                            ClipShape::Rect(rect) => ClipGeometry::Rect(*rect),
-                            ClipShape::RoundedRect { rect, radius } => ClipGeometry::Rounded {
-                                rect: *rect,
-                                radius: *radius,
-                            },
-                            ClipShape::Path { path } => {
-                                let mesh = self.resources.tessellate_path(path);
-                                ClipGeometry::Path {
-                                    bounds: path_bounds(path),
-                                    vertices: mesh.vertices,
-                                    indices: mesh.indices,
-                                }
+                        ClipShape::Rect(rect) => ClipGeometry::Rect(*rect),
+                        ClipShape::RoundedRect { rect, radius } => ClipGeometry::Rounded {
+                            rect: *rect,
+                            radius: *radius,
+                        },
+                        ClipShape::Path { path } => {
+                            let mesh = self.resources.tessellate_path(path);
+                            ClipGeometry::Path {
+                                bounds: path_bounds(path),
+                                vertices: mesh.vertices,
+                                indices: mesh.indices,
                             }
-                        };
+                        }
+                    };
                     let transform = compose_transform(clip_transform, command_transform);
                     batches.push(RenderBatch::Clip(geometry.clone(), transform));
                     clip_stack.push((geometry, transform));
@@ -2403,34 +2887,39 @@ impl Renderer {
             let transform = compose_transform(clip_transform, command_transform);
             match command {
                 PaintCommand::Rect { rect, color } => {
-                    append_rect(
-                        rect_batch(&mut batches, transform),
-                        *rect,
-                        apply_opacity(*color, opacity),
-                    );
+                    let (vertices, indices) = rect_batch(&mut batches, transform);
+                    append_rect(vertices, indices, *rect, apply_opacity(*color, opacity));
                 }
                 PaintCommand::RoundedRect {
                     rect,
                     radius,
                     color,
-                } => append_rounded_rect(
-                    rounded_batch(&mut batches, transform),
-                    *rect,
-                    *radius,
-                    apply_opacity(*color, opacity),
-                ),
+                } => {
+                    let (vertices, indices) = rounded_batch(&mut batches, transform);
+                    append_rounded_rect(
+                        vertices,
+                        indices,
+                        *rect,
+                        *radius,
+                        apply_opacity(*color, opacity),
+                    )
+                }
                 PaintCommand::Line {
                     start,
                     end,
                     width,
                     color,
-                } => append_line(
-                    line_batch(&mut batches, transform),
-                    *start,
-                    *end,
-                    *width,
-                    apply_opacity(*color, opacity),
-                ),
+                } => {
+                    let (vertices, indices) = line_batch(&mut batches, transform);
+                    append_line(
+                        vertices,
+                        indices,
+                        *start,
+                        *end,
+                        *width,
+                        apply_opacity(*color, opacity),
+                    )
+                }
                 PaintCommand::Text {
                     text,
                     origin,
@@ -2455,8 +2944,10 @@ impl Renderer {
                     ..
                 } => {
                     for segment in &path.segments {
+                        let (vertices, indices) = line_batch(&mut batches, transform);
                         append_line(
-                            line_batch(&mut batches, transform),
+                            vertices,
+                            indices,
                             segment.start,
                             segment.end,
                             *stroke,
@@ -2488,12 +2979,16 @@ impl Renderer {
                     rect,
                     image,
                     opacity: image_opacity,
-                } => append_image(
-                    image_batch(&mut batches, *image, transform),
-                    *rect,
-                    *image_opacity * opacity,
-                    Color::WHITE,
-                ),
+                } => {
+                    let (vertices, indices) = image_batch(&mut batches, *image, transform);
+                    append_image(
+                        vertices,
+                        indices,
+                        *rect,
+                        *image_opacity * opacity,
+                        Color::WHITE,
+                    )
+                }
                 PaintCommand::PushTransform(_)
                 | PaintCommand::PopTransform
                 | PaintCommand::PushOpacity(_)
@@ -2580,19 +3075,12 @@ impl Renderer {
         // An empty damage list means full invalidation at the UI layer. On a
         // newly attached (or resized) surface, make that explicit so the
         // first frame cannot take a partial replay/composite path.
-        let full_surface_region = Rect {
-            origin: Point::default(),
-            size: Size {
-                width: Dip(state.size.width as f32 / state.scale_factor.0.max(1.0) as f32),
-                height: Dip(state.size.height as f32 / state.scale_factor.0.max(1.0) as f32),
-            },
-        };
-        let full_frame = !state.has_contents && damage_regions.is_empty();
-        let damage_regions = if full_frame {
-            std::slice::from_ref(&full_surface_region)
-        } else {
-            damage_regions
-        };
+        let full_frame = damage_regions.is_empty();
+        let tiled_damage_regions =
+            state
+                .composition_tiles
+                .regions(damage_regions, state.scale_factor, full_frame);
+        let damage_regions = tiled_damage_regions.as_slice();
         let frame = match state.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -2632,37 +3120,16 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("zui-render frame"),
             });
+        let mut transient_indirect_allocations = Vec::new();
         {
             let node_batches = segments.map(|_| {
                 retained_gpu_items
                     .as_ref()
                     .expect("retained GPU batches are prepared before replay")
             });
-            let gpu_batches = if let Some(node_batches) = &node_batches {
-                let mut all = Vec::new();
-                for item in node_batches.values() {
-                    let batches = &item.batches;
-                    let has_clip = batches
-                        .iter()
-                        .any(|batch| matches!(batch, GpuBatch::Clip(_, _, _)));
-                    if has_clip {
-                        all.push(GpuBatch::Clip(
-                            ClipGeometry::Reset,
-                            None,
-                            Transform::IDENTITY,
-                        ));
-                    }
-                    all.extend(batches.iter().cloned());
-                    if has_clip {
-                        all.push(GpuBatch::Clip(
-                            ClipGeometry::Reset,
-                            None,
-                            Transform::IDENTITY,
-                        ));
-                    }
-                }
-                all
-            } else {
+            // Retained scenes are queried directly below. In particular, do
+            // not materialize an all-node batch list before a partial replay.
+            let mut transient_gpu_batches = node_batches.is_none().then(|| {
                 take_gpu_cache(state, batch_hash).unwrap_or_else(|| {
                     build_gpu_batches(
                         &self.device,
@@ -2672,7 +3139,7 @@ impl Renderer {
                         batches.expect("command batches are built without node items"),
                     )
                 })
-            };
+            });
             let replay_batches = if state.has_contents && !damage_regions.is_empty() {
                 if let Some(node_batches) = &node_batches {
                     let mut replay = Vec::new();
@@ -2712,6 +3179,9 @@ impl Renderer {
                     }
                     replay
                 } else {
+                    let gpu_batches = transient_gpu_batches
+                        .as_ref()
+                        .expect("transient batches exist without retained nodes");
                     damage_regions
                         .iter()
                         .flat_map(|region| {
@@ -2721,17 +3191,53 @@ impl Renderer {
                         .collect::<Vec<_>>()
                 }
             } else {
-                gpu_batches.clone()
+                if let Some(node_batches) = &node_batches {
+                    let mut replay = Vec::new();
+                    for item in node_batches.values() {
+                        let has_clip = item
+                            .batches
+                            .iter()
+                            .any(|batch| matches!(batch, GpuBatch::Clip(_, _, _)));
+                        if has_clip {
+                            replay.push(GpuBatch::Clip(
+                                ClipGeometry::Reset,
+                                None,
+                                Transform::IDENTITY,
+                            ));
+                        }
+                        replay.extend(item.batches.iter().cloned());
+                        if has_clip {
+                            replay.push(GpuBatch::Clip(
+                                ClipGeometry::Reset,
+                                None,
+                                Transform::IDENTITY,
+                            ));
+                        }
+                    }
+                    replay
+                } else {
+                    transient_gpu_batches
+                        .as_ref()
+                        .expect("transient batches exist without retained nodes")
+                        .clone()
+                }
             };
-            let replay_batches = group_ordered_draws(replay_batches);
+            let mut replay_batches = group_ordered_draws(replay_batches);
+            if self.indirect_execution {
+                transient_indirect_allocations = prepare_indirect_draws(
+                    &mut replay_batches,
+                    &mut state.indirect_arena,
+                    &self.device,
+                    &self.queue,
+                    true,
+                );
+            }
             let mut transform_groups = HashMap::new();
             for batch in &replay_batches {
                 let transform = match batch {
                     GpuBatch::Draw(_, _, _, transform)
-                    | GpuBatch::DrawGroup(_, _, transform)
-                    | GpuBatch::Clip(_, _, transform) => {
-                        Some(*transform)
-                    }
+                    | GpuBatch::DrawGroup(_, _, transform, _)
+                    | GpuBatch::Clip(_, _, transform) => Some(*transform),
                     GpuBatch::Scissor(_) => None,
                 };
                 if let Some(transform) = transform {
@@ -2749,7 +3255,7 @@ impl Renderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: if !damage_regions.is_empty() && state.has_contents {
+                        load: if !full_frame && !damage_regions.is_empty() && state.has_contents {
                             wgpu::LoadOp::Load
                         } else {
                             wgpu::LoadOp::Clear(clear)
@@ -2807,7 +3313,10 @@ impl Renderer {
                         );
                         if let Some(indices) = &mask.indices {
                             pass.set_index_buffer(
-                                state.index_arena.buffer(indices).slice(indices.range.clone()),
+                                state
+                                    .index_arena
+                                    .buffer(indices)
+                                    .slice(indices.range.clone()),
                                 wgpu::IndexFormat::Uint32,
                             );
                             pass.draw_indexed(0..indices.index_count, 0, 0..1);
@@ -2832,21 +3341,26 @@ impl Renderer {
                     };
                     continue;
                 }
-                let (kind, draws, transform): (&BatchKind, Vec<(&VertexArenaAllocation, &IndexArenaAllocation)>, Transform) =
-                    match batch {
-                        GpuBatch::Draw(kind, allocation, indices, transform) => {
-                            (kind, vec![(allocation, indices)], *transform)
-                        }
-                        GpuBatch::DrawGroup(kind, draws, transform) => (
-                            kind,
-                            draws
-                                .iter()
-                                .map(|(vertices, indices)| (vertices, indices))
-                                .collect(),
-                            *transform,
-                        ),
-                        _ => continue,
-                    };
+                let (kind, draws, transform, indirect): (
+                    &BatchKind,
+                    Vec<(&VertexArenaAllocation, &IndexArenaAllocation)>,
+                    Transform,
+                    Option<IndirectDrawRange>,
+                ) = match batch {
+                    GpuBatch::Draw(kind, allocation, indices, transform) => {
+                        (kind, vec![(allocation, indices)], *transform, None)
+                    }
+                    GpuBatch::DrawGroup(kind, draws, transform, indirect) => (
+                        kind,
+                        draws
+                            .iter()
+                            .map(|(vertices, indices)| (vertices, indices))
+                            .collect(),
+                        *transform,
+                        *indirect,
+                    ),
+                    _ => continue,
+                };
                 let scissor = intersect_clip(active_clip, active_damage);
                 set_scissor(&mut pass, scissor, state.size, state.scale_factor);
                 pass.set_stencil_reference(active_clip_depth);
@@ -2870,34 +3384,81 @@ impl Renderer {
                             .bind_group(&self.device, &self.queue, window, image, &layout)
                     {
                         pass.set_bind_group(1, &bind_group, &[]);
+                        if let (Some(indirect), Some((vertices, indices))) =
+                            (indirect, draws.first())
+                        {
+                            pass.set_vertex_buffer(
+                                0,
+                                state.vertex_arenas.buffer(vertices).slice(..),
+                            );
+                            pass.set_index_buffer(
+                                state.index_arena.buffer(indices).slice(..),
+                                wgpu::IndexFormat::Uint32,
+                            );
+                            pass.multi_draw_indexed_indirect(
+                                &state.indirect_arena.buffer,
+                                indirect.offset,
+                                indirect.count,
+                            );
+                        } else {
+                            for (vertices, indices) in draws {
+                                pass.set_vertex_buffer(
+                                    0,
+                                    state
+                                        .vertex_arenas
+                                        .buffer(vertices)
+                                        .slice(vertices.range.clone()),
+                                );
+                                pass.set_index_buffer(
+                                    state
+                                        .index_arena
+                                        .buffer(indices)
+                                        .slice(indices.range.clone()),
+                                    wgpu::IndexFormat::Uint32,
+                                );
+                                pass.draw_indexed(0..indices.index_count, 0, 0..1);
+                            }
+                        }
+                    }
+                } else {
+                    if let (Some(indirect), Some((vertices, indices))) = (indirect, draws.first()) {
+                        pass.set_vertex_buffer(0, state.vertex_arenas.buffer(vertices).slice(..));
+                        pass.set_index_buffer(
+                            state.index_arena.buffer(indices).slice(..),
+                            wgpu::IndexFormat::Uint32,
+                        );
+                        pass.multi_draw_indexed_indirect(
+                            &state.indirect_arena.buffer,
+                            indirect.offset,
+                            indirect.count,
+                        );
+                    } else {
                         for (vertices, indices) in draws {
                             pass.set_vertex_buffer(
                                 0,
-                                state.vertex_arenas.buffer(vertices).slice(vertices.range.clone()),
+                                state
+                                    .vertex_arenas
+                                    .buffer(vertices)
+                                    .slice(vertices.range.clone()),
                             );
                             pass.set_index_buffer(
-                                state.index_arena.buffer(indices).slice(indices.range.clone()),
+                                state
+                                    .index_arena
+                                    .buffer(indices)
+                                    .slice(indices.range.clone()),
                                 wgpu::IndexFormat::Uint32,
                             );
                             pass.draw_indexed(0..indices.index_count, 0, 0..1);
                         }
                     }
-                } else {
-                    for (vertices, indices) in draws {
-                        pass.set_vertex_buffer(
-                            0,
-                            state.vertex_arenas.buffer(vertices).slice(vertices.range.clone()),
-                        );
-                        pass.set_index_buffer(
-                            state.index_arena.buffer(indices).slice(indices.range.clone()),
-                            wgpu::IndexFormat::Uint32,
-                        );
-                        pass.draw_indexed(0..indices.index_count, 0, 0..1);
-                    }
                 }
             }
             if node_batches.is_none() {
-                insert_gpu_cache(state, batch_hash, gpu_batches);
+                insert_gpu_cache(
+                    state,
+                    batch_hash,
+                    transient_gpu_batches.take().unwrap_or_default(),
+                );
             }
         }
         {
@@ -2952,6 +3513,9 @@ impl Renderer {
             }
         }
         state.has_contents = true;
+        for allocation in transient_indirect_allocations {
+            state.indirect_arena.release(allocation);
+        }
         if let Some(items) = retained_gpu_items {
             state.retained_gpu_items = Some(items);
         }
@@ -3061,54 +3625,59 @@ impl Renderer {
                 }
             }
             for changed_path in minimal_paths {
-                let removed_paths: Vec<_> = retained_gpu_items
-                    .keys()
-                    .filter(|path| path_starts_with(path, &changed_path))
-                    .cloned()
-                    .collect();
-                let (released_vertices, released_indices): (Vec<_>, Vec<_>) = removed_paths
-                    .into_iter()
-                    .filter_map(|path| retained_gpu_items.remove(&path))
-                    .map(|item| (item.vertex_allocations, item.index_allocations))
-                    .unzip();
-                let released_vertices = released_vertices.into_iter().flatten().collect::<Vec<_>>();
-                let released_indices = released_indices.into_iter().flatten().collect::<Vec<_>>();
-                if !released_vertices.is_empty() || !released_indices.is_empty() {
+                // BTreeMap keeps descendants contiguous after their prefix.
+                // Remove exactly that span instead of filtering every retained
+                // item on each dirty subtree update.
+                loop {
+                    let next_path = retained_gpu_items
+                        .range(changed_path.clone()..)
+                        .next()
+                        .map(|(path, _)| path.clone());
+                    let Some(path) = next_path.filter(|path| path_starts_with(path, &changed_path)) else {
+                        break;
+                    };
+                    let item = retained_gpu_items
+                        .remove(&path)
+                        .expect("path was read from retained item table");
+                    self.resources.release_all(&item.resources);
                     let state = self
                         .surfaces
                         .get_mut(&window)
                         .ok_or(RenderError::SurfaceNotAttached(window))?;
-                    for allocation in released_vertices {
+                    for allocation in item.vertex_allocations {
                         state.vertex_arenas.release(allocation);
                     }
-                    for allocation in released_indices {
+                    for allocation in item.index_allocations {
                         state.index_arena.release(allocation);
+                    }
+                    for allocation in item.indirect_allocations {
+                        state.indirect_arena.release(allocation);
                     }
                 }
                 for (path, item) in retained.range(changed_path.clone()..) {
                     if !path_starts_with(path, &changed_path) {
                         break;
                     }
-                PaintCommand::validate_sequence(&item.commands)?;
-                for command in &item.commands {
-                    if let PaintCommand::Image { image, .. } = command {
-                        if !self.resources.contains_image(*image) {
-                            return Err(RenderError::MissingImage(*image));
+                    PaintCommand::validate_sequence(&item.commands)?;
+                    for command in &item.commands {
+                        if let PaintCommand::Image { image, .. } = command {
+                            if !self.resources.contains_image(*image) {
+                                return Err(RenderError::MissingImage(*image));
+                            }
                         }
                     }
-                }
-                let mut batches = Vec::new();
-                for clip in &item.clips {
-                    batches.push(self.build_clip_batch(&clip.shape, clip.transform));
-                }
-                batches.extend(self.build_render_batches(
-                    &item.commands,
-                    render_size,
-                    scale_factor,
-                    item.transform,
-                    item.opacity,
-                ));
-                    let gpu_batches = {
+                    let mut batches = Vec::new();
+                    for clip in &item.clips {
+                        batches.push(self.build_clip_batch(&clip.shape, clip.transform));
+                    }
+                    batches.extend(self.build_render_batches(
+                        &item.commands,
+                        render_size,
+                        scale_factor,
+                        item.transform,
+                        item.opacity,
+                    ));
+                    let mut gpu_batches = {
                         let state = self
                             .surfaces
                             .get_mut(&window)
@@ -3121,14 +3690,37 @@ impl Renderer {
                             batches,
                         )
                     };
+                    gpu_batches = group_ordered_draws(gpu_batches);
+                    let indirect_allocations = if self.indirect_execution {
+                        let state = self
+                            .surfaces
+                            .get_mut(&window)
+                            .ok_or(RenderError::SurfaceNotAttached(window))?;
+                        prepare_indirect_draws(
+                            &mut gpu_batches,
+                            &mut state.indirect_arena,
+                            &self.device,
+                            &self.queue,
+                            false,
+                        )
+                    } else {
+                        Vec::new()
+                    };
                     let vertex_allocations = batch_vertex_allocations(&gpu_batches);
                     let index_allocations = batch_index_allocations(&gpu_batches);
-                    retained_gpu_items.insert(path.clone(), RetainedGpuItem {
-                        bounds: item.bounds,
-                        batches: gpu_batches,
-                        vertex_allocations,
-                        index_allocations,
-                    });
+                    let resources = item_resource_handles(item);
+                    self.resources.retain_all(&resources);
+                    retained_gpu_items.insert(
+                        path.clone(),
+                        RetainedGpuItem {
+                            bounds: item.bounds,
+                            batches: gpu_batches,
+                            vertex_allocations,
+                            index_allocations,
+                            indirect_allocations,
+                            resources,
+                        },
+                    );
                 }
             }
             if let Some(state) = self.surfaces.get_mut(&window) {

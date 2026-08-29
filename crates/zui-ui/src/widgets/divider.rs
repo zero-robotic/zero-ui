@@ -87,8 +87,13 @@ impl Widget for Divider {
             self.build_render_commands(ctx)
         })
     }
-    fn build_render_node_incremental(&self, context: &mut crate::RenderBuildContext<'_>) -> zui_render::RenderNode {
-        crate::widget::build_leaf_render_node_incremental(self.id, context, |theme| self.build_render_node(theme))
+    fn build_render_node_incremental(
+        &self,
+        context: &mut crate::RenderBuildContext<'_>,
+    ) -> zui_render::RenderNode {
+        crate::widget::build_leaf_render_node_incremental(self.id, context, |theme| {
+            self.build_render_node(theme)
+        })
     }
     fn set_theme(&mut self, _theme: &Theme) {}
 }
