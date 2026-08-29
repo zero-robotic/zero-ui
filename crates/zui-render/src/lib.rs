@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use lyon_path::{math::point as lyon_point, Path as LyonPath};
 use lyon_tessellation::{
@@ -1551,6 +1551,9 @@ struct SurfaceState {
     /// GPU draw data keyed by retained-node path. Only nodes whose render key
     /// changes rebuild these batches; partial replay reads this table directly.
     retained_gpu_items: Option<BTreeMap<Vec<usize>, RetainedGpuItem>>,
+    /// Globally ordered retained submissions, built only when retained GPU
+    /// items change. This preserves cross-node batching on clean frames.
+    retained_submission_batches: Option<Vec<GpuBatch>>,
     /// Long-lived vertex storage for retained draw batches. Dirty nodes replace
     /// only their allocated ranges instead of allocating a buffer per batch.
     vertex_arenas: VertexArenas,
@@ -2184,7 +2187,7 @@ enum GpuBatch {
     /// pipeline/material binding during replay.
     DrawGroup(
         BatchKind,
-        Vec<(VertexArenaAllocation, IndexArenaAllocation)>,
+        Arc<Vec<(VertexArenaAllocation, IndexArenaAllocation)>>,
         Transform,
         Option<IndirectDrawRange>,
     ),
@@ -2207,31 +2210,74 @@ struct ClipGpuGeometry {
 fn group_ordered_draws(batches: Vec<GpuBatch>) -> Vec<GpuBatch> {
     let mut grouped = Vec::with_capacity(batches.len());
     for batch in batches {
-        let GpuBatch::Draw(kind, vertices, indices, transform) = batch else {
-            grouped.push(batch);
-            continue;
+        let (kind, draws, transform, indirect) = match batch {
+            GpuBatch::Draw(kind, vertices, indices, transform) => {
+                (kind, Arc::new(vec![(vertices, indices)]), transform, None)
+            }
+            GpuBatch::DrawGroup(kind, draws, transform, indirect) => {
+                (kind, draws, transform, indirect)
+            }
+            batch => {
+                grouped.push(batch);
+                continue;
+            }
         };
-        if let Some(GpuBatch::DrawGroup(previous_kind, draws, previous_transform, _)) =
-            grouped.last_mut()
-        {
-            let same_page = draws
-                .first()
-                .is_some_and(|(previous_vertices, previous_indices)| {
+        if let Some(GpuBatch::DrawGroup(previous_kind, previous_draws, previous_transform, previous_indirect)) = grouped.last_mut() {
+            let same_page = previous_draws.first().zip(draws.first()).is_some_and(
+                |((previous_vertices, previous_indices), (vertices, indices))| {
                     previous_vertices.page == vertices.page && previous_indices.page == indices.page
-                });
-            if *previous_kind == kind && *previous_transform == transform && same_page {
-                draws.push((vertices, indices));
+                },
+            );
+            let contiguous_indirect = match (*previous_indirect, indirect) {
+                (Some(previous), Some(next)) => {
+                    previous.offset + previous.count as u64 * std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64 == next.offset
+                }
+                (None, None) => true,
+                _ => false,
+            };
+            if *previous_kind == kind && *previous_transform == transform && same_page && contiguous_indirect {
+                Arc::make_mut(previous_draws).extend(draws.iter().cloned());
+                *previous_indirect = match (*previous_indirect, indirect) {
+                    (Some(previous), Some(next)) => Some(IndirectDrawRange {
+                        offset: previous.offset,
+                        count: previous.count + next.count,
+                    }),
+                    _ => None,
+                };
                 continue;
             }
         }
-        grouped.push(GpuBatch::DrawGroup(
-            kind,
-            vec![(vertices, indices)],
-            transform,
-            None,
-        ));
+        grouped.push(GpuBatch::DrawGroup(kind, draws, transform, indirect));
     }
     grouped
+}
+
+fn build_retained_submission_batches(
+    items: &BTreeMap<Vec<usize>, RetainedGpuItem>,
+) -> Vec<GpuBatch> {
+    let mut batches = Vec::new();
+    for item in items.values() {
+        let has_clip = item
+            .batches
+            .iter()
+            .any(|batch| matches!(batch, GpuBatch::Clip(_, _, _)));
+        if has_clip {
+            batches.push(GpuBatch::Clip(
+                ClipGeometry::Reset,
+                None,
+                Transform::IDENTITY,
+            ));
+        }
+        batches.extend(item.batches.iter().cloned());
+        if has_clip {
+            batches.push(GpuBatch::Clip(
+                ClipGeometry::Reset,
+                None,
+                Transform::IDENTITY,
+            ));
+        }
+    }
+    group_ordered_draws(batches)
 }
 
 fn vertex_stride(kind: BatchKind) -> u64 {
@@ -2295,7 +2341,7 @@ fn prepare_indirect_draws(
 fn batch_vertex_allocations(batches: &[GpuBatch]) -> Vec<VertexArenaAllocation> {
     batches
         .iter()
-        .filter_map(|batch| match batch {
+        .flat_map(|batch| match batch {
             GpuBatch::Draw(_, allocation, _, _)
             | GpuBatch::Clip(
                 _,
@@ -2304,11 +2350,12 @@ fn batch_vertex_allocations(batches: &[GpuBatch]) -> Vec<VertexArenaAllocation> 
                     ..
                 }),
                 _,
-            ) => Some(allocation.clone()),
-            GpuBatch::DrawGroup(_, draws, _, _) => {
-                draws.iter().map(|(vertices, _)| vertices.clone()).next()
-            }
-            GpuBatch::Clip(_, None, _) | GpuBatch::Scissor(_) => None,
+            ) => vec![allocation.clone()],
+            GpuBatch::DrawGroup(_, draws, _, _) => draws
+                .iter()
+                .map(|(vertices, _)| vertices.clone())
+                .collect(),
+            GpuBatch::Clip(_, None, _) | GpuBatch::Scissor(_) => Vec::new(),
         })
         .collect()
 }
@@ -2316,8 +2363,8 @@ fn batch_vertex_allocations(batches: &[GpuBatch]) -> Vec<VertexArenaAllocation> 
 fn batch_index_allocations(batches: &[GpuBatch]) -> Vec<IndexArenaAllocation> {
     batches
         .iter()
-        .filter_map(|batch| match batch {
-            GpuBatch::Draw(_, _, allocation, _) => Some(allocation.clone()),
+        .flat_map(|batch| match batch {
+            GpuBatch::Draw(_, _, allocation, _) => vec![allocation.clone()],
             GpuBatch::Clip(
                 _,
                 Some(ClipGpuGeometry {
@@ -2325,11 +2372,11 @@ fn batch_index_allocations(batches: &[GpuBatch]) -> Vec<IndexArenaAllocation> {
                     ..
                 }),
                 _,
-            ) => Some(allocation.clone()),
+            ) => vec![allocation.clone()],
             GpuBatch::DrawGroup(_, draws, _, _) => {
-                draws.iter().map(|(_, indices)| indices.clone()).next()
+                draws.iter().map(|(_, indices)| indices.clone()).collect()
             }
-            GpuBatch::Clip(_, _, _) | GpuBatch::Scissor(_) => None,
+            GpuBatch::Clip(_, _, _) | GpuBatch::Scissor(_) => Vec::new(),
         })
         .collect()
 }
@@ -2668,6 +2715,7 @@ impl Renderer {
                 max_gpu_cache_entries: 256,
                 retained_items: None,
                 retained_gpu_items: None,
+                retained_submission_batches: None,
                 vertex_arenas: VertexArenas::new(&self.device),
                 index_arena: IndexArena::new(&self.device),
                 indirect_arena: IndirectArena::new(&self.device),
@@ -2750,6 +2798,7 @@ impl Renderer {
                 max_gpu_cache_entries: 256,
                 retained_items: None,
                 retained_gpu_items: None,
+                retained_submission_batches: None,
                 vertex_arenas: VertexArenas::new(&self.device),
                 index_arena: IndexArena::new(&self.device),
                 indirect_arena: IndirectArena::new(&self.device),
@@ -2790,6 +2839,7 @@ impl Renderer {
         state.node_gpu_cache.clear();
         state.transform_bindings.clear();
         state.retained_items = None;
+        state.retained_submission_batches = None;
         let released_resources = state
             .retained_gpu_items
             .take()
@@ -3140,6 +3190,8 @@ impl Renderer {
                     )
                 })
             });
+            let replay_uses_retained_submission =
+                node_batches.is_some() && !(state.has_contents && !damage_regions.is_empty());
             let replay_batches = if state.has_contents && !damage_regions.is_empty() {
                 if let Some(node_batches) = &node_batches {
                     let mut replay = Vec::new();
@@ -3149,7 +3201,7 @@ impl Renderer {
                             .spatial_index
                             .as_ref()
                             .map(|index| index.query(*region))
-                            .unwrap_or_else(|| node_batches.keys().cloned().collect());
+                            .expect("retained GPU items always have a spatial index");
                         for path in candidates {
                             let Some(item) = node_batches.get(&path) else {
                                 continue;
@@ -3192,29 +3244,10 @@ impl Renderer {
                 }
             } else {
                 if let Some(node_batches) = &node_batches {
-                    let mut replay = Vec::new();
-                    for item in node_batches.values() {
-                        let has_clip = item
-                            .batches
-                            .iter()
-                            .any(|batch| matches!(batch, GpuBatch::Clip(_, _, _)));
-                        if has_clip {
-                            replay.push(GpuBatch::Clip(
-                                ClipGeometry::Reset,
-                                None,
-                                Transform::IDENTITY,
-                            ));
-                        }
-                        replay.extend(item.batches.iter().cloned());
-                        if has_clip {
-                            replay.push(GpuBatch::Clip(
-                                ClipGeometry::Reset,
-                                None,
-                                Transform::IDENTITY,
-                            ));
-                        }
-                    }
-                    replay
+                    state
+                        .retained_submission_batches
+                        .take()
+                        .unwrap_or_else(|| build_retained_submission_batches(node_batches))
                 } else {
                     transient_gpu_batches
                         .as_ref()
@@ -3343,22 +3376,20 @@ impl Renderer {
                 }
                 let (kind, draws, transform, indirect): (
                     &BatchKind,
-                    Vec<(&VertexArenaAllocation, &IndexArenaAllocation)>,
+                    &[(VertexArenaAllocation, IndexArenaAllocation)],
                     Transform,
                     Option<IndirectDrawRange>,
                 ) = match batch {
-                    GpuBatch::Draw(kind, allocation, indices, transform) => {
-                        (kind, vec![(allocation, indices)], *transform, None)
-                    }
                     GpuBatch::DrawGroup(kind, draws, transform, indirect) => (
                         kind,
-                        draws
-                            .iter()
-                            .map(|(vertices, indices)| (vertices, indices))
-                            .collect(),
+                        draws.as_slice(),
                         *transform,
                         *indirect,
                     ),
+                    // Every CPU batch is normalized by `group_ordered_draws`
+                    // before replay; retained submissions never allocate a
+                    // temporary vector of draw references here.
+                    GpuBatch::Draw(..) => unreachable!("draw batches are grouped before replay"),
                     _ => continue,
                 };
                 let scissor = intersect_clip(active_clip, active_damage);
@@ -3452,6 +3483,10 @@ impl Renderer {
                         }
                     }
                 }
+            }
+            drop(pass);
+            if replay_uses_retained_submission {
+                state.retained_submission_batches = Some(replay_batches);
             }
             if node_batches.is_none() {
                 insert_gpu_cache(
@@ -3724,7 +3759,9 @@ impl Renderer {
                 }
             }
             if let Some(state) = self.surfaces.get_mut(&window) {
+                let submissions = build_retained_submission_batches(&retained_gpu_items);
                 state.retained_gpu_items = Some(retained_gpu_items);
+                state.retained_submission_batches = Some(submissions);
             }
         }
         let damage_regions = coalesce_damage_for_spatial_index(

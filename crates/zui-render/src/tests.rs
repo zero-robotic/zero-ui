@@ -541,7 +541,7 @@ fn render_node_gpu_key_changes_with_subtree() {
     }
 
     #[test]
-    fn retained_indirect_commands_are_uploaded_once() {
+fn retained_indirect_commands_are_uploaded_once() {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let mut arena = IndirectArena::new(&device);
         let mut groups = group_ordered_draws(vec![GpuBatch::Draw(
@@ -589,4 +589,77 @@ fn composition_tiles_coalesce_damage_to_physical_tile_bounds() {
     assert_eq!(regions.len(), 2);
     assert_eq!(regions[0].origin.x, Dip(0.0));
     assert_eq!(regions[1].origin.x, Dip(128.0));
+}
+
+#[test]
+fn adjacent_retained_groups_share_one_contiguous_indirect_submission() {
+    let vertex = |offset| VertexArenaAllocation {
+        kind: VertexArenaKind::Rect,
+        page: 0,
+        range: offset..offset + 64,
+        vertex_count: 4,
+    };
+    let index = |offset| IndexArenaAllocation {
+        page: 0,
+        range: offset..offset + 24,
+        index_count: 6,
+    };
+    let stride = std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64;
+    let groups = group_ordered_draws(vec![
+        GpuBatch::DrawGroup(
+            BatchKind::Rect,
+            Arc::new(vec![(vertex(0), index(0))]),
+            Transform::IDENTITY,
+            Some(IndirectDrawRange { offset: 0, count: 1 }),
+        ),
+        GpuBatch::DrawGroup(
+            BatchKind::Rect,
+            Arc::new(vec![(vertex(64), index(24))]),
+            Transform::IDENTITY,
+            Some(IndirectDrawRange {
+                offset: stride,
+                count: 1,
+            }),
+        ),
+    ]);
+    assert!(matches!(groups.as_slice(), [GpuBatch::DrawGroup(_, draws, _, Some(range))]
+        if draws.len() == 2 && range.count == 2));
+}
+
+#[test]
+fn grouped_batches_keep_all_arena_allocations_owned_by_the_node() {
+    let allocations = batch_vertex_allocations(&[GpuBatch::DrawGroup(
+        BatchKind::Rect,
+        Arc::new(vec![
+            (
+                VertexArenaAllocation {
+                    kind: VertexArenaKind::Rect,
+                    page: 0,
+                    range: 0..64,
+                    vertex_count: 4,
+                },
+                IndexArenaAllocation {
+                    page: 0,
+                    range: 0..24,
+                    index_count: 6,
+                },
+            ),
+            (
+                VertexArenaAllocation {
+                    kind: VertexArenaKind::Rect,
+                    page: 0,
+                    range: 64..128,
+                    vertex_count: 4,
+                },
+                IndexArenaAllocation {
+                    page: 0,
+                    range: 24..48,
+                    index_count: 6,
+                },
+            ),
+        ]),
+        Transform::IDENTITY,
+        None,
+    )]);
+    assert_eq!(allocations.len(), 2);
 }
