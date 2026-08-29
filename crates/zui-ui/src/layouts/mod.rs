@@ -5,7 +5,7 @@ use crate::{
     widget::{RenderBuildContext, Widget, WidgetId},
 };
 use zui_core::{Rect, Size};
-use zui_render::RenderNode;
+use zui_render::{RenderNode, Transform};
 
 mod align;
 mod column;
@@ -94,7 +94,7 @@ impl Widget for Layout {
     }
     fn build_render_node(&self, theme: &Theme) -> RenderNode {
         let mut node = RenderNode::for_widget(self.bounds);
-        node.set_source_id(self.id.0);
+        node.set_id(self.id.0);
         for child in &self.children {
             node.add_child(child.build_render_node(theme));
         }
@@ -106,10 +106,12 @@ impl Widget for Layout {
                 return previous.clone();
             }
         }
-        let mut node = RenderNode::for_widget(self.bounds);
-        node.set_source_id(self.id.0);
+        let mut node = context.localize(RenderNode::for_widget(self.bounds));
+        node.set_id(self.id.0);
+        let child_world_transform =
+            Transform::translate(self.bounds.origin.x, self.bounds.origin.y);
         for (index, child) in self.children.iter().enumerate() {
-            let mut child_context = context.child(index);
+            let mut child_context = context.child(index, child_world_transform);
             node.add_child(child.build_render_node_incremental(&mut child_context));
         }
         node

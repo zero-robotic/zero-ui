@@ -54,21 +54,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return None;
                 }
             }
-            let (damage_regions, node, render_index, dirty_widgets) = {
+            let (scene_update, node, render_index) = {
                 let mut tree = ui.borrow_mut();
-                let damage_regions = tree.dirty_regions().to_vec();
+                let scene_update = tree.scene_update().clone();
                 let node = tree.render_node_cached().clone();
                 let render_index = tree.render_index().clone();
-                let dirty_widgets = tree.dirty_widget_ids();
-                (damage_regions, node, render_index, dirty_widgets)
+                (scene_update, node, render_index)
             };
-            if let Err(error) = renderer.borrow_mut().render_node_with_dirty_widgets(
+            if let Err(error) = renderer.borrow_mut().render_scene(
                 window,
                 &node,
-                &damage_regions,
                 background,
                 &render_index,
-                &dirty_widgets,
+                &scene_update,
             ) {
                 match error {
                     RenderError::SurfaceLost => {

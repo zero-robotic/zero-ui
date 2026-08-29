@@ -63,21 +63,74 @@ fn render_node_keeps_commands_before_children() {
 #[test]
 fn render_node_index_resolves_nested_widget_paths() {
     let mut root = RenderNode::new(Rect::default());
-    root.source_id = Some(1);
+    root.id = Some(1);
     let mut child = RenderNode::new(Rect::default());
-    child.source_id = Some(2);
+    child.id = Some(2);
     let mut grandchild = RenderNode::new(Rect::default());
-    grandchild.source_id = Some(3);
+    grandchild.id = Some(3);
     child.add_child(grandchild);
     root.add_child(child);
 
     let index = root.build_index();
     assert_eq!(index.path_for(1), Some([].as_slice()));
     assert_eq!(index.path_for(3), Some([0, 0].as_slice()));
+    assert_eq!(index.node(&root, 3).and_then(|node| node.id), Some(3));
+}
+
+#[test]
+fn scene_update_merges_node_damage_without_losing_full_rebuild() {
+    let region = |x| Rect {
+        origin: Point {
+            x: Dip(x),
+            y: Dip(0.0),
+        },
+        size: zui_core::Size {
+            width: Dip(10.0),
+            height: Dip(10.0),
+        },
+    };
+    let mut first = SceneUpdate::default();
+    first.invalidate_node(7, region(0.0));
+    let mut second = SceneUpdate::default();
+    second.invalidate_node(7, region(20.0));
+    second.invalidate_node(9, region(40.0));
+    second.request_full_rebuild();
+
+    first.merge(second);
+
+    assert!(first.full_rebuild());
+    assert_eq!(first.dirty_node_ids().collect::<Vec<_>>(), vec![7, 9]);
     assert_eq!(
-        index.node(&root, 3).and_then(|node| node.source_id),
-        Some(3)
+        first
+            .node_regions()
+            .find(|(id, _)| *id == 7)
+            .unwrap()
+            .1
+            .len(),
+        2
     );
+    assert_eq!(first.damage_regions().len(), 3);
+}
+
+#[test]
+fn render_node_index_replaces_only_changed_subtree() {
+    let mut root = RenderNode::new(Rect::default());
+    let mut left = RenderNode::new(Rect::default());
+    left.id = Some(2);
+    let mut right = RenderNode::new(Rect::default());
+    right.id = Some(3);
+    root.add_child(left);
+    root.add_child(right);
+    let mut index = root.build_index();
+
+    let mut replacement = RenderNode::new(Rect::default());
+    replacement.id = Some(4);
+    *root.child_mut(0).expect("left child exists") = replacement;
+    index.update_subtrees(&root, &[vec![0]]);
+
+    assert_eq!(index.path_for(2), None);
+    assert_eq!(index.path_for(4), Some([0].as_slice()));
+    assert_eq!(index.path_for(3), Some([1].as_slice()));
 }
 
 #[test]
@@ -118,18 +171,18 @@ fn dirty_path_propagates_flags_and_region_to_ancestors() {
 }
 
 #[test]
-fn clean_render_node_subtrees_are_reused_by_source_id() {
+fn clean_render_node_subtrees_are_reused_by_node_id() {
     let mut previous = RenderNode::new(Rect::default());
-    previous.source_id = Some(1);
+    previous.id = Some(1);
     let mut previous_clean = RenderNode::new(Rect::default());
-    previous_clean.source_id = Some(2);
+    previous_clean.id = Some(2);
     previous_clean.commands_mut().push(PaintCommand::Rect {
         rect: Rect::default(),
         color: Color::WHITE,
     });
     previous.add_child(previous_clean);
     let mut previous_dirty = RenderNode::new(Rect::default());
-    previous_dirty.source_id = Some(3);
+    previous_dirty.id = Some(3);
     previous.add_child(previous_dirty);
 
     let mut current = previous.clone();
@@ -180,6 +233,7 @@ fn shared_item_damage_is_coalesced_once() {
     let items = std::collections::BTreeMap::from([(
         vec![0],
         RenderNodeItem {
+            node_id: None,
             bounds: Rect {
                 origin: Point {
                     x: Dip(4.0),
@@ -409,6 +463,31 @@ fn path_mesh_preserves_tessellator_indices() {
 }
 
 #[test]
+fn path_cache_key_tracks_commands_and_fill_rule_without_debug_formatting() {
+    let square = |fill_rule| {
+        IconPath::from_commands(
+            vec![
+                PathCommand::MoveTo(Point::default()),
+                PathCommand::LineTo(Point {
+                    x: Dip(10.0),
+                    y: Dip(0.0),
+                }),
+                PathCommand::LineTo(Point {
+                    x: Dip(10.0),
+                    y: Dip(10.0),
+                }),
+                PathCommand::Close,
+            ],
+            fill_rule,
+        )
+    };
+    let even_odd = square(FillRule::EvenOdd);
+    let non_zero = square(FillRule::NonZero);
+    assert_eq!(path_cache_key(&even_odd), path_cache_key(&even_odd));
+    assert_ne!(path_cache_key(&even_odd), path_cache_key(&non_zero));
+}
+
+#[test]
 fn resource_handles_track_references() {
     let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     let mut resources = ResourceManager::new(&device, &[]);
@@ -420,6 +499,22 @@ fn resource_handles_track_references() {
     assert_eq!(resources.reference_count(handle), 1);
     resources.release(handle);
     assert_eq!(resources.reference_count(handle), 0);
+}
+
+#[test]
+fn text_measure_cache_evicts_least_recently_used_entry() {
+    let mut cache = TextMeasureCache {
+        capacity: 2,
+        ..TextMeasureCache::default()
+    };
+    cache.insert(("first".into(), 1), Dip(10.0));
+    cache.insert(("second".into(), 1), Dip(20.0));
+    assert_eq!(cache.get(&("first".into(), 1)), Some(Dip(10.0)));
+    cache.insert(("third".into(), 1), Dip(30.0));
+
+    assert!(cache.get(&("second".into(), 1)).is_none());
+    assert_eq!(cache.get(&("first".into(), 1)), Some(Dip(10.0)));
+    assert_eq!(cache.get(&("third".into(), 1)), Some(Dip(30.0)));
 }
 
 #[test]
@@ -461,33 +556,22 @@ fn render_node_composes_multiple_clips() {
 }
 
 #[test]
-fn normalizing_nested_cached_nodes_is_idempotent() {
-    let mut root = RenderNode::for_widget(Rect {
-        origin: Point {
-            x: Dip(10.0),
-            y: Dip(20.0),
-        },
-        size: zui_core::Size {
-            width: Dip(100.0),
-            height: Dip(80.0),
-        },
-    });
-    root.add_child(RenderNode::for_widget(Rect {
-        origin: Point {
-            x: Dip(30.0),
-            y: Dip(50.0),
-        },
-        size: zui_core::Size {
-            width: Dip(20.0),
-            height: Dip(10.0),
-        },
-    }));
-    root.normalize_local_coordinates();
-    assert_eq!(root.transform.matrix[4], 10.0);
-    assert_eq!(root.children[0].transform.matrix[4], 20.0);
-    let snapshot = root.clone();
-    root.normalize_local_coordinates();
-    assert_eq!(root, snapshot);
+fn render_node_localizes_world_transform_with_full_parent_inverse() {
+    let parent_world = compose_transform(
+        Transform::translate(Dip(10.0), Dip(20.0)),
+        Transform::scale(2.0, 2.0),
+    );
+    let child_world = Transform::translate(Dip(30.0), Dip(50.0));
+    let mut child = RenderNode::new(Rect::default());
+    child.transform = child_world;
+    child.localize_to_parent(parent_world);
+
+    assert_eq!(child.transform.matrix[4], 10.0);
+    assert_eq!(child.transform.matrix[5], 15.0);
+    assert_eq!(
+        compose_transform(parent_world, child.transform),
+        child_world
+    );
 }
 
 #[test]
@@ -525,20 +609,6 @@ fn dirty_regions_keep_separate_damage_areas() {
         },
     });
     assert_eq!(regions.as_slice().len(), 2);
-}
-
-#[test]
-fn render_node_gpu_key_changes_with_subtree() {
-    let mut parent = RenderNode::new(Rect::default());
-    let first = parent.gpu_cache_key();
-    parent.add_child(RenderNode::new(Rect {
-        origin: Point::default(),
-        size: zui_core::Size {
-            width: Dip(4.0),
-            height: Dip(4.0),
-        },
-    }));
-    assert_ne!(first, parent.gpu_cache_key());
 }
 
 #[test]
@@ -736,6 +806,73 @@ fn adjacent_retained_groups_share_one_contiguous_indirect_submission() {
 }
 
 #[test]
+fn submission_merges_compatible_indirect_groups_across_retained_nodes() {
+    let vertex = |offset| VertexArenaAllocation {
+        kind: VertexArenaKind::Rect,
+        page: 0,
+        range: offset..offset + 64,
+        vertex_count: 4,
+    };
+    let index = |offset| IndexArenaAllocation {
+        page: 0,
+        range: offset..offset + 24,
+        index_count: 6,
+    };
+    let stride = std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64;
+    let first = GpuBatch::DrawGroup(
+        BatchKind::Rect,
+        Arc::new(vec![(vertex(0), index(0))]),
+        Transform::IDENTITY,
+        Some(IndirectDrawRange {
+            offset: 0,
+            count: 1,
+        }),
+    );
+    let next = GpuBatch::DrawGroup(
+        BatchKind::Rect,
+        Arc::new(vec![(vertex(64), index(24))]),
+        Transform::IDENTITY,
+        Some(IndirectDrawRange {
+            offset: stride,
+            count: 1,
+        }),
+    );
+    assert_eq!(
+        merge_indirect_draw_ranges(
+            &first,
+            indirect_draw_range(&first).unwrap(),
+            &next,
+            indirect_draw_range(&next).unwrap(),
+        )
+        .map(|range| (range.offset, range.count)),
+        Some((0, 2))
+    );
+
+    let other_page = GpuBatch::DrawGroup(
+        BatchKind::Rect,
+        Arc::new(vec![(
+            VertexArenaAllocation {
+                page: 1,
+                ..vertex(128)
+            },
+            index(48),
+        )]),
+        Transform::IDENTITY,
+        Some(IndirectDrawRange {
+            offset: stride * 2,
+            count: 1,
+        }),
+    );
+    assert!(merge_indirect_draw_ranges(
+        &next,
+        indirect_draw_range(&next).unwrap(),
+        &other_page,
+        indirect_draw_range(&other_page).unwrap(),
+    )
+    .is_none());
+}
+
+#[test]
 fn grouped_batches_keep_all_arena_allocations_owned_by_the_node() {
     let allocations = batch_vertex_allocations(&[GpuBatch::DrawGroup(
         BatchKind::Rect,
@@ -783,6 +920,7 @@ fn arena_free_ranges_are_coalesced_for_reuse() {
 #[test]
 fn tile_submission_index_updates_only_changed_subtree_paths() {
     let item = |x| RenderNodeItem {
+        node_id: None,
         bounds: Rect {
             origin: Point {
                 x: Dip(x),
@@ -839,8 +977,45 @@ fn tile_submission_index_updates_only_changed_subtree_paths() {
 }
 
 #[test]
+fn tile_submission_index_preserves_paint_order_after_incremental_replace() {
+    let item = |x| RenderNodeItem {
+        node_id: None,
+        bounds: Rect {
+            origin: Point {
+                x: Dip(x),
+                y: Dip(0.0),
+            },
+            size: zui_core::Size {
+                width: Dip(20.0),
+                height: Dip(20.0),
+            },
+        },
+        transform: Transform::IDENTITY,
+        opacity: 1.0,
+        clips: Vec::new(),
+        commands: Arc::new(Vec::new()),
+    };
+    let mut items = BTreeMap::from([(vec![0], item(0.0)), (vec![1], item(10.0))]);
+    let mut index = TileSubmissionIndex::build(&items, ScaleFactor(1.0));
+    items.insert(vec![0], item(20.0));
+    index.update_subtrees(&items, &[vec![0]]);
+
+    assert_eq!(
+        index.query(Rect {
+            origin: Point::default(),
+            size: zui_core::Size {
+                width: Dip(127.0),
+                height: Dip(127.0),
+            },
+        }),
+        vec![vec![0], vec![1]],
+    );
+}
+
+#[test]
 fn retained_submission_table_replaces_only_dirty_subtree_segments() {
     let item = || RetainedGpuItem {
+        node_id: None,
         bounds: Rect::default(),
         batches: Vec::new(),
         vertex_allocations: Vec::new(),
@@ -865,6 +1040,24 @@ fn retained_submission_table_replaces_only_dirty_subtree_segments() {
     // The sibling segment was retained instead of participating in the
     // dirty subtree replacement.
     assert!(table.segments.contains_key(&vec![1]));
+}
+
+#[test]
+fn retained_submission_table_keeps_gpu_batches_node_owned() {
+    let item = |node_id| RetainedGpuItem {
+        node_id: Some(node_id),
+        bounds: Rect::default(),
+        batches: Vec::new(),
+        vertex_allocations: Vec::new(),
+        index_allocations: Vec::new(),
+        indirect_allocations: Vec::new(),
+        resources: Vec::new(),
+    };
+    let items = BTreeMap::from([(vec![0], item(11)), (vec![1], item(12))]);
+    let table = RetainedSubmissionTable::rebuild(&items);
+    let mut entries = Vec::new();
+    table.for_each_entry(|path, entry| entries.push((path.to_vec(), entry.node_id)));
+    assert_eq!(entries, vec![(vec![0], Some(11)), (vec![1], Some(12))]);
 }
 
 #[test]

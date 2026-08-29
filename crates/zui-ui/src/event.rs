@@ -1,7 +1,6 @@
-use std::collections::HashMap;
 use zui_core::{Point, WindowId};
 use zui_platform::{InputEvent, KeyState, MouseButton};
-use zui_render::DirtyRegionSet;
+pub use zui_render::SceneUpdate;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiEvent {
@@ -51,9 +50,7 @@ pub struct Action {
 #[derive(Default)]
 pub struct EventContext {
     actions: Vec<Action>,
-    dirty_regions: DirtyRegionSet,
-    invalidated_widgets: HashMap<crate::WidgetId, DirtyRegionSet>,
-    full_redraw: bool,
+    scene_update: SceneUpdate,
 }
 
 impl EventContext {
@@ -70,52 +67,17 @@ impl EventContext {
         std::mem::take(&mut self.actions)
     }
     pub fn invalidate(&mut self, region: zui_core::Rect) {
-        self.dirty_regions.add(region);
-        self.full_redraw = true;
+        self.scene_update.add_damage(region);
+        self.scene_update.request_full_rebuild();
     }
     pub fn invalidate_widget(&mut self, widget: crate::WidgetId, region: zui_core::Rect) {
-        self.invalidated_widgets
-            .entry(widget)
-            .or_default()
-            .add(region);
-        self.dirty_regions.add(region);
-    }
-    pub fn take_invalidations(&mut self) -> Vec<(crate::WidgetId, Vec<zui_core::Rect>)> {
-        std::mem::take(&mut self.invalidated_widgets)
-            .into_iter()
-            .map(|(widget, regions)| (widget, regions.as_slice().to_vec()))
-            .collect()
+        self.scene_update.invalidate_node(widget.0, region);
     }
     pub fn request_full_redraw(&mut self) {
-        self.full_redraw = true;
+        self.scene_update.request_full_rebuild();
     }
-    pub fn requires_full_redraw(&self) -> bool {
-        self.full_redraw
-    }
-    pub fn take_dirty_region(&mut self) -> Option<zui_core::Rect> {
-        self.take_dirty_regions().into_iter().reduce(union_rect)
-    }
-    pub fn take_dirty_regions(&mut self) -> Vec<zui_core::Rect> {
-        let regions = self.dirty_regions.as_slice().to_vec();
-        self.dirty_regions.clear();
-        regions
-    }
-}
-
-fn union_rect(a: zui_core::Rect, b: zui_core::Rect) -> zui_core::Rect {
-    let left = a.origin.x.0.min(b.origin.x.0);
-    let top = a.origin.y.0.min(b.origin.y.0);
-    let right = (a.origin.x.0 + a.size.width.0).max(b.origin.x.0 + b.size.width.0);
-    let bottom = (a.origin.y.0 + a.size.height.0).max(b.origin.y.0 + b.size.height.0);
-    zui_core::Rect {
-        origin: zui_core::Point {
-            x: zui_core::Dip(left),
-            y: zui_core::Dip(top),
-        },
-        size: zui_core::Size {
-            width: zui_core::Dip(right - left),
-            height: zui_core::Dip(bottom - top),
-        },
+    pub fn take_scene_update(&mut self) -> SceneUpdate {
+        std::mem::take(&mut self.scene_update)
     }
 }
 

@@ -38,6 +38,7 @@ pub struct RenderBuildContext<'a> {
     dirty_paths: Vec<DirtyPath>,
     force_rebuild: bool,
     theme: &'a Theme,
+    parent_world_transform: Transform,
 }
 
 /// A shared dirty path plus the depth currently being inspected. Child
@@ -66,6 +67,7 @@ impl<'a> RenderBuildContext<'a> {
                 .collect(),
             force_rebuild,
             theme,
+            parent_world_transform: Transform::IDENTITY,
         }
     }
 
@@ -77,7 +79,10 @@ impl<'a> RenderBuildContext<'a> {
         self.previous
     }
 
-    pub fn child(&self, index: usize) -> Self {
+    /// Creates the context for a child whose layout placement is expressed in
+    /// window coordinates. The child converts its root transform to this
+    /// supplied parent world transform during build.
+    pub fn child(&self, index: usize, parent_world_transform: Transform) -> Self {
         Self {
             previous: self.previous.and_then(|node| node.children.get(index)),
             dirty_paths: self
@@ -91,11 +96,17 @@ impl<'a> RenderBuildContext<'a> {
                 .collect(),
             force_rebuild: self.force_rebuild,
             theme: self.theme,
+            parent_world_transform,
         }
     }
 
     pub fn subtree_is_dirty(&self, _id: WidgetId) -> bool {
         self.force_rebuild || !self.dirty_paths.is_empty()
+    }
+
+    pub fn localize(&self, mut node: RenderNode) -> RenderNode {
+        node.localize_to_parent(self.parent_world_transform);
+        node
     }
 }
 
@@ -106,7 +117,7 @@ pub(crate) fn build_render_node_with_commands(
     build_commands: impl FnOnce(&mut PaintContext<'_>),
 ) -> RenderNode {
     let mut builder = RenderNodeBuilder::for_widget(bounds);
-    builder.source_id(id.0);
+    builder.id(id.0);
     build_commands(&mut PaintContext::new_at(
         builder.commands_mut(),
         theme,
@@ -115,20 +126,6 @@ pub(crate) fn build_render_node_with_commands(
     builder.finish()
 }
 
-/// Explicit leaf-node incremental policy: a clean leaf reuses its prior node;
-/// a dirty leaf rebuilds its local command list.
-pub(crate) fn build_leaf_render_node_incremental(
-    id: WidgetId,
-    context: &mut RenderBuildContext<'_>,
-    build: impl FnOnce(&Theme) -> RenderNode,
-) -> RenderNode {
-    if !context.subtree_is_dirty(id) {
-        if let Some(previous) = context.previous() {
-            return previous.clone();
-        }
-    }
-    build(context.theme())
-}
 impl<'a> PaintContext<'a> {
     pub fn new(commands: &'a mut Vec<PaintCommand>, theme: &'a Theme) -> Self {
         Self {
@@ -272,5 +269,16 @@ pub trait Widget {
     }
     fn set_theme(&mut self, _theme: &Theme) {}
     fn build_render_node(&self, theme: &Theme) -> RenderNode;
-    fn build_render_node_incremental(&self, context: &mut RenderBuildContext<'_>) -> RenderNode;
+    /// Leaf widgets normally need no custom incremental policy: a clean
+    /// subtree shares its previous RenderNode, while a dirty subtree rebuilds
+    /// from its regular retained-node definition. Container widgets override
+    /// this to forward the context to their children.
+    fn build_render_node_incremental(&self, context: &mut RenderBuildContext<'_>) -> RenderNode {
+        if !context.subtree_is_dirty(self.id()) {
+            if let Some(previous) = context.previous() {
+                return previous.clone();
+            }
+        }
+        context.localize(self.build_render_node(context.theme()))
+    }
 }

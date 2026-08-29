@@ -10,7 +10,7 @@ pub mod tree;
 pub mod widget;
 pub mod widgets;
 
-pub use event::{Action, ActionKind, EventContext, EventResult, UiEvent};
+pub use event::{Action, ActionKind, EventContext, EventResult, SceneUpdate, UiEvent};
 pub use focus::FocusManager;
 pub use layout::{Constraints, LayoutBox};
 pub use layouts::{
@@ -29,8 +29,8 @@ pub use widgets::{
 };
 pub use zui_render::{
     ClipShape, DirtyFlags, DirtyRegionSet, DirtyState, FillRule, FrameStats, IconPath, ImageId,
-    ImageResource, PathCommand, RenderNode, RenderNodeBuilder, RenderNodeIndex, ResourceBudget,
-    ResourceCache, ResourceHandle, ResourceManager, ResourceUsage, Transform,
+    ImageResource, PathCommand, RenderNode, RenderNodeBuilder, RenderNodeId, RenderNodeIndex,
+    ResourceBudget, ResourceCache, ResourceHandle, ResourceManager, ResourceUsage, Transform,
 };
 
 #[cfg(test)]

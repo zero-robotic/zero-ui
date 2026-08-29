@@ -367,7 +367,7 @@ fn line_bounds(start: Point, end: Point, width: Dip) -> Rect {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum FillRule {
     #[default]
     EvenOdd,

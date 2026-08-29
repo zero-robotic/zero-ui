@@ -5,7 +5,7 @@ use crate::{
     widget::{RenderBuildContext, Widget, WidgetId},
 };
 use zui_core::{Dip, Rect, Size};
-use zui_render::RenderNode;
+use zui_render::{RenderNode, Transform};
 
 pub struct SizedBox {
     id: WidgetId,
@@ -84,7 +84,7 @@ impl Widget for SizedBox {
     }
     fn build_render_node(&self, theme: &Theme) -> RenderNode {
         let mut node = RenderNode::for_widget(self.bounds);
-        node.set_source_id(self.id.0);
+        node.set_id(self.id.0);
         node.add_child(self.child.build_render_node(theme));
         node
     }
@@ -94,9 +94,12 @@ impl Widget for SizedBox {
                 return previous.clone();
             }
         }
-        let mut node = RenderNode::for_widget(self.bounds);
-        node.set_source_id(self.id.0);
-        let mut child_context = context.child(0);
+        let mut node = context.localize(RenderNode::for_widget(self.bounds));
+        node.set_id(self.id.0);
+        let mut child_context = context.child(
+            0,
+            Transform::translate(self.bounds.origin.x, self.bounds.origin.y),
+        );
         node.add_child(self.child.build_render_node_incremental(&mut child_context));
         node
     }

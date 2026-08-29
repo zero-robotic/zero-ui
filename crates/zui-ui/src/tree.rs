@@ -1,13 +1,11 @@
-use std::collections::HashSet;
-
 use crate::{
-    event::{Action, EventContext, EventResult, UiEvent},
+    event::{Action, EventContext, EventResult, SceneUpdate, UiEvent},
     layout::Constraints,
     theme::Theme,
     widget::{RenderBuildContext, Widget},
 };
 use zui_core::Rect;
-use zui_render::{DirtyRegionSet, RenderNodeIndex};
+use zui_render::RenderNodeIndex;
 
 pub struct WidgetTree {
     root: Box<dyn Widget>,
@@ -16,9 +14,7 @@ pub struct WidgetTree {
     render_index: RenderNodeIndex,
     layout_dirty: bool,
     paint_dirty: bool,
-    dirty_regions: DirtyRegionSet,
-    dirty_widget_ids: HashSet<u64>,
-    full_rebuild: bool,
+    scene_update: SceneUpdate,
 }
 
 impl WidgetTree {
@@ -30,9 +26,7 @@ impl WidgetTree {
             render_index: RenderNodeIndex::default(),
             layout_dirty: true,
             paint_dirty: true,
-            dirty_regions: DirtyRegionSet::new(),
-            dirty_widget_ids: HashSet::new(),
-            full_rebuild: true,
+            scene_update: SceneUpdate::default(),
         }
     }
     pub fn measure(&mut self, constraints: Constraints) -> zui_core::Size {
@@ -49,34 +43,31 @@ impl WidgetTree {
         self.paint_dirty = true;
         self.render_node = None;
         self.render_index = RenderNodeIndex::default();
-        self.dirty_regions.clear();
-        self.full_rebuild = true;
+        self.scene_update.clear();
+        self.scene_update.request_full_rebuild();
         size
     }
     pub fn event(&mut self, event: &UiEvent) -> (EventResult, Vec<Action>) {
         let mut ctx = EventContext::new();
         let result = self.root.event(event, &mut ctx);
         let actions = ctx.take_actions();
-        let invalidations = ctx.take_invalidations();
-        let dirty_regions = ctx.take_dirty_regions();
-        for (widget, regions) in &invalidations {
-            self.dirty_widget_ids.insert(widget.0);
+        let mut update = ctx.take_scene_update();
+        if result == EventResult::RequestRedraw && update.is_empty() {
+            update.request_full_rebuild();
+        }
+        for (widget, regions) in update.node_regions() {
             if let (Some(node), Some(path)) = (
                 self.render_node.as_mut(),
-                self.render_index.path_for(widget.0),
+                self.render_index.path_for(widget),
             ) {
                 for region in regions {
                     node.mark_dirty_path(path, zui_render::DirtyFlags::PAINT, Some(*region));
                 }
             }
         }
-        if result == EventResult::RequestRedraw || !invalidations.is_empty() {
-            if ctx.requires_full_redraw() {
-                self.request_paint(None);
-            } else {
-                self.paint_dirty = true;
-                self.dirty_regions.extend(dirty_regions);
-            }
+        if !update.is_empty() {
+            self.paint_dirty = true;
+            self.scene_update.merge(update);
         }
         (result, actions)
     }
@@ -84,34 +75,36 @@ impl WidgetTree {
         if self.render_node.is_none() {
             let mut context = RenderBuildContext::new(None, &[], true, &self.theme);
             let mut node = self.root.build_render_node_incremental(&mut context);
-            node.normalize_local_coordinates();
             node.mark_dirty(zui_render::DirtyFlags::PAINT);
             self.render_index = node.build_index();
             self.render_node = Some(node);
         } else if self.paint_dirty {
             let previous = self.render_node.take();
             let dirty_paths = self
-                .dirty_widget_ids
-                .iter()
-                .filter_map(|source_id| self.render_index.path_for(*source_id))
+                .scene_update
+                .dirty_node_ids()
+                .filter_map(|node_id| self.render_index.path_for(node_id))
                 .map(|path| path.to_vec())
                 .collect::<Vec<_>>();
             let mut context = RenderBuildContext::new(
                 previous.as_ref(),
                 &dirty_paths,
-                self.full_rebuild,
+                self.scene_update.full_rebuild(),
                 &self.theme,
             );
             let mut node = self.root.build_render_node_incremental(&mut context);
-            node.normalize_local_coordinates();
-            if self.full_rebuild {
+            if self.scene_update.full_rebuild() {
                 node.mark_dirty(zui_render::DirtyFlags::PAINT);
             } else {
                 for path in &dirty_paths {
                     node.mark_dirty_path(path, zui_render::DirtyFlags::PAINT, None);
                 }
             }
-            self.render_index = node.build_index();
+            if self.scene_update.full_rebuild() {
+                self.render_index = node.build_index();
+            } else {
+                self.render_index.update_subtrees(&node, &dirty_paths);
+            }
             self.render_node = Some(node);
         }
         self.render_node
@@ -119,9 +112,8 @@ impl WidgetTree {
             .expect("render node was just built")
     }
     pub fn build_render_node(&self) -> zui_render::RenderNode {
-        let mut node = self.root.build_render_node(&self.theme);
-        node.normalize_local_coordinates();
-        node
+        let mut context = RenderBuildContext::new(None, &[], true, &self.theme);
+        self.root.build_render_node_incremental(&mut context)
     }
     pub fn theme(&self) -> &Theme {
         &self.theme
@@ -136,23 +128,23 @@ impl WidgetTree {
         self.paint_dirty = true;
         self.render_node = None;
         self.render_index = RenderNodeIndex::default();
-        self.dirty_regions.clear();
-        self.dirty_widget_ids.clear();
-        self.full_rebuild = true;
+        self.scene_update.clear();
+        self.scene_update.request_full_rebuild();
     }
     pub fn request_paint(&mut self, region: Option<Rect>) {
         self.paint_dirty = true;
-        self.full_rebuild = true;
+        self.scene_update.request_full_rebuild();
         if let Some(region) = region {
-            self.dirty_regions.add(region);
+            self.scene_update.add_damage(region);
         } else {
-            self.dirty_regions.clear();
+            self.scene_update.clear();
+            self.scene_update.request_full_rebuild();
         }
     }
     pub fn request_paint_regions(&mut self, regions: impl IntoIterator<Item = Rect>) {
         self.paint_dirty = true;
-        self.full_rebuild = true;
-        self.dirty_regions.extend(regions);
+        self.scene_update.request_full_rebuild();
+        self.scene_update.extend_damage(regions);
     }
     pub fn needs_redraw(&self) -> bool {
         self.layout_dirty || self.paint_dirty
@@ -161,17 +153,22 @@ impl WidgetTree {
         self.root.next_redraw()
     }
     pub fn dirty_region(&self) -> Option<Rect> {
-        self.dirty_regions.union()
+        self.scene_update
+            .damage_regions()
+            .iter()
+            .copied()
+            .reduce(union_rect)
     }
     pub fn dirty_regions(&self) -> &[Rect] {
-        self.dirty_regions.as_slice()
+        self.scene_update.damage_regions()
+    }
+    pub fn scene_update(&self) -> &SceneUpdate {
+        &self.scene_update
     }
     pub fn mark_clean(&mut self) {
         self.layout_dirty = false;
         self.paint_dirty = false;
-        self.dirty_regions.clear();
-        self.dirty_widget_ids.clear();
-        self.full_rebuild = false;
+        self.scene_update.clear();
         if let Some(node) = self.render_node.as_mut() {
             node.clear_dirty();
         }
@@ -190,6 +187,23 @@ impl WidgetTree {
     /// Widget identities whose RenderNode subtrees changed since the last
     /// completed frame. The renderer resolves these through `render_index`.
     pub fn dirty_widget_ids(&self) -> Vec<u64> {
-        self.dirty_widget_ids.iter().copied().collect()
+        self.scene_update.dirty_node_ids().collect()
+    }
+}
+
+fn union_rect(a: Rect, b: Rect) -> Rect {
+    let left = a.origin.x.0.min(b.origin.x.0);
+    let top = a.origin.y.0.min(b.origin.y.0);
+    let right = (a.origin.x.0 + a.size.width.0).max(b.origin.x.0 + b.size.width.0);
+    let bottom = (a.origin.y.0 + a.size.height.0).max(b.origin.y.0 + b.size.height.0);
+    Rect {
+        origin: zui_core::Point {
+            x: zui_core::Dip(left),
+            y: zui_core::Dip(top),
+        },
+        size: zui_core::Size {
+            width: zui_core::Dip(right - left),
+            height: zui_core::Dip(bottom - top),
+        },
     }
 }

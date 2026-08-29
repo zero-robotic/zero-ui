@@ -513,12 +513,6 @@ pub(crate) fn set_scissor(
     pass.set_scissor_rect(x, y, right.saturating_sub(x), bottom.saturating_sub(y));
 }
 
-pub(crate) fn command_list_hash(commands: &[PaintCommand]) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    format!("{commands:?}").hash(&mut hasher);
-    hasher.finish()
-}
-
 pub(crate) fn append_rounded_rect(
     vertices: &mut Vec<RoundedRectVertex>,
     indices: &mut Vec<u32>,

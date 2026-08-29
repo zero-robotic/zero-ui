@@ -31,20 +31,68 @@ use paint::transform_clip_shape;
 pub use paint::{ClipShape, FillRule, IconPath, PaintCommand, PathCommand};
 
 static SYSTEM_FONTS: OnceLock<Vec<fontdue::Font>> = OnceLock::new();
-static TEXT_MEASURE_CACHE: OnceLock<Mutex<HashMap<(String, u32), Dip>>> = OnceLock::new();
+static TEXT_MEASURE_CACHE: OnceLock<Mutex<TextMeasureCache>> = OnceLock::new();
+
+/// Bounded LRU for CPU text metrics. Text input and log-style views can
+/// produce unbounded distinct strings, so this cache must not grow with the
+/// lifetime of the process.
+struct TextMeasureCache {
+    widths: HashMap<(String, u32), Dip>,
+    last_used: HashMap<(String, u32), u64>,
+    clock: u64,
+    capacity: usize,
+}
+
+impl Default for TextMeasureCache {
+    fn default() -> Self {
+        Self {
+            widths: HashMap::new(),
+            last_used: HashMap::new(),
+            clock: 0,
+            capacity: 4096,
+        }
+    }
+}
+
+impl TextMeasureCache {
+    fn get(&mut self, key: &(String, u32)) -> Option<Dip> {
+        let width = self.widths.get(key).copied()?;
+        self.touch(key);
+        Some(width)
+    }
+
+    fn insert(&mut self, key: (String, u32), width: Dip) {
+        self.widths.insert(key.clone(), width);
+        self.touch(&key);
+        while self.widths.len() > self.capacity {
+            let Some(oldest) = self
+                .last_used
+                .iter()
+                .min_by_key(|(_, stamp)| *stamp)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            self.widths.remove(&oldest);
+            self.last_used.remove(&oldest);
+        }
+    }
+
+    fn touch(&mut self, key: &(String, u32)) {
+        self.clock = self.clock.wrapping_add(1);
+        self.last_used.insert(key.clone(), self.clock);
+    }
+}
 
 type GlyphKey = (usize, char, u32, u32);
 
 /// Measures text using the same system font used by the renderer.
 pub fn measure_text(text: &str, scale: u32) -> Dip {
     let scale = scale.max(1);
-    let cache = TEXT_MEASURE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(width) = cache
-        .lock()
-        .expect("text measure cache poisoned")
-        .get(&(text.to_owned(), scale))
-    {
-        return *width;
+    let key = (text.to_owned(), scale);
+    let cache = TEXT_MEASURE_CACHE.get_or_init(|| Mutex::new(TextMeasureCache::default()));
+    if let Some(width) = cache.lock().expect("text measure cache poisoned").get(&key) {
+        return width;
     }
     let fonts = cached_system_fonts();
     let width = if !fonts.is_empty() {
@@ -65,7 +113,7 @@ pub fn measure_text(text: &str, scale: u32) -> Dip {
     cache
         .lock()
         .expect("text measure cache poisoned")
-        .insert((text.to_owned(), scale), width);
+        .insert(key, width);
     width
 }
 
@@ -553,9 +601,7 @@ impl ResourceManager {
     }
 
     fn tessellate_path(&mut self, path: &IconPath) -> PathMesh {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        format!("{path:?}").hash(&mut hasher);
-        let key = hasher.finish();
+        let key = path_cache_key(path);
         self.touch_handle(ResourceHandle::Path(key));
         self.path_cache
             .entry(key)
@@ -757,6 +803,31 @@ impl Transform {
             },
         }
     }
+
+    fn inverse(self) -> Option<Self> {
+        let [a, b, c, d, tx, ty] = self.matrix;
+        let determinant = a * d - b * c;
+        (determinant.abs() > f32::EPSILON).then(|| Self {
+            matrix: [
+                d / determinant,
+                -b / determinant,
+                -c / determinant,
+                a / determinant,
+                (c * ty - d * tx) / determinant,
+                (b * tx - a * ty) / determinant,
+            ],
+        })
+    }
+
+    /// Expresses this world-space transform in `parent_world` local space.
+    /// Singular parents retain the original transform; they cannot define a
+    /// meaningful local coordinate system.
+    pub fn relative_to(self, parent_world: Self) -> Self {
+        parent_world
+            .inverse()
+            .map(|inverse| compose_transform(inverse, self))
+            .unwrap_or(self)
+    }
 }
 
 impl Default for Transform {
@@ -838,6 +909,68 @@ impl DirtyRegionSet {
     }
 }
 
+/// Backend-neutral change set for a retained scene. UI frameworks map their
+/// local widget identity to this stable numeric node identity before submit.
+#[derive(Clone, Default)]
+pub struct SceneUpdate {
+    dirty_nodes: BTreeMap<RenderNodeId, DirtyRegionSet>,
+    damage: DirtyRegionSet,
+    full_rebuild: bool,
+}
+
+impl SceneUpdate {
+    pub fn invalidate_node(&mut self, node: RenderNodeId, region: Rect) {
+        self.dirty_nodes.entry(node).or_default().add(region);
+        self.damage.add(region);
+    }
+    pub fn request_full_rebuild(&mut self) {
+        self.full_rebuild = true;
+    }
+    pub fn full_rebuild(&self) -> bool {
+        self.full_rebuild
+    }
+    pub fn is_empty(&self) -> bool {
+        !self.full_rebuild && self.dirty_nodes.is_empty() && self.damage.is_empty()
+    }
+    pub fn dirty_node_ids(&self) -> impl Iterator<Item = RenderNodeId> + '_ {
+        self.dirty_nodes.keys().copied()
+    }
+    pub fn node_regions(&self) -> impl Iterator<Item = (RenderNodeId, &[Rect])> {
+        self.dirty_nodes
+            .iter()
+            .map(|(id, regions)| (*id, regions.as_slice()))
+    }
+    pub fn damage_regions(&self) -> &[Rect] {
+        self.damage.as_slice()
+    }
+    pub fn add_damage(&mut self, region: Rect) {
+        self.damage.add(region);
+    }
+    pub fn extend_damage(&mut self, regions: impl IntoIterator<Item = Rect>) {
+        self.damage.extend(regions);
+    }
+    pub fn merge(&mut self, mut update: Self) {
+        self.full_rebuild |= update.full_rebuild;
+        self.damage.extend(
+            std::mem::take(&mut update.damage)
+                .as_slice()
+                .iter()
+                .copied(),
+        );
+        for (node, regions) in std::mem::take(&mut update.dirty_nodes) {
+            self.dirty_nodes
+                .entry(node)
+                .or_default()
+                .extend(regions.as_slice().iter().copied());
+        }
+    }
+    pub fn clear(&mut self) {
+        self.dirty_nodes.clear();
+        self.damage.clear();
+        self.full_rebuild = false;
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DirtyState {
     pub flags: DirtyFlags,
@@ -860,8 +993,8 @@ impl DirtyState {
 pub struct RenderNode {
     /// Bounds in the node's local coordinate system.
     pub local_bounds: Rect,
-    /// The originating widget identity, when this node was built by a Widget.
-    pub source_id: Option<u64>,
+    /// Stable identity of the originating widget or retained scene node.
+    pub id: Option<RenderNodeId>,
     pub transform: Transform,
     /// Node-owned clip scopes. They compose with inherited clips in order.
     pub clips: Vec<ClipShape>,
@@ -872,14 +1005,12 @@ pub struct RenderNode {
     /// Copy-on-write child storage. Reusing a clean subtree is therefore an
     /// Arc clone; only the dirty path detaches its child vector.
     pub children: Arc<Vec<Self>>,
-    /// `false` while the node still stores an absolute placement transform.
-    /// Cached nodes remain `true` when a parent subtree is rebuilt.
-    pub coordinates_normalized: bool,
     pub dirty: DirtyState,
 }
 
 #[derive(Clone, Debug)]
 struct RenderNodeItem {
+    node_id: Option<RenderNodeId>,
     bounds: Rect,
     transform: Transform,
     opacity: f32,
@@ -977,36 +1108,74 @@ impl SpatialIndex {
     }
 }
 
+/// Stable identity of a retained node. Widget-backed nodes use their WidgetId;
+/// paths are only an internal tree-location cache and must not be used as the
+/// node's identity by renderer caches or resources.
+pub type RenderNodeId = u64;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RenderNodeIndex {
-    paths: HashMap<u64, Vec<usize>>,
+    paths: HashMap<RenderNodeId, Vec<usize>>,
+    ids_by_path: BTreeMap<Vec<usize>, RenderNodeId>,
 }
 
 impl RenderNodeIndex {
-    pub fn path_for(&self, source_id: u64) -> Option<&[usize]> {
-        self.paths.get(&source_id).map(Vec::as_slice)
+    pub fn path_for(&self, node_id: RenderNodeId) -> Option<&[usize]> {
+        self.paths.get(&node_id).map(Vec::as_slice)
     }
 
-    pub fn node<'a>(&self, root: &'a RenderNode, source_id: u64) -> Option<&'a RenderNode> {
+    pub fn node<'a>(&self, root: &'a RenderNode, node_id: RenderNodeId) -> Option<&'a RenderNode> {
         let mut node = root;
-        for index in self.path_for(source_id)? {
+        for index in self.path_for(node_id)? {
             node = node.children.get(*index)?;
         }
         Some(node)
     }
+
+    /// Updates only changed subtrees after a retained-tree rebuild. Structural
+    /// changes use an empty path (the root) and therefore intentionally
+    /// rebuild the complete index.
+    pub fn update_subtrees(&mut self, root: &RenderNode, paths: &[Vec<usize>]) {
+        for prefix in paths {
+            loop {
+                let path = self
+                    .ids_by_path
+                    .range(prefix.clone()..)
+                    .next()
+                    .map(|(path, _)| path.clone());
+                let Some(path) = path.filter(|path| path_starts_with(path, prefix)) else {
+                    break;
+                };
+                if let Some(id) = self.ids_by_path.remove(&path) {
+                    self.paths.remove(&id);
+                }
+            }
+            let Some(node) = node_at_path(root, prefix) else {
+                continue;
+            };
+            let mut path = prefix.clone();
+            node.index_into(self, &mut path);
+        }
+    }
+}
+
+fn node_at_path<'a>(mut node: &'a RenderNode, path: &[usize]) -> Option<&'a RenderNode> {
+    for index in path {
+        node = node.children.get(*index)?;
+    }
+    Some(node)
 }
 
 impl RenderNode {
     pub fn new(bounds: Rect) -> Self {
         Self {
             local_bounds: bounds,
-            source_id: None,
+            id: None,
             transform: Transform::IDENTITY,
             clips: Vec::new(),
             opacity: 1.0,
             commands: Arc::new(Vec::new()),
             children: Arc::new(Vec::new()),
-            coordinates_normalized: false,
             dirty: DirtyState {
                 flags: DirtyFlags::LAYOUT.union(DirtyFlags::PAINT),
                 regions: DirtyRegionSet::new(),
@@ -1046,13 +1215,13 @@ impl RenderNode {
         force_rebuild: bool,
     ) -> Self {
         let can_match = previous
-            .map(|previous| previous.source_id == self.source_id)
+            .map(|previous| previous.id == self.id)
             .unwrap_or(false);
         if can_match && !force_rebuild && dirty_paths.is_empty() {
             return previous.expect("previous node exists when matched").clone();
         }
 
-        if let Some(previous) = previous.filter(|previous| previous.source_id == self.source_id) {
+        if let Some(previous) = previous.filter(|previous| previous.id == self.id) {
             let old_children = &previous.children;
             let children = std::mem::take(Arc::make_mut(&mut self.children));
             self.children = Arc::new(
@@ -1079,8 +1248,9 @@ impl RenderNode {
     }
 
     fn index_into(&self, index: &mut RenderNodeIndex, path: &mut Vec<usize>) {
-        if let Some(source_id) = self.source_id {
-            index.paths.insert(source_id, path.clone());
+        if let Some(id) = self.id {
+            index.paths.insert(id, path.clone());
+            index.ids_by_path.insert(path.clone(), id);
         }
         for (child_index, child) in self.children.iter().enumerate() {
             path.push(child_index);
@@ -1158,67 +1328,20 @@ impl RenderNode {
         self.mark_dirty(DirtyFlags::PAINT);
     }
 
-    pub fn set_source_id(&mut self, source_id: u64) {
-        self.source_id = Some(source_id);
+    pub fn set_id(&mut self, id: RenderNodeId) {
+        self.id = Some(id);
+    }
+
+    /// Converts a world-space placement emitted by layout into a transform
+    /// relative to `parent_world`. Rendering stores only the resulting local
+    /// transform; this conversion is performed exactly once while building a
+    /// node, never as a post-build tree walk.
+    pub fn localize_to_parent(&mut self, parent_world: Transform) {
+        self.transform = self.transform.relative_to(parent_world);
     }
 
     pub fn world_bounds(&self) -> Rect {
         self.transform.rect(self.local_bounds)
-    }
-
-    /// Stable fingerprint for retained GPU resources. It changes when this
-    /// node's commands, state, placement, or any descendant changes.
-    pub fn gpu_cache_key(&self) -> u64 {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.local_gpu_cache_key().hash(&mut hasher);
-        for child in self.children.iter() {
-            child.gpu_cache_key().hash(&mut hasher);
-        }
-        hasher.finish()
-    }
-
-    fn local_gpu_cache_key(&self) -> u64 {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        format!(
-            "{:?}{:?}{:?}{:?}{:?}{:?}",
-            self.source_id,
-            self.local_bounds,
-            self.transform,
-            self.clips,
-            self.opacity,
-            &self.commands
-        )
-        .hash(&mut hasher);
-        hasher.finish()
-    }
-
-    /// Converts a tree whose nodes were arranged in window coordinates into
-    /// local bounds plus transforms relative to the immediate parent.
-    pub fn normalize_local_coordinates(&mut self) {
-        self.normalize_from(Point::default());
-    }
-
-    fn normalize_from(&mut self, parent_world_origin: Point) {
-        // A shared cached subtree is already local to its direct parent. It
-        // needs no recursive pass when a clean ancestor is reused.
-        if self.coordinates_normalized {
-            return;
-        }
-        let world_origin = if self.coordinates_normalized {
-            Point {
-                x: Dip(parent_world_origin.x.0 + self.transform.matrix[4]),
-                y: Dip(parent_world_origin.y.0 + self.transform.matrix[5]),
-            }
-        } else {
-            let world_origin = self.transform.point(Point::default());
-            self.transform.matrix[4] -= parent_world_origin.x.0;
-            self.transform.matrix[5] -= parent_world_origin.y.0;
-            self.coordinates_normalized = true;
-            world_origin
-        };
-        for child in Arc::make_mut(&mut self.children) {
-            child.normalize_from(world_origin);
-        }
     }
 
     pub fn set_clip(&mut self, clip: Option<ClipShape>) {
@@ -1362,6 +1485,7 @@ fn build_render_item(
     }
     let inherited_clips = clips.clone();
     let item = RenderNodeItem {
+        node_id: node.id,
         bounds: clip
             .map(|clip| intersect_rect(transform.rect(node.local_bounds), clip))
             .unwrap_or_else(|| transform.rect(node.local_bounds)),
@@ -1554,8 +1678,8 @@ impl RenderNodeBuilder {
         self
     }
 
-    pub fn source_id(&mut self, source_id: u64) -> &mut Self {
-        self.node.set_source_id(source_id);
+    pub fn id(&mut self, id: RenderNodeId) -> &mut Self {
+        self.node.set_id(id);
         self
     }
 
@@ -1609,11 +1733,6 @@ struct SurfaceState {
     direct_copy_present: bool,
     scale_factor: ScaleFactor,
     has_contents: bool,
-    /// GPU vertex buffers keyed by the retained render-node/display-list
-    /// fingerprint. Unchanged nodes reuse their buffers across frames.
-    node_gpu_cache: HashMap<u64, GpuBatchCacheEntry>,
-    cache_clock: u64,
-    max_gpu_cache_entries: usize,
     /// Retained renderer items. A clean RenderNode reuses this ordered list
     /// without walking the widget/render tree again.
     retained_items: Option<BTreeMap<Vec<usize>, RenderNodeItem>>,
@@ -1745,6 +1864,10 @@ impl TileSubmissionIndex {
         items: &BTreeMap<Vec<usize>, RenderNodeItem>,
         paths: &[Vec<usize>],
     ) {
+        // Reinserted paths land at the end of each tile vector. Track only
+        // affected tiles and restore RenderNode-path order before replay:
+        // retained tree order is the paint order.
+        let mut touched_tiles = BTreeSet::new();
         for prefix in paths {
             loop {
                 let path = self
@@ -1757,6 +1880,7 @@ impl TileSubmissionIndex {
                 };
                 if let Some(tiles) = self.path_tiles.remove(&path) {
                     for tile in tiles {
+                        touched_tiles.insert(tile);
                         if let Some(entries) = self.tiles.get_mut(&tile) {
                             entries.retain(|entry| entry != &path);
                             if entries.is_empty() {
@@ -1770,7 +1894,18 @@ impl TileSubmissionIndex {
                 if !path_starts_with(path, prefix) {
                     break;
                 }
-                self.insert(path.clone(), item.bounds);
+                let tiles = self.tiles_for(item.bounds);
+                for tile in &tiles {
+                    touched_tiles.insert(*tile);
+                    self.tiles.entry(*tile).or_default().push(path.clone());
+                }
+                self.path_tiles.insert(path.clone(), tiles);
+            }
+        }
+        for tile in touched_tiles {
+            if let Some(paths) = self.tiles.get_mut(&tile) {
+                paths.sort_unstable();
+                paths.dedup();
             }
         }
     }
@@ -1826,15 +1961,11 @@ impl TileSubmissionIndex {
     }
 }
 
-struct GpuBatchCacheEntry {
-    batches: Vec<GpuBatch>,
-    vertex_allocations: Vec<VertexArenaAllocation>,
-    index_allocations: Vec<IndexArenaAllocation>,
-    last_used: u64,
-}
-
 #[derive(Clone)]
 struct RetainedGpuItem {
+    /// Stable retained-node identity. The path is only used to preserve tree
+    /// paint order and to locate a subtree during a structural edit.
+    node_id: Option<RenderNodeId>,
     bounds: Rect,
     batches: Vec<GpuBatch>,
     /// Allocations are owned by this retained node and released when its
@@ -1845,14 +1976,21 @@ struct RetainedGpuItem {
     resources: Vec<ResourceHandle>,
 }
 
-/// Persistent, path-addressable GPU submission table.
+/// Persistent, path-ordered GPU submission table.
 ///
-/// A segment owns the clip resets required by one retained node. Keeping that
-/// scope local means replacing a node never requires regrouping unrelated
-/// nodes merely to repair clip state at a global-batch boundary.
+/// The table deliberately owns no `GpuBatch`. GPU allocations belong solely
+/// to `RetainedGpuItem`, so replacing a dirty subtree cannot leave a second
+/// cloned submission list keeping old arena ranges alive. Paths provide paint
+/// order; `node_id` is the stable lookup key exposed to the retained system.
 #[derive(Default)]
 struct RetainedSubmissionTable {
-    segments: BTreeMap<Vec<usize>, Vec<GpuBatch>>,
+    segments: BTreeMap<Vec<usize>, RetainedSubmissionEntry>,
+}
+
+#[derive(Clone, Copy)]
+struct RetainedSubmissionEntry {
+    node_id: Option<RenderNodeId>,
+    has_clip: bool,
 }
 
 impl RetainedSubmissionTable {
@@ -1883,32 +2021,72 @@ impl RetainedSubmissionTable {
                 if !path_starts_with(path, prefix) {
                     break;
                 }
-                self.segments.insert(path.clone(), submission_segment(item));
+                self.segments.insert(
+                    path.clone(),
+                    RetainedSubmissionEntry {
+                        node_id: item.node_id,
+                        has_clip: item
+                            .batches
+                            .iter()
+                            .any(|batch| matches!(batch, GpuBatch::Clip(_, _, _))),
+                    },
+                );
             }
         }
     }
 
-    fn for_each_batch(&self, mut visit: impl FnMut(&GpuBatch)) {
-        for segment in self.segments.values() {
-            for batch in segment {
-                visit(batch);
-            }
-        }
-    }
-
-    fn for_each_batch_mut(&mut self, mut visit: impl FnMut(&mut GpuBatch)) {
-        for segment in self.segments.values_mut() {
-            for batch in segment {
-                visit(batch);
-            }
+    fn for_each_entry(&self, mut visit: impl FnMut(&[usize], RetainedSubmissionEntry)) {
+        for (path, entry) in &self.segments {
+            visit(path, *entry);
         }
     }
 }
 
-fn path_resource_handle(path: &IconPath) -> ResourceHandle {
+/// Hashes path structure without formatting or allocation. The key is shared
+/// by path tessellation and retained resource accounting, so equivalent paths
+/// always address the same cache entry.
+fn path_cache_key(path: &IconPath) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    format!("{path:?}").hash(&mut hasher);
-    ResourceHandle::Path(hasher.finish())
+    path.fill_rule.hash(&mut hasher);
+    path.commands.len().hash(&mut hasher);
+    for command in &path.commands {
+        match command {
+            PathCommand::MoveTo(point) => {
+                0_u8.hash(&mut hasher);
+                hash_path_point(&mut hasher, *point);
+            }
+            PathCommand::LineTo(point) => {
+                1_u8.hash(&mut hasher);
+                hash_path_point(&mut hasher, *point);
+            }
+            PathCommand::QuadTo { control, to } => {
+                2_u8.hash(&mut hasher);
+                hash_path_point(&mut hasher, *control);
+                hash_path_point(&mut hasher, *to);
+            }
+            PathCommand::CubicTo {
+                control1,
+                control2,
+                to,
+            } => {
+                3_u8.hash(&mut hasher);
+                hash_path_point(&mut hasher, *control1);
+                hash_path_point(&mut hasher, *control2);
+                hash_path_point(&mut hasher, *to);
+            }
+            PathCommand::Close => 4_u8.hash(&mut hasher),
+        }
+    }
+    hasher.finish()
+}
+
+fn hash_path_point(hasher: &mut impl Hasher, point: Point) {
+    point.x.0.to_bits().hash(hasher);
+    point.y.0.to_bits().hash(hasher);
+}
+
+fn path_resource_handle(path: &IconPath) -> ResourceHandle {
+    ResourceHandle::Path(path_cache_key(path))
 }
 
 fn item_resource_handles(item: &RenderNodeItem) -> Vec<ResourceHandle> {
@@ -2343,52 +2521,6 @@ struct TransformBinding {
     last_used: u64,
 }
 
-fn take_gpu_cache(state: &mut SurfaceState, key: u64) -> Option<Vec<GpuBatch>> {
-    state.cache_clock = state.cache_clock.wrapping_add(1);
-    state.node_gpu_cache.remove(&key).map(|entry| entry.batches)
-}
-
-fn insert_gpu_cache(state: &mut SurfaceState, key: u64, batches: Vec<GpuBatch>) {
-    state.cache_clock = state.cache_clock.wrapping_add(1);
-    let last_used = state.cache_clock;
-    let vertex_allocations = batch_vertex_allocations(&batches);
-    let index_allocations = batch_index_allocations(&batches);
-    if let Some(replaced) = state.node_gpu_cache.insert(
-        key,
-        GpuBatchCacheEntry {
-            batches,
-            vertex_allocations,
-            index_allocations,
-            last_used,
-        },
-    ) {
-        for allocation in replaced.vertex_allocations {
-            state.vertex_arenas.release(allocation);
-        }
-        for allocation in replaced.index_allocations {
-            state.index_arena.release(allocation);
-        }
-    }
-    while state.node_gpu_cache.len() > state.max_gpu_cache_entries {
-        let Some(oldest_key) = state
-            .node_gpu_cache
-            .iter()
-            .min_by_key(|(_, entry)| entry.last_used)
-            .map(|(key, _)| *key)
-        else {
-            break;
-        };
-        if let Some(evicted) = state.node_gpu_cache.remove(&oldest_key) {
-            for allocation in evicted.vertex_allocations {
-                state.vertex_arenas.release(allocation);
-            }
-            for allocation in evicted.index_allocations {
-                state.index_arena.release(allocation);
-            }
-        }
-    }
-}
-
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct RectVertex {
@@ -2492,7 +2624,6 @@ enum GpuBatch {
         Option<IndirectDrawRange>,
     ),
     Clip(ClipGeometry, Option<ClipGpuGeometry>, Transform),
-    Scissor(Rect),
 }
 
 fn gpu_batch_transform(batch: &GpuBatch) -> Option<Transform> {
@@ -2500,16 +2631,17 @@ fn gpu_batch_transform(batch: &GpuBatch) -> Option<Transform> {
         GpuBatch::Draw(_, _, _, transform)
         | GpuBatch::DrawGroup(_, _, transform, _)
         | GpuBatch::Clip(_, _, transform) => Some(*transform),
-        GpuBatch::Scissor(_) => None,
     }
 }
 
-/// A replay entry either owns transient batches or borrows immutable retained
-/// batches. Dirty-tile replay uses the borrowed form so it never clones the
-/// node's draw lists just to encode a frame.
+/// A replay entry borrows immutable retained batches. Dirty-tile replay never
+/// clones a node's draw lists merely to encode a frame.
 enum ReplayBatch<'a> {
-    Owned(GpuBatch),
     Borrowed(&'a GpuBatch),
+    /// A submission-time merge of adjacent retained indirect groups. The
+    /// first batch supplies the material and arena pages; the range spans
+    /// compatible commands from one or more retained nodes.
+    BorrowedIndirectRun(&'a GpuBatch, IndirectDrawRange),
     Scissor(Rect),
     ResetClip,
 }
@@ -2517,9 +2649,16 @@ enum ReplayBatch<'a> {
 impl ReplayBatch<'_> {
     fn batch(&self) -> Option<&GpuBatch> {
         match self {
-            Self::Owned(batch) => Some(batch),
             Self::Borrowed(batch) => Some(*batch),
+            Self::BorrowedIndirectRun(batch, _) => Some(*batch),
             Self::Scissor(_) | Self::ResetClip => None,
+        }
+    }
+
+    fn indirect_override(&self) -> Option<IndirectDrawRange> {
+        match self {
+            Self::BorrowedIndirectRun(_, range) => Some(*range),
+            Self::Borrowed(_) | Self::Scissor(_) | Self::ResetClip => None,
         }
     }
 }
@@ -2528,6 +2667,43 @@ impl ReplayBatch<'_> {
 struct IndirectDrawRange {
     offset: u64,
     count: u32,
+}
+
+fn indirect_draw_range(batch: &GpuBatch) -> Option<IndirectDrawRange> {
+    match batch {
+        GpuBatch::DrawGroup(_, _, _, range) => *range,
+        GpuBatch::Draw(..) | GpuBatch::Clip(..) => None,
+    }
+}
+
+/// Returns a single indirect range only when one multi-draw call can use the
+/// previous batch's pipeline, transform, vertex page and index page for both
+/// command ranges. Clip and scissor commands are never candidates.
+fn merge_indirect_draw_ranges(
+    previous: &GpuBatch,
+    previous_range: IndirectDrawRange,
+    next: &GpuBatch,
+    next_range: IndirectDrawRange,
+) -> Option<IndirectDrawRange> {
+    let (
+        GpuBatch::DrawGroup(previous_kind, previous_draws, previous_transform, _),
+        GpuBatch::DrawGroup(next_kind, next_draws, next_transform, _),
+    ) = (previous, next)
+    else {
+        return None;
+    };
+    let ((previous_vertices, previous_indices), (next_vertices, next_indices)) =
+        previous_draws.first().zip(next_draws.first())?;
+    let stride = std::mem::size_of::<wgpu::util::DrawIndexedIndirectArgs>() as u64;
+    (same_batch_material(previous_kind, next_kind)
+        && previous_transform == next_transform
+        && previous_vertices.page == next_vertices.page
+        && previous_indices.page == next_indices.page
+        && previous_range.offset + previous_range.count as u64 * stride == next_range.offset)
+        .then_some(IndirectDrawRange {
+            offset: previous_range.offset,
+            count: previous_range.count + next_range.count,
+        })
 }
 
 #[derive(Clone)]
@@ -2618,33 +2794,6 @@ fn merge_batch_resources(into: &mut BatchKind, from: &BatchKind) {
     }
 }
 
-fn submission_segment(item: &RetainedGpuItem) -> Vec<GpuBatch> {
-    let has_clip = item
-        .batches
-        .iter()
-        .any(|batch| matches!(batch, GpuBatch::Clip(_, _, _)));
-    let mut batches = Vec::with_capacity(item.batches.len() + usize::from(has_clip) * 2);
-    if has_clip {
-        batches.push(GpuBatch::Clip(
-            ClipGeometry::Reset,
-            None,
-            Transform::IDENTITY,
-        ));
-    }
-    batches.extend(item.batches.iter().cloned());
-    if has_clip {
-        batches.push(GpuBatch::Clip(
-            ClipGeometry::Reset,
-            None,
-            Transform::IDENTITY,
-        ));
-    }
-    // GPU batches have already been grouped within this retained node. Do
-    // not join adjacent nodes here: doing so makes one dirty node force a
-    // full-scene submission rebuild to repair the cross-node group.
-    batches
-}
-
 fn vertex_stride(kind: &BatchKind) -> u64 {
     match kind {
         BatchKind::Rect => std::mem::size_of::<RectVertex>() as u64,
@@ -2718,7 +2867,7 @@ fn batch_vertex_allocations(batches: &[GpuBatch]) -> Vec<VertexArenaAllocation> 
             GpuBatch::DrawGroup(_, draws, _, _) => {
                 draws.iter().map(|(vertices, _)| vertices.clone()).collect()
             }
-            GpuBatch::Clip(_, None, _) | GpuBatch::Scissor(_) => Vec::new(),
+            GpuBatch::Clip(_, None, _) => Vec::new(),
         })
         .collect()
 }
@@ -2739,7 +2888,7 @@ fn batch_index_allocations(batches: &[GpuBatch]) -> Vec<IndexArenaAllocation> {
             GpuBatch::DrawGroup(_, draws, _, _) => {
                 draws.iter().map(|(_, indices)| indices.clone()).collect()
             }
-            GpuBatch::Clip(_, _, _) | GpuBatch::Scissor(_) => Vec::new(),
+            GpuBatch::Clip(_, _, _) => Vec::new(),
         })
         .collect()
 }
@@ -3145,9 +3294,6 @@ impl Renderer {
                 direct_copy_present,
                 scale_factor,
                 has_contents: false,
-                node_gpu_cache: HashMap::new(),
-                cache_clock: 0,
-                max_gpu_cache_entries: 256,
                 retained_items: None,
                 retained_gpu_items: None,
                 retained_submission_batches: None,
@@ -3234,9 +3380,6 @@ impl Renderer {
                 direct_copy_present,
                 scale_factor,
                 has_contents: false,
-                node_gpu_cache: HashMap::new(),
-                cache_clock: 0,
-                max_gpu_cache_entries: 256,
                 retained_items: None,
                 retained_gpu_items: None,
                 retained_submission_batches: None,
@@ -3279,7 +3422,6 @@ impl Renderer {
         state.blit_bind_group =
             create_blit_bind_group(&self.device, &state.blit_pipeline, &state.canvas_view);
         state.has_contents = false;
-        state.node_gpu_cache.clear();
         state.transform_bindings.clear();
         state.transform_binding_clock = 0;
         state.retained_items = None;
@@ -3299,7 +3441,6 @@ impl Renderer {
         state.spatial_index = None;
         state.tile_submission_index = None;
         state.last_frame_stats = FrameStats::default();
-        state.cache_clock = 0;
         Ok(())
     }
 
@@ -3516,47 +3657,16 @@ impl Renderer {
         RenderBatch::Clip(geometry, transform)
     }
 
-    fn render_commands_with_damage_regions_key(
+    /// Replays the retained GPU scene into the persistent canvas and presents
+    /// it. Immediate command-list rendering is intentionally absent: all
+    /// widgets enter through `RenderNode` and therefore share one resource,
+    /// dirty-state and allocation lifecycle.
+    fn render_retained_scene_with_damage_regions(
         &mut self,
         window: WindowId,
-        commands: &[PaintCommand],
         damage_regions: &[Rect],
-        cache_key: Option<u64>,
-        segments: Option<&[RenderNodeItem]>,
+        clear: Color,
     ) -> Result<(), RenderError> {
-        PaintCommand::validate_sequence(commands)?;
-        for command in commands {
-            if let PaintCommand::Image { image, .. } = command {
-                if !self.resources.contains_image(*image) {
-                    return Err(RenderError::MissingImage(*image));
-                }
-            }
-        }
-        let (render_size, render_scale_factor) = {
-            let surface = self
-                .surfaces
-                .get(&window)
-                .ok_or(RenderError::SurfaceNotAttached(window))?;
-            let scale = surface.scale_factor.0.max(1.0);
-            (
-                PhysicalSize {
-                    width: (surface.size.width as f64 / scale).round().max(1.0) as u32,
-                    height: (surface.size.height as f64 / scale).round().max(1.0) as u32,
-                },
-                surface.scale_factor.0 as f32,
-            )
-        };
-        let batches = if segments.is_none() {
-            Some(self.build_render_batches(
-                commands,
-                render_size,
-                render_scale_factor,
-                Transform::IDENTITY,
-                1.0,
-            ))
-        } else {
-            None
-        };
         let state = self
             .surfaces
             .get_mut(&window)
@@ -3564,10 +3674,10 @@ impl Renderer {
         // Temporarily move retained GPU items out of SurfaceState. This keeps
         // the replay table stable while the pass mutates other per-surface
         // caches (transform bindings) without cloning every node batch.
-        let retained_gpu_items = segments
-            .is_some()
-            .then(|| state.retained_gpu_items.take())
-            .flatten();
+        let mut retained_gpu_items = state
+            .retained_gpu_items
+            .take()
+            .expect("retained scene is prepared before replay");
         // An empty damage list means full invalidation at the UI layer. On a
         // newly attached (or resized) surface, make that explicit so the
         // first frame cannot take a partial replay/composite path.
@@ -3597,153 +3707,44 @@ impl Renderer {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let batch_hash = cache_key.unwrap_or_else(|| command_list_hash(commands));
-        let clear = commands
-            .iter()
-            .rev()
-            .find_map(|command| match command {
-                PaintCommand::Clear(color) => Some(wgpu::Color {
-                    r: color.r as f64,
-                    g: color.g as f64,
-                    b: color.b as f64,
-                    a: color.a as f64,
-                }),
-                _ => None,
-            })
-            .unwrap_or(wgpu::Color {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 1.0,
-            });
+        let clear = wgpu::Color {
+            r: clear.r as f64,
+            g: clear.g as f64,
+            b: clear.b as f64,
+            a: clear.a as f64,
+        };
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("zui-render frame"),
             });
-        let mut transient_indirect_allocations = Vec::new();
         {
-            let node_batches = segments.map(|_| {
-                retained_gpu_items
-                    .as_ref()
-                    .expect("retained GPU batches are prepared before replay")
-            });
-            // Retained scenes are queried directly below. In particular, do
-            // not materialize an all-node batch list before a partial replay.
-            let mut transient_gpu_batches = node_batches.is_none().then(|| {
-                take_gpu_cache(state, batch_hash).unwrap_or_else(|| {
-                    build_gpu_batches(
-                        &self.device,
-                        &self.queue,
-                        &mut state.vertex_arenas,
-                        &mut state.index_arena,
-                        batches.expect("command batches are built without node items"),
-                    )
-                })
-            });
             // An arena growth replaces its backing buffer. Re-upload the
             // persistent full submission table once before borrowing partial
             // node spans from it again.
             if self.indirect_execution && state.indirect_arena.needs_reupload {
-                if let Some(submissions) = state.retained_submission_batches.as_mut() {
+                if let Some(submissions) = state.retained_submission_batches.as_ref() {
+                    let items = &mut retained_gpu_items;
                     // `prepare_indirect_draws` consumes this flag. Segments
                     // are visited independently, so restore it for every
                     // segment batch that must rewrite its existing command
                     // range after an arena buffer growth.
-                    submissions.for_each_batch_mut(|batch| {
+                    submissions.for_each_entry(|path, _| {
+                        let Some(item) = items.get_mut(path) else {
+                            return;
+                        };
                         state.indirect_arena.needs_reupload = true;
-                        transient_indirect_allocations.extend(prepare_indirect_draws(
-                            std::slice::from_mut(batch),
+                        let _ = prepare_indirect_draws(
+                            &mut item.batches,
                             &mut state.indirect_arena,
                             &self.device,
                             &self.queue,
                             true,
-                        ));
+                        );
                     });
                 }
             }
-            let mut replay_batches: Vec<ReplayBatch<'_>> =
-                if state.has_contents && !damage_regions.is_empty() {
-                    if let Some(node_batches) = &node_batches {
-                        // Retained partial replay is encoded straight from the
-                        // tile index below. Do not materialize a per-frame
-                        // Vec<ReplayBatch> proportional to visible nodes.
-                        let _ = node_batches;
-                        Vec::new()
-                    } else {
-                        let gpu_batches = transient_gpu_batches
-                            .as_ref()
-                            .expect("transient batches exist without retained nodes");
-                        let batches = damage_regions
-                            .iter()
-                            .flat_map(|region| {
-                                std::iter::once(GpuBatch::Scissor(*region))
-                                    .chain(gpu_batches.iter().cloned())
-                            })
-                            .collect::<Vec<_>>();
-                        group_ordered_draws(batches)
-                            .into_iter()
-                            .map(ReplayBatch::Owned)
-                            .collect()
-                    }
-                } else {
-                    if let Some(node_batches) = &node_batches {
-                        // The full retained scene is also borrowed from the
-                        // persistent submission table during encoding.
-                        let _ = node_batches;
-                        Vec::new()
-                    } else {
-                        let batches = transient_gpu_batches
-                            .as_ref()
-                            .expect("transient batches exist without retained nodes")
-                            .clone();
-                        group_ordered_draws(batches)
-                            .into_iter()
-                            .map(ReplayBatch::Owned)
-                            .collect()
-                    }
-                };
-            if self.indirect_execution
-                && !matches!(
-                    replay_batches.first(),
-                    Some(ReplayBatch::Borrowed(_)) | Some(ReplayBatch::Scissor(_))
-                )
-            {
-                let mut owned_batches = replay_batches
-                    .drain(..)
-                    .filter_map(|entry| match entry {
-                        ReplayBatch::Owned(batch) => Some(batch),
-                        ReplayBatch::Scissor(rect) => Some(GpuBatch::Scissor(rect)),
-                        ReplayBatch::Borrowed(_) | ReplayBatch::ResetClip => None,
-                    })
-                    .collect::<Vec<_>>();
-                transient_indirect_allocations = prepare_indirect_draws(
-                    &mut owned_batches,
-                    &mut state.indirect_arena,
-                    &self.device,
-                    &self.queue,
-                    true,
-                );
-                replay_batches = owned_batches.into_iter().map(ReplayBatch::Owned).collect();
-            }
             frame_stats.replay_entry_count = 0;
-            for batch in &replay_batches {
-                let transform = match batch.batch() {
-                    Some(batch) => match batch {
-                        GpuBatch::Draw(_, _, _, transform)
-                        | GpuBatch::DrawGroup(_, _, transform, _)
-                        | GpuBatch::Clip(_, _, transform) => Some(*transform),
-                        GpuBatch::Scissor(_) => None,
-                    },
-                    None => None,
-                };
-                if let Some(transform) = transform {
-                    // Persisted in SurfaceState; the render pass below reads
-                    // the binding directly and does not need a per-frame
-                    // HashMap of cloned bind-group handles.
-                    transform_bind_group_for(state, &self.device, transform, render_size);
-                }
-            }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("zui-render clear pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -3781,10 +3782,7 @@ impl Renderer {
                 frame_stats.replay_entry_count += 1;
                 let scissor = match replay {
                     ReplayBatch::Scissor(region) => Some(*region),
-                    _ => replay.batch().and_then(|batch| match batch {
-                        GpuBatch::Scissor(region) => Some(*region),
-                        _ => None,
-                    }),
+                    _ => None,
                 };
                 if let Some(region) = scissor {
                     active_clip = None;
@@ -3818,6 +3816,7 @@ impl Renderer {
                 let batch = replay
                     .batch()
                     .expect("non-control replay entry contains a GPU batch");
+                let indirect_override = replay.indirect_override();
                 if let GpuBatch::Clip(geometry, mask, transform) = batch {
                     // Axis-aligned rectangular clips are represented exactly
                     // by the pass scissor. Avoiding a stencil mask here saves
@@ -3920,12 +3919,12 @@ impl Renderer {
                     GpuBatch::DrawGroup(kind, draws, transform, indirect) => {
                         (kind, draws.as_slice(), *transform, *indirect)
                     }
-                    // Every CPU batch is normalized by `group_ordered_draws`
-                    // before replay; retained submissions never allocate a
-                    // temporary vector of draw references here.
+                    // Every retained CPU batch is normalized by
+                    // `group_ordered_draws` before replay.
                     GpuBatch::Draw(..) => unreachable!("draw batches are grouped before replay"),
                     _ => return,
                 };
+                let indirect = indirect_override.or(indirect);
                 let scissor = intersect_clip(active_clip, active_damage);
                 set_scissor(&mut pass, scissor, state.size, state.scale_factor);
                 pass.set_stencil_reference(active_clip_depth);
@@ -4047,58 +4046,116 @@ impl Renderer {
                     }
                 }
             };
-            if let Some(node_batches) = node_batches {
-                if state.has_contents && !damage_regions.is_empty() {
-                    let index = state
-                        .tile_submission_index
-                        .as_ref()
-                        .expect("retained GPU items always have a tile submission index");
-                    for region in damage_regions {
-                        encode_replay(&ReplayBatch::Scissor(*region));
-                        frame_stats.retained_candidate_count +=
-                            index.for_each_borrowed(*region, |path| {
-                                let Some(item) = node_batches.get(path) else {
-                                    return;
-                                };
-                                if !rect_intersects(item.bounds, *region) {
-                                    return;
-                                }
-                                let has_clip = item
-                                    .batches
-                                    .iter()
-                                    .any(|batch| matches!(batch, GpuBatch::Clip(_, _, _)));
-                                if has_clip {
-                                    encode_replay(&ReplayBatch::ResetClip);
-                                }
-                                for batch in &item.batches {
-                                    encode_replay(&ReplayBatch::Borrowed(batch));
-                                }
-                                if has_clip {
-                                    encode_replay(&ReplayBatch::ResetClip);
-                                }
-                            });
+            let node_batches = &retained_gpu_items;
+            if state.has_contents && !damage_regions.is_empty() {
+                let index = state
+                    .tile_submission_index
+                    .as_ref()
+                    .expect("retained GPU items always have a tile submission index");
+                for region in damage_regions {
+                    encode_replay(&ReplayBatch::Scissor(*region));
+                    // A scissor starts an independent replay scope. Within
+                    // that scope retain the same cross-node multi-draw
+                    // coalescing used by a full scene replay.
+                    let mut pending_indirect: Option<(&GpuBatch, IndirectDrawRange)> = None;
+                    macro_rules! flush_tile_indirect {
+                        () => {
+                            if let Some((batch, range)) = pending_indirect.take() {
+                                encode_replay(&ReplayBatch::BorrowedIndirectRun(batch, range));
+                            }
+                        };
                     }
-                } else {
-                    let table = state
-                        .retained_submission_batches
-                        .as_ref()
-                        .expect("retained GPU batches have a submission table");
-                    table.for_each_batch(|batch| encode_replay(&ReplayBatch::Borrowed(batch)));
+                    frame_stats.retained_candidate_count +=
+                        index.for_each_borrowed(*region, |path| {
+                            let Some(item) = node_batches.get(path) else {
+                                return;
+                            };
+                            if !rect_intersects(item.bounds, *region) {
+                                return;
+                            }
+                            let has_clip = item
+                                .batches
+                                .iter()
+                                .any(|batch| matches!(batch, GpuBatch::Clip(_, _, _)));
+                            if has_clip {
+                                flush_tile_indirect!();
+                                encode_replay(&ReplayBatch::ResetClip);
+                            }
+                            for batch in &item.batches {
+                                let Some(range) = indirect_draw_range(batch) else {
+                                    flush_tile_indirect!();
+                                    encode_replay(&ReplayBatch::Borrowed(batch));
+                                    continue;
+                                };
+                                if let Some((previous, previous_range)) = pending_indirect {
+                                    if let Some(merged) = merge_indirect_draw_ranges(
+                                        previous,
+                                        previous_range,
+                                        batch,
+                                        range,
+                                    ) {
+                                        pending_indirect = Some((previous, merged));
+                                        continue;
+                                    }
+                                    flush_tile_indirect!();
+                                }
+                                pending_indirect = Some((batch, range));
+                            }
+                            if has_clip {
+                                flush_tile_indirect!();
+                                encode_replay(&ReplayBatch::ResetClip);
+                            }
+                        });
+                    flush_tile_indirect!();
                 }
             } else {
-                for replay in &replay_batches {
-                    encode_replay(replay);
+                let table = state
+                    .retained_submission_batches
+                    .as_ref()
+                    .expect("retained GPU batches have a submission table");
+                let mut pending_indirect: Option<(&GpuBatch, IndirectDrawRange)> = None;
+                macro_rules! flush_pending_indirect {
+                    () => {
+                        if let Some((batch, range)) = pending_indirect.take() {
+                            encode_replay(&ReplayBatch::BorrowedIndirectRun(batch, range));
+                        }
+                    };
                 }
+                table.for_each_entry(|path, entry| {
+                    let Some(item) = node_batches.get(path) else {
+                        return;
+                    };
+                    debug_assert_eq!(entry.node_id, item.node_id);
+                    if entry.has_clip {
+                        flush_pending_indirect!();
+                        encode_replay(&ReplayBatch::ResetClip);
+                    }
+                    for batch in &item.batches {
+                        let Some(range) = indirect_draw_range(batch) else {
+                            flush_pending_indirect!();
+                            encode_replay(&ReplayBatch::Borrowed(batch));
+                            continue;
+                        };
+                        if let Some((previous, previous_range)) = pending_indirect {
+                            if let Some(merged) =
+                                merge_indirect_draw_ranges(previous, previous_range, batch, range)
+                            {
+                                pending_indirect = Some((previous, merged));
+                                continue;
+                            }
+                            flush_pending_indirect!();
+                        }
+                        pending_indirect = Some((batch, range));
+                    }
+                    if entry.has_clip {
+                        flush_pending_indirect!();
+                        encode_replay(&ReplayBatch::ResetClip);
+                    }
+                });
+                flush_pending_indirect!();
             }
             drop(pass);
             prune_transform_bindings(state);
-            if node_batches.is_none() {
-                insert_gpu_cache(
-                    state,
-                    batch_hash,
-                    transient_gpu_batches.take().unwrap_or_default(),
-                );
-            }
         }
         {
             // The swap-chain texture is not a persistent render target, so it
@@ -4153,12 +4210,7 @@ impl Renderer {
         }
         state.has_contents = true;
         state.last_frame_stats = frame_stats;
-        for allocation in transient_indirect_allocations {
-            state.indirect_arena.release(allocation);
-        }
-        if let Some(items) = retained_gpu_items {
-            state.retained_gpu_items = Some(items);
-        }
+        state.retained_gpu_items = Some(retained_gpu_items);
         self.queue.submit(std::iter::once(encoder.finish()));
         // Glyph cache eviction is deliberately deferred until the complete
         // frame has been submitted. Text construction may touch hundreds of
@@ -4169,9 +4221,9 @@ impl Renderer {
         Ok(())
     }
 
-    /// Internal retained rendering path. Widget ids have already been
-    /// resolved to RenderNode paths, so incremental updates never need a
-    /// compatibility full-tree fallback.
+    /// Internal retained rendering path. Widget ids are resolved to
+    /// RenderNode paths before this point, so updates rebuild only affected
+    /// retained subtrees unless the scene explicitly requests a full rebuild.
     fn render_node_with_damage_regions_indexed(
         &mut self,
         window: WindowId,
@@ -4395,6 +4447,7 @@ impl Renderer {
                     retained_gpu_items.insert(
                         path.clone(),
                         RetainedGpuItem {
+                            node_id: item.node_id,
                             bounds: item.bounds,
                             batches: gpu_batches,
                             vertex_allocations,
@@ -4419,16 +4472,7 @@ impl Renderer {
                 .get(&window)
                 .and_then(|state| state.spatial_index.as_ref()),
         );
-        // Retained batches have already been validated when they were built.
-        // Clean and partial frames need only carry their clear color here.
-        let commands = [PaintCommand::Clear(clear)];
-        let result = self.render_commands_with_damage_regions_key(
-            window,
-            &commands,
-            &damage_regions,
-            None,
-            Some(&[]),
-        );
+        let result = self.render_retained_scene_with_damage_regions(window, &damage_regions, clear);
         if result.is_ok() {
             if let Some(state) = self.surfaces.get_mut(&window) {
                 state.retained_items = Some(retained);
@@ -4437,26 +4481,24 @@ impl Renderer {
         result
     }
 
-    /// Resolves dirty WidgetIds through the retained RenderNode index before
-    /// updating GPU batches. This is the normal WidgetTree integration point.
-    pub fn render_node_with_dirty_widgets(
+    /// Applies the single authoritative retained-scene update for this frame.
+    pub fn render_scene(
         &mut self,
         window: WindowId,
         node: &RenderNode,
-        damage_regions: &[Rect],
         clear: Color,
         index: &RenderNodeIndex,
-        dirty_widgets: &[u64],
+        update: &SceneUpdate,
     ) -> Result<(), RenderError> {
-        let dirty_paths = dirty_widgets
-            .iter()
-            .filter_map(|id| index.path_for(*id))
+        let dirty_paths = update
+            .dirty_node_ids()
+            .filter_map(|id| index.path_for(id))
             .map(ToOwned::to_owned)
             .collect::<Vec<_>>();
         self.render_node_with_damage_regions_indexed(
             window,
             node,
-            damage_regions,
+            update.damage_regions(),
             clear,
             &dirty_paths,
         )
