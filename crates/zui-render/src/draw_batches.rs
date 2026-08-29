@@ -71,12 +71,16 @@ pub(crate) fn build_gpu_batches(
                 ))
             }
             RenderBatch::Image {
-                image,
+                page,
+                images,
                 vertices,
                 indices,
                 transform,
             } if !vertices.is_empty() => Some(GpuBatch::Draw(
-                BatchKind::Image(image),
+                BatchKind::Image {
+                    page,
+                    images: Arc::new(images),
+                },
                 arenas.upload(
                     device,
                     queue,
@@ -90,21 +94,10 @@ pub(crate) fn build_gpu_batches(
             RenderBatch::Clip(geometry, clip_transform) => {
                 let mask = match geometry {
                     ClipGeometry::Reset => None,
-                    ClipGeometry::Rect(rect) => {
-                        let mut vertices = Vec::new();
-                        let mut indices = Vec::new();
-                        append_rect(&mut vertices, &mut indices, rect, Color::WHITE);
-                        Some(ClipGpuGeometry {
-                            vertices: arenas.upload(
-                                device,
-                                queue,
-                                VertexArenaKind::Rect,
-                                bytemuck::cast_slice(&vertices),
-                                vertices.len() as u32,
-                            ),
-                            indices: Some(index_arena.upload(device, queue, &indices)),
-                        })
-                    }
+                    // Rect clips are represented by the render-pass
+                    // scissor, so they require neither a stencil mask nor
+                    // vertex/index arena allocations.
+                    ClipGeometry::Rect(_) => None,
                     ClipGeometry::Rounded { rect, radius } => {
                         let mut vertices = Vec::new();
                         let mut indices = Vec::new();
@@ -230,16 +223,22 @@ pub(crate) fn append_text(
                     .glyph_cache
                     .insert(key, CachedGlyph { metrics, image });
             }
+            resources.touch_glyph(key);
             let glyph = resources
                 .glyph_cache
                 .get(&key)
                 .expect("glyph was inserted into the cache");
             let metrics = glyph.metrics;
+            let image = glyph.image;
+            let Some((page, uv)) = resources.ensure_image_atlas_slot(device, queue, image) else {
+                x += metrics.advance_width / scale_factor;
+                continue;
+            };
             // Fontdue reports glyph bounds relative to the baseline. Keeping
             // one baseline for the complete run prevents punctuation and
             // lowercase glyphs from drifting vertically.
             let top = baseline - metrics.height as f32 - metrics.ymin as f32;
-            let (vertices, indices) = image_batch(batches, glyph.image, transform);
+            let (vertices, indices) = image_batch(batches, page, image, transform);
             append_image(
                 vertices,
                 indices,
@@ -255,6 +254,7 @@ pub(crate) fn append_text(
                 },
                 1.0,
                 color,
+                uv,
             );
             x += metrics.advance_width / scale_factor;
         }
@@ -452,6 +452,7 @@ pub(crate) fn append_image(
     rect: Rect,
     opacity: f32,
     color: Color,
+    uv: [f32; 4],
 ) {
     let left = rect.origin.x.0;
     let right = rect.origin.x.0 + rect.size.width.0;
@@ -461,25 +462,25 @@ pub(crate) fn append_image(
     vertices.extend([
         ImageVertex {
             position: [left, top],
-            uv: [0.0, 0.0],
+            uv: [uv[0], uv[1]],
             opacity,
             color: [color.r, color.g, color.b, color.a],
         },
         ImageVertex {
             position: [right, top],
-            uv: [1.0, 0.0],
+            uv: [uv[2], uv[1]],
             opacity,
             color: [color.r, color.g, color.b, color.a],
         },
         ImageVertex {
             position: [right, bottom],
-            uv: [1.0, 1.0],
+            uv: [uv[2], uv[3]],
             opacity,
             color: [color.r, color.g, color.b, color.a],
         },
         ImageVertex {
             position: [left, bottom],
-            uv: [0.0, 1.0],
+            uv: [uv[0], uv[3]],
             opacity,
             color: [color.r, color.g, color.b, color.a],
         },

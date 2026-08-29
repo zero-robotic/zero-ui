@@ -299,7 +299,10 @@ pub(crate) fn transform_bind_group_for(
     size: PhysicalSize,
 ) -> wgpu::BindGroup {
     let key = transform_key(transform);
-    if let Some(binding) = state.transform_bindings.get(&key) {
+    state.transform_binding_clock = state.transform_binding_clock.wrapping_add(1);
+    let clock = state.transform_binding_clock;
+    if let Some(binding) = state.transform_bindings.get_mut(&key) {
+        binding.last_used = clock;
         return binding.bind_group.clone();
     }
     let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -320,9 +323,27 @@ pub(crate) fn transform_bind_group_for(
         TransformBinding {
             _buffer: buffer,
             bind_group: bind_group.clone(),
+            last_used: clock,
         },
     );
     bind_group
+}
+
+/// Enforce the persistent transform cache budget only after a frame has
+/// finished encoding. This prevents a large frame from evicting a binding
+/// that a later draw in the same render pass still needs.
+pub(crate) fn prune_transform_bindings(state: &mut SurfaceState) {
+    while state.transform_bindings.len() > state.max_transform_bindings {
+        let Some(oldest) = state
+            .transform_bindings
+            .iter()
+            .min_by_key(|(_, binding)| binding.last_used)
+            .map(|(key, _)| *key)
+        else {
+            break;
+        };
+        state.transform_bindings.remove(&oldest);
+    }
 }
 
 pub(crate) fn create_stencil_mask_pipeline(
@@ -481,7 +502,6 @@ pub(crate) fn create_image_pipeline(
             @group(0) @binding(0) var<uniform> transform: Transform;
             @group(1) @binding(0) var image: texture_2d<f32>;
             @group(1) @binding(1) var image_sampler: sampler;
-            @group(1) @binding(2) var<uniform> image_uv: vec4<f32>;
 
             struct VertexOutput {
                 @builtin(position) position: vec4<f32>,
@@ -499,7 +519,7 @@ pub(crate) fn create_image_pipeline(
             ) -> VertexOutput {
                 var output: VertexOutput;
                 output.position = transform.matrix * vec4<f32>(position, 0.0, 1.0);
-                output.uv = mix(image_uv.xy, image_uv.zw, uv);
+                output.uv = uv;
                 output.opacity = opacity;
                 output.color = color;
                 return output;
@@ -531,16 +551,6 @@ pub(crate) fn create_image_pipeline(
                 binding: 1,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(16),
-                },
                 count: None,
             },
         ],

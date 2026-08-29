@@ -46,12 +46,12 @@ fn gpu_transform_maps_local_dips_to_clip_space() {
 #[test]
 fn render_node_keeps_commands_before_children() {
     let mut node = RenderNode::new(Rect::default());
-    node.commands.push(PaintCommand::Rect {
+    node.commands_mut().push(PaintCommand::Rect {
         rect: Rect::default(),
         color: Color::WHITE,
     });
     let mut child = RenderNode::new(Rect::default());
-    child.commands.push(PaintCommand::Clear(Color::BLACK));
+    child.commands_mut().push(PaintCommand::Clear(Color::BLACK));
     node.add_child(child);
     assert!(matches!(node.commands[0], PaintCommand::Rect { .. }));
     assert!(matches!(
@@ -87,7 +87,7 @@ fn dirty_path_propagates_flags_and_region_to_ancestors() {
     let leaf = RenderNode::new(Rect::default());
     root.add_child(child.clone());
     child.add_child(leaf);
-    root.children[0] = child;
+    *root.child_mut(0).expect("child was added") = child;
     root.clear_dirty();
 
     let region = Rect {
@@ -123,7 +123,7 @@ fn clean_render_node_subtrees_are_reused_by_source_id() {
     previous.source_id = Some(1);
     let mut previous_clean = RenderNode::new(Rect::default());
     previous_clean.source_id = Some(2);
-    previous_clean.commands.push(PaintCommand::Rect {
+    previous_clean.commands_mut().push(PaintCommand::Rect {
         rect: Rect::default(),
         color: Color::WHITE,
     });
@@ -133,12 +133,14 @@ fn clean_render_node_subtrees_are_reused_by_source_id() {
     previous.add_child(previous_dirty);
 
     let mut current = previous.clone();
-    current.children[0].commands[0] = PaintCommand::Rect {
+    current.child_mut(0).expect("first child").commands_mut()[0] = PaintCommand::Rect {
         rect: Rect::default(),
         color: Color::BLACK,
     };
-    current.children[1]
-        .commands
+    current
+        .child_mut(1)
+        .expect("second child")
+        .commands_mut()
         .push(PaintCommand::Clear(Color::BLACK));
     let dirty = vec![vec![1]];
     let merged = current.reuse_clean_subtrees(Some(&previous), &dirty, false);
@@ -148,6 +150,29 @@ fn clean_render_node_subtrees_are_reused_by_source_id() {
         previous.children[0].commands[0]
     );
     assert_eq!(merged.children[1].commands.len(), 1);
+}
+
+#[test]
+fn clean_render_node_clone_shares_storage_until_dirty_mutation() {
+    let mut previous = RenderNode::new(Rect::default());
+    previous
+        .commands_mut()
+        .push(PaintCommand::Clear(Color::BLACK));
+    previous.add_child(RenderNode::new(Rect::default()));
+
+    let mut current = previous.clone();
+    assert!(Arc::ptr_eq(&previous.commands, &current.commands));
+    assert!(Arc::ptr_eq(&previous.children, &current.children));
+
+    current
+        .commands_mut()
+        .push(PaintCommand::Clear(Color::WHITE));
+    current.child_mut(0).expect("child exists").set_opacity(0.5);
+
+    assert!(!Arc::ptr_eq(&previous.commands, &current.commands));
+    assert!(!Arc::ptr_eq(&previous.children, &current.children));
+    assert_eq!(previous.commands.len(), 1);
+    assert_eq!(previous.children[0].opacity, 1.0);
 }
 
 #[test]
@@ -168,7 +193,7 @@ fn shared_item_damage_is_coalesced_once() {
             transform: Transform::IDENTITY,
             opacity: 1.0,
             clips: Vec::new(),
-            commands: Vec::new(),
+            commands: Arc::new(Vec::new()),
         },
     )]);
     let regions = [
@@ -200,7 +225,7 @@ fn render_node_applies_transform_and_opacity() {
     let mut node = RenderNode::new(Rect::default());
     node.set_transform(Transform::translate(Dip(10.0), Dip(20.0)));
     node.set_opacity(0.5);
-    node.commands.push(PaintCommand::Rect {
+    node.commands_mut().push(PaintCommand::Rect {
         rect: Rect {
             origin: Point::default(),
             size: zui_core::Size {
@@ -226,7 +251,7 @@ fn render_node_clips_commands_and_propagates_dirty_state() {
             height: Dip(5.0),
         },
     })));
-    node.commands.push(PaintCommand::Rect {
+    node.commands_mut().push(PaintCommand::Rect {
         rect: Rect {
             origin: Point {
                 x: Dip(20.0),
@@ -517,7 +542,7 @@ fn render_node_gpu_key_changes_with_subtree() {
 }
 
 #[test]
-    fn ordered_indirect_groups_do_not_cross_arena_pages() {
+fn ordered_indirect_groups_do_not_cross_arena_pages() {
     let vertex = |page| VertexArenaAllocation {
         kind: VertexArenaKind::Rect,
         page,
@@ -534,37 +559,37 @@ fn render_node_gpu_key_changes_with_subtree() {
         GpuBatch::Draw(BatchKind::Rect, vertex(0), index(0), Transform::IDENTITY),
         GpuBatch::Draw(BatchKind::Rect, vertex(1), index(0), Transform::IDENTITY),
     ]);
-        assert!(matches!(groups.as_slice(), [
+    assert!(matches!(groups.as_slice(), [
             GpuBatch::DrawGroup(_, first, _, _),
             GpuBatch::DrawGroup(_, second, _, _),
         ] if first.len() == 2 && second.len() == 1));
-    }
+}
 
-    #[test]
+#[test]
 fn retained_indirect_commands_are_uploaded_once() {
-        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let mut arena = IndirectArena::new(&device);
-        let mut groups = group_ordered_draws(vec![GpuBatch::Draw(
-            BatchKind::Rect,
-            VertexArenaAllocation {
-                kind: VertexArenaKind::Rect,
-                page: 0,
-                range: 0..64,
-                vertex_count: 4,
-            },
-            IndexArenaAllocation {
-                page: 0,
-                range: 0..24,
-                index_count: 6,
-            },
-            Transform::IDENTITY,
-        )]);
-        assert_eq!(
-            prepare_indirect_draws(&mut groups, &mut arena, &device, &queue, false).len(),
-            1
-        );
-        assert!(prepare_indirect_draws(&mut groups, &mut arena, &device, &queue, false).is_empty());
-    }
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let mut arena = IndirectArena::new(&device);
+    let mut groups = group_ordered_draws(vec![GpuBatch::Draw(
+        BatchKind::Rect,
+        VertexArenaAllocation {
+            kind: VertexArenaKind::Rect,
+            page: 0,
+            range: 0..64,
+            vertex_count: 4,
+        },
+        IndexArenaAllocation {
+            page: 0,
+            range: 0..24,
+            index_count: 6,
+        },
+        Transform::IDENTITY,
+    )]);
+    assert_eq!(
+        prepare_indirect_draws(&mut groups, &mut arena, &device, &queue, false).len(),
+        1
+    );
+    assert!(prepare_indirect_draws(&mut groups, &mut arena, &device, &queue, false).is_empty());
+}
 
 #[test]
 fn composition_tiles_coalesce_damage_to_physical_tile_bounds() {
@@ -592,6 +617,85 @@ fn composition_tiles_coalesce_damage_to_physical_tile_bounds() {
 }
 
 #[test]
+fn adjacent_images_on_one_atlas_page_share_a_material_group() {
+    let vertex = |offset| VertexArenaAllocation {
+        kind: VertexArenaKind::Image,
+        page: 0,
+        range: offset..offset + 80,
+        vertex_count: 4,
+    };
+    let index = |offset| IndexArenaAllocation {
+        page: 0,
+        range: offset..offset + 24,
+        index_count: 6,
+    };
+    let groups = group_ordered_draws(vec![
+        GpuBatch::Draw(
+            BatchKind::Image {
+                page: 2,
+                images: Arc::new(vec![ImageId(10)]),
+            },
+            vertex(0),
+            index(0),
+            Transform::IDENTITY,
+        ),
+        GpuBatch::Draw(
+            BatchKind::Image {
+                page: 2,
+                images: Arc::new(vec![ImageId(11)]),
+            },
+            vertex(80),
+            index(24),
+            Transform::IDENTITY,
+        ),
+    ]);
+    assert!(
+        matches!(groups.as_slice(), [GpuBatch::DrawGroup(BatchKind::Image { page: 2, .. }, draws, _, _)] if draws.len() == 2)
+    );
+    assert_eq!(
+        batch_resource_handles(&groups),
+        vec![
+            ResourceHandle::Image(ImageId(10)),
+            ResourceHandle::Image(ImageId(11))
+        ]
+    );
+}
+
+#[test]
+fn image_vertices_are_built_once_for_an_atlas_page_run() {
+    let mut batches = Vec::new();
+    let rect = Rect {
+        origin: Point::default(),
+        size: zui_core::Size {
+            width: Dip(10.0),
+            height: Dip(10.0),
+        },
+    };
+    let (vertices, indices) = image_batch(&mut batches, 3, ImageId(1), Transform::IDENTITY);
+    append_image(
+        vertices,
+        indices,
+        rect,
+        1.0,
+        Color::WHITE,
+        [0.0, 0.0, 0.5, 0.5],
+    );
+    let (vertices, indices) = image_batch(&mut batches, 3, ImageId(2), Transform::IDENTITY);
+    append_image(
+        vertices,
+        indices,
+        rect,
+        1.0,
+        Color::WHITE,
+        [0.5, 0.0, 1.0, 0.5],
+    );
+    assert!(
+        matches!(batches.as_slice(), [RenderBatch::Image { page: 3, images, vertices, indices, .. }]
+        if images.as_slice() == [ImageId(1), ImageId(2)] && vertices.len() == 8 && indices.len() == 12)
+    );
+}
+
+#[test]
 fn adjacent_retained_groups_share_one_contiguous_indirect_submission() {
     let vertex = |offset| VertexArenaAllocation {
         kind: VertexArenaKind::Rect,
@@ -610,7 +714,10 @@ fn adjacent_retained_groups_share_one_contiguous_indirect_submission() {
             BatchKind::Rect,
             Arc::new(vec![(vertex(0), index(0))]),
             Transform::IDENTITY,
-            Some(IndirectDrawRange { offset: 0, count: 1 }),
+            Some(IndirectDrawRange {
+                offset: 0,
+                count: 1,
+            }),
         ),
         GpuBatch::DrawGroup(
             BatchKind::Rect,
@@ -622,8 +729,10 @@ fn adjacent_retained_groups_share_one_contiguous_indirect_submission() {
             }),
         ),
     ]);
-    assert!(matches!(groups.as_slice(), [GpuBatch::DrawGroup(_, draws, _, Some(range))]
-        if draws.len() == 2 && range.count == 2));
+    assert!(
+        matches!(groups.as_slice(), [GpuBatch::DrawGroup(_, draws, _, Some(range))]
+        if draws.len() == 2 && range.count == 2)
+    );
 }
 
 #[test]
@@ -662,4 +771,152 @@ fn grouped_batches_keep_all_arena_allocations_owned_by_the_node() {
         None,
     )]);
     assert_eq!(allocations.len(), 2);
+}
+
+#[test]
+fn arena_free_ranges_are_coalesced_for_reuse() {
+    let mut free = vec![0..16, 48..64];
+    release_arena_range(&mut free, 16..48);
+    assert_eq!(free, vec![0..64]);
+}
+
+#[test]
+fn tile_submission_index_updates_only_changed_subtree_paths() {
+    let item = |x| RenderNodeItem {
+        bounds: Rect {
+            origin: Point {
+                x: Dip(x),
+                y: Dip(0.0),
+            },
+            size: zui_core::Size {
+                width: Dip(20.0),
+                height: Dip(20.0),
+            },
+        },
+        transform: Transform::IDENTITY,
+        opacity: 1.0,
+        clips: Vec::new(),
+        commands: Arc::new(Vec::new()),
+    };
+    let mut items = BTreeMap::new();
+    items.insert(vec![0], item(0.0));
+    items.insert(vec![1], item(200.0));
+    let mut index = TileSubmissionIndex::build(&items, ScaleFactor(1.0));
+    assert_eq!(
+        index.query(Rect {
+            origin: Point::default(),
+            size: zui_core::Size {
+                width: Dip(127.0),
+                height: Dip(127.0)
+            },
+        }),
+        vec![vec![0]],
+    );
+    items.insert(vec![0], item(260.0));
+    index.update_subtrees(&items, &[vec![0]]);
+    assert!(index
+        .query(Rect {
+            origin: Point::default(),
+            size: zui_core::Size {
+                width: Dip(127.0),
+                height: Dip(127.0)
+            },
+        })
+        .is_empty());
+    assert_eq!(
+        index.query(Rect {
+            origin: Point {
+                x: Dip(256.0),
+                y: Dip(0.0)
+            },
+            size: zui_core::Size {
+                width: Dip(63.0),
+                height: Dip(127.0)
+            },
+        }),
+        vec![vec![0]],
+    );
+}
+
+#[test]
+fn resource_eviction_never_discards_a_retained_image() {
+    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let mut resources = ResourceManager::new(&device, &[]);
+    let image = ImageId(7);
+    resources.gpu_images.insert(
+        image,
+        GpuImage {
+            bytes: 4,
+            slot: AtlasSlot {
+                page: 0,
+                origin: wgpu::Origin3d::ZERO,
+                width: 1,
+                height: 1,
+                atlas_width: 1,
+                atlas_height: 1,
+            },
+        },
+    );
+    resources.last_used.insert(image, 1);
+    resources.retain(ResourceHandle::Image(image));
+    assert!(!resources.evict_one_gpu_image());
+    assert!(resources.gpu_images.contains_key(&image));
+}
+
+#[test]
+fn retained_image_batches_contribute_resource_references() {
+    let image = ImageId(42);
+    let handles = batch_resource_handles(&[GpuBatch::DrawGroup(
+        BatchKind::Image {
+            page: 0,
+            images: Arc::new(vec![image]),
+        },
+        Arc::new(Vec::new()),
+        Transform::IDENTITY,
+        None,
+    )]);
+    assert_eq!(handles, vec![ResourceHandle::Image(image)]);
+}
+
+#[test]
+fn rectangular_clip_uses_scissor_without_gpu_mask_geometry() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let mut vertices = VertexArenas::new(&device);
+    let mut indices = IndexArena::new(&device);
+    let batches = build_gpu_batches(
+        &device,
+        &queue,
+        &mut vertices,
+        &mut indices,
+        vec![RenderBatch::Clip(
+            ClipGeometry::Rect(Rect {
+                origin: Point::default(),
+                size: zui_core::Size {
+                    width: Dip(10.0),
+                    height: Dip(10.0),
+                },
+            }),
+            Transform::IDENTITY,
+        )],
+    );
+    assert!(matches!(
+        batches.as_slice(),
+        [GpuBatch::Clip(ClipGeometry::Rect(_), None, _)]
+    ));
+}
+
+#[test]
+fn atlas_free_slots_coalesce_after_resource_release() {
+    let slot = |x| AtlasSlot {
+        page: 0,
+        origin: wgpu::Origin3d { x, y: 0, z: 0 },
+        width: 16,
+        height: 16,
+        atlas_width: 64,
+        atlas_height: 64,
+    };
+    let mut free = vec![slot(0), slot(16)];
+    coalesce_atlas_slots(&mut free);
+    assert_eq!(free.len(), 1);
+    assert_eq!(free[0].width, 32);
 }

@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use std::time::Instant;
 
 use zui_core::{Color, Point, Rect, Size};
@@ -32,9 +35,17 @@ pub struct PaintContext<'a> {
 
 pub struct RenderBuildContext<'a> {
     previous: Option<&'a RenderNode>,
-    dirty_paths: Vec<Vec<usize>>,
+    dirty_paths: Vec<DirtyPath>,
     force_rebuild: bool,
     theme: &'a Theme,
+}
+
+/// A shared dirty path plus the depth currently being inspected. Child
+/// contexts advance `offset` rather than allocating `path[1..].to_vec()`.
+#[derive(Clone)]
+struct DirtyPath {
+    path: Arc<[usize]>,
+    offset: usize,
 }
 
 impl<'a> RenderBuildContext<'a> {
@@ -46,7 +57,13 @@ impl<'a> RenderBuildContext<'a> {
     ) -> Self {
         Self {
             previous,
-            dirty_paths: dirty_paths.to_vec(),
+            dirty_paths: dirty_paths
+                .iter()
+                .map(|path| DirtyPath {
+                    path: Arc::from(path.as_slice()),
+                    offset: 0,
+                })
+                .collect(),
             force_rebuild,
             theme,
         }
@@ -66,8 +83,10 @@ impl<'a> RenderBuildContext<'a> {
             dirty_paths: self
                 .dirty_paths
                 .iter()
-                .filter_map(|path| {
-                    (path.first().copied() == Some(index)).then(|| path[1..].to_vec())
+                .filter(|path| path.path.get(path.offset).copied() == Some(index))
+                .map(|path| DirtyPath {
+                    path: Arc::clone(&path.path),
+                    offset: path.offset + 1,
                 })
                 .collect(),
             force_rebuild: self.force_rebuild,
