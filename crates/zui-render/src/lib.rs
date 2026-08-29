@@ -1725,6 +1725,11 @@ struct SurfaceState {
     stencil: wgpu::Texture,
     stencil_view: wgpu::TextureView,
     stencil_reset: wgpu::Buffer,
+    /// An overwrite-only pipeline and material used to clear one scissored
+    /// persistent-canvas tile before retained batches are replayed.
+    damage_clear_pipeline: wgpu::RenderPipeline,
+    damage_clear_color: wgpu::Buffer,
+    damage_clear_bind_group: wgpu::BindGroup,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group: wgpu::BindGroup,
     /// Whether the swap-chain texture can be the destination of a GPU copy.
@@ -3264,6 +3269,22 @@ impl Renderer {
         let (canvas, canvas_view) = create_canvas(&self.device, size, config.format);
         let (stencil, stencil_view) = create_stencil(&self.device, size);
         let stencil_reset = create_stencil_reset_buffer(&self.device);
+        let damage_clear_pipeline = create_damage_clear_pipeline(&self.device, config.format);
+        let damage_clear_color =
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("zui-render damage clear color"),
+                    contents: bytemuck::cast_slice(&[[0.0_f32; 4]]),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                });
+        let damage_clear_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("zui-render damage clear bind group"),
+            layout: &damage_clear_pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: damage_clear_color.as_entire_binding(),
+            }],
+        });
         let blit_pipeline = create_blit_pipeline(&self.device, config.format);
         let blit_bind_group = create_blit_bind_group(&self.device, &blit_pipeline, &canvas_view);
         self.surfaces.insert(
@@ -3289,6 +3310,9 @@ impl Renderer {
                 stencil,
                 stencil_view,
                 stencil_reset,
+                damage_clear_pipeline,
+                damage_clear_color,
+                damage_clear_bind_group,
                 blit_pipeline,
                 blit_bind_group,
                 direct_copy_present,
@@ -3350,6 +3374,22 @@ impl Renderer {
         let (canvas, canvas_view) = create_canvas(&self.device, size, config.format);
         let (stencil, stencil_view) = create_stencil(&self.device, size);
         let stencil_reset = create_stencil_reset_buffer(&self.device);
+        let damage_clear_pipeline = create_damage_clear_pipeline(&self.device, config.format);
+        let damage_clear_color =
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("zui-render damage clear color"),
+                    contents: bytemuck::cast_slice(&[[0.0_f32; 4]]),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                });
+        let damage_clear_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("zui-render damage clear bind group"),
+            layout: &damage_clear_pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: damage_clear_color.as_entire_binding(),
+            }],
+        });
         let blit_pipeline = create_blit_pipeline(&self.device, config.format);
         let blit_bind_group = create_blit_bind_group(&self.device, &blit_pipeline, &canvas_view);
         self.surfaces.insert(
@@ -3375,6 +3415,9 @@ impl Renderer {
                 stencil,
                 stencil_view,
                 stencil_reset,
+                damage_clear_pipeline,
+                damage_clear_color,
+                damage_clear_bind_group,
                 blit_pipeline,
                 blit_bind_group,
                 direct_copy_present,
@@ -3707,6 +3750,7 @@ impl Renderer {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let clear_rgba = [clear.r, clear.g, clear.b, clear.a];
         let clear = wgpu::Color {
             r: clear.r as f64,
             g: clear.g as f64,
@@ -3718,6 +3762,12 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("zui-render frame"),
             });
+        let queue = &self.queue;
+        queue.write_buffer(
+            &state.damage_clear_color,
+            0,
+            bytemuck::cast_slice(&[clear_rgba]),
+        );
         {
             // An arena growth replaces its backing buffer. Re-upload the
             // persistent full submission table once before borrowing partial
@@ -3792,6 +3842,15 @@ impl Renderer {
                     pass.set_pipeline(&state.stencil_pipeline);
                     frame_stats.pipeline_switch_count += 1;
                     pass.set_stencil_reference(0);
+                    pass.set_vertex_buffer(0, state.stencil_reset.slice(..));
+                    pass.draw(0..6, 0..1);
+                    // A render-pass LoadOp preserves the persistent canvas;
+                    // clear this tile explicitly before replaying the items
+                    // that intersect it. Without this draw, changed text and
+                    // translucent controls accumulate over prior pixels.
+                    set_scissor(&mut pass, Some(region), state.size, state.scale_factor);
+                    pass.set_pipeline(&state.damage_clear_pipeline);
+                    pass.set_bind_group(0, &state.damage_clear_bind_group, &[]);
                     pass.set_vertex_buffer(0, state.stencil_reset.slice(..));
                     pass.draw(0..6, 0..1);
                     active_pipeline = None;
@@ -4490,15 +4549,33 @@ impl Renderer {
         index: &RenderNodeIndex,
         update: &SceneUpdate,
     ) -> Result<(), RenderError> {
-        let dirty_paths = update
-            .dirty_node_ids()
-            .filter_map(|id| index.path_for(id))
-            .map(ToOwned::to_owned)
-            .collect::<Vec<_>>();
+        // An explicit full rebuild must reach the retained-scene cache as an
+        // empty path. Previously this flag was only consumed by WidgetTree;
+        // the renderer still received individual dirty paths and could keep
+        // stale GPU batches for a rebuilt subtree.
+        let full_rebuild = update.full_rebuild();
+        let dirty_paths = if full_rebuild {
+            Vec::new()
+        } else {
+            update
+                .dirty_node_ids()
+                .filter_map(|id| index.path_for(id))
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let damage_regions = if full_rebuild {
+            // A retained-scene rebuild must clear the complete persistent
+            // canvas before replay. Treating the root bounds as a partial
+            // damage region keeps LoadOp::Load active and leaves pixels from
+            // removed or changed primitives behind.
+            &[]
+        } else {
+            update.damage_regions()
+        };
         self.render_node_with_damage_regions_indexed(
             window,
             node,
-            update.damage_regions(),
+            damage_regions,
             clear,
             &dirty_paths,
         )

@@ -49,8 +49,16 @@ mod tests {
             width: Dip(200.0),
             height: Dip(100.0),
         }));
-        assert_eq!(size.width, Dip(28.0));
-        assert_eq!(row.children()[1].bounds().origin.x, Dip(12.0));
+        assert_eq!(
+            size.width,
+            Dip(row.children()[0].bounds().size.width.0
+                + 4.0
+                + row.children()[1].bounds().size.width.0,)
+        );
+        assert_eq!(
+            row.children()[1].bounds().origin.x,
+            Dip(row.children()[0].bounds().size.width.0 + 4.0)
+        );
     }
 
     #[test]
@@ -158,6 +166,22 @@ mod tests {
             EventResult::Handled
         );
         assert!(second_context.actions().is_empty());
+    }
+
+    #[test]
+    fn text_uses_renderer_measurement_for_multilingual_content() {
+        let mut text = Text::new("计数：0");
+        let theme = Theme::default();
+        text.set_theme(&theme);
+        let size = text.measure(Constraints::loose(Size {
+            width: Dip(300.0),
+            height: Dip(100.0),
+        }));
+
+        assert_eq!(
+            size.width,
+            zui_render::measure_text("计数：0", theme.text.font_size)
+        );
     }
 
     #[test]
@@ -308,7 +332,10 @@ mod tests {
             height: Dip(100.0),
         }));
         assert_eq!(size.width, Dip(100.0));
-        assert_eq!(size.height, Dip(20.0));
+        assert_eq!(
+            size.height,
+            Dip((Theme::default().text.font_size * 7) as f32)
+        );
     }
 
     #[test]
@@ -322,7 +349,7 @@ mod tests {
             align.child().bounds().origin,
             Point {
                 x: Dip(0.0),
-                y: Dip(10.0),
+                y: Dip((40.0 - (Theme::default().text.font_size * 7) as f32) / 2.0),
             }
         );
     }
@@ -338,7 +365,12 @@ mod tests {
             height: Dip(40.0),
         }));
         assert_eq!(size.width, Dip(100.0));
-        assert_eq!(row.children()[1].bounds().size.width, Dip(84.0));
+        assert_eq!(
+            row.children()[1].bounds().size.width,
+            Dip(100.0
+                - row.children()[0].bounds().size.width.0
+                - row.children()[2].bounds().size.width.0,)
+        );
     }
 
     #[test]
@@ -352,7 +384,12 @@ mod tests {
             height: Dip(100.0),
         }));
         assert_eq!(size.height, Dip(100.0));
-        assert_eq!(column.children()[1].bounds().size.height, Dip(60.0));
+        assert_eq!(
+            column.children()[1].bounds().size.height,
+            Dip(100.0
+                - column.children()[0].bounds().size.height.0
+                - column.children()[2].bounds().size.height.0,)
+        );
     }
 
     #[test]

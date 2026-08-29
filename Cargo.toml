@@ -11,6 +11,7 @@ members = [
     "crates/zui-backend-headless",
     "crates/zui-backend-winit",
     "examples/empty_window",
+    "examples/counter",
 ]
 
 [workspace.package]

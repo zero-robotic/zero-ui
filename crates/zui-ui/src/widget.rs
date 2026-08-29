@@ -24,6 +24,10 @@ impl WidgetId {
     pub fn new() -> Self {
         Self(NEXT_WIDGET_ID.fetch_add(1, Ordering::Relaxed))
     }
+
+    pub fn value(self) -> u64 {
+        self.0
+    }
 }
 
 pub struct PaintContext<'a> {

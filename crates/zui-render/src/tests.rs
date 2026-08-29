@@ -17,6 +17,8 @@ fn noop_device_can_create_gpu_objects() {
     );
     let _line_pipeline =
         create_line_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm, &transform_layout);
+    let _damage_clear_pipeline =
+        create_damage_clear_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
     let _image_pipeline =
         create_image_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm, &transform_layout);
 }

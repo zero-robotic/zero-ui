@@ -489,6 +489,82 @@ pub(crate) fn create_rect_pipeline(
     })
 }
 
+/// Creates a color-overwrite pipeline for clearing one scissored region of
+/// the persistent composition canvas. It intentionally has no blend state;
+/// the scissor defines the cleared tile. It keeps the pass's stencil format
+/// in read-only mode so it remains compatible with the shared replay pass.
+pub(crate) fn create_damage_clear_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("zui-render damage clear shader"),
+        source: wgpu::ShaderSource::Wgsl(
+            r#"
+            struct ClearColor { color: vec4<f32>, };
+            @group(0) @binding(0) var<uniform> clear_color: ClearColor;
+            @vertex
+            fn vs(@location(0) position: vec2<f32>, @location(1) _color: vec4<f32>) -> @builtin(position) vec4<f32> {
+                return vec4<f32>(position, 0.0, 1.0);
+            }
+            @fragment
+            fn fs() -> @location(0) vec4<f32> {
+                return clear_color.color;
+            }
+        "#
+            .into(),
+        ),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("zui-render damage clear pipeline layout"),
+        bind_group_layouts: &[Some(&device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("zui-render damage clear bind group layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(16),
+                    },
+                    count: None,
+                }],
+            },
+        ))],
+        immediate_size: 0,
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("zui-render damage clear pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<RectVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4],
+            }],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: Some(stencil_draw_state()),
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
 pub(crate) fn create_image_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,

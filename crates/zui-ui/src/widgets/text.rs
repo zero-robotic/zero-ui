@@ -54,8 +54,8 @@ impl Widget for Text {
     }
     fn measure(&mut self, constraints: Constraints) -> Size {
         let size = constraints.constrain(Size {
-            width: Dip(self.text.chars().count() as f32 * 8.0),
-            height: Dip(20.0),
+            width: zui_render::measure_text(&self.text, self.theme.text.font_size),
+            height: Dip((self.theme.text.font_size.max(1) * 7) as f32),
         });
         self.bounds.size = size;
         size
