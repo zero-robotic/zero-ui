@@ -77,8 +77,7 @@ impl Widget for Button {
     fn event(&mut self, event: &UiEvent, ctx: &mut EventContext) -> EventResult {
         if let (InputEvent::CursorMoved { .. }, Some(point)) = (&event.input, event.position) {
             let hovered = self.bounds.contains(point);
-            if hovered != self.hovered {
-                self.hovered = hovered;
+            if ctx.set_hovered(self.id, hovered) {
                 self.invalidate(ctx, self.bounds);
                 return EventResult::RequestRedraw;
             }
@@ -102,5 +101,44 @@ impl Widget for Button {
         build_render_node_with_commands(self.id, self.bounds, theme, |ctx| {
             self.build_render_commands(ctx)
         })
+    }
+    fn build_render_node_incremental(
+        &self,
+        context: &mut crate::RenderBuildContext<'_>,
+    ) -> zui_render::RenderNode {
+        if !context.subtree_is_dirty(self.id) {
+            if let Some(previous) = context.previous() {
+                return previous.clone();
+            }
+        }
+        let hovered = context.runtime().is_hovered(self.id);
+        let node = crate::widget::build_render_node_with_commands(
+            self.id,
+            self.bounds,
+            context.theme(),
+            |ctx| {
+                let style = &ctx.theme.button;
+                ctx.fill_rounded_rect(
+                    self.bounds,
+                    style.radius,
+                    if hovered {
+                        style.hover_background
+                    } else {
+                        style.background
+                    },
+                );
+                ctx.draw_text(
+                    &self.label,
+                    Point {
+                        x: Dip(self.bounds.origin.x.0 + style.padding_x.0),
+                        y: Dip(self.bounds.origin.y.0
+                            + (self.bounds.size.height.0 - style.font_size as f32 * 7.0) / 2.0),
+                    },
+                    style.foreground,
+                    style.font_size,
+                );
+            },
+        );
+        context.localize(node)
     }
 }

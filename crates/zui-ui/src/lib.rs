@@ -23,7 +23,9 @@ pub use theme::{
     TextInputStyle, TextStyle, Theme, ThemeToken,
 };
 pub use tree::WidgetTree;
-pub use widget::{PaintContext, RenderBuildContext, Widget, WidgetId};
+pub use widget::{
+    PaintContext, RenderBuildContext, Widget, WidgetId, WidgetRuntime, WidgetRuntimeTable,
+};
 pub use widgets::{
     Button, Checkbox, Divider, DividerAxis, Icon, IconButton, IconName, Radio, Switch, Text,
     TextInput,
@@ -306,6 +308,58 @@ mod tests {
         input.event(&select_all, &mut context);
         input.event(&replace, &mut context);
         assert_eq!(input.text(), "x");
+    }
+
+    #[test]
+    fn runtime_focus_transfers_between_text_inputs() {
+        let mut first = TextInput::new();
+        let mut second = TextInput::new();
+        first.set_bounds(Rect {
+            origin: Point::default(),
+            size: Size {
+                width: Dip(100.0),
+                height: Dip(30.0),
+            },
+        });
+        second.set_bounds(Rect {
+            origin: Point {
+                x: Dip(120.0),
+                y: Dip::ZERO,
+            },
+            size: Size {
+                width: Dip(100.0),
+                height: Dip(30.0),
+            },
+        });
+        let mut runtime = WidgetRuntimeTable::default();
+        let press = |point| {
+            UiEvent::pointer(
+                None,
+                point,
+                InputEvent::MouseInput {
+                    button: MouseButton::Left,
+                    state: KeyState::Pressed,
+                },
+            )
+        };
+        let mut context = EventContext::with_runtime(&mut runtime);
+        first.event(
+            &press(Point {
+                x: Dip(4.0),
+                y: Dip(4.0),
+            }),
+            &mut context,
+        );
+        second.event(
+            &press(Point {
+                x: Dip(124.0),
+                y: Dip(4.0),
+            }),
+            &mut context,
+        );
+
+        assert!(!context.is_focused(first.id()));
+        assert!(context.is_focused(second.id()));
     }
 
     #[test]

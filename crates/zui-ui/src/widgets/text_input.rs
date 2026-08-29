@@ -85,7 +85,7 @@ impl TextInput {
             .map_or(self.text.len(), |character| index + character.len_utf8())
     }
 
-    fn build_render_commands(&self, ctx: &mut crate::PaintContext<'_>) {
+    fn build_render_commands(&self, ctx: &mut crate::PaintContext<'_>, focused: bool) {
         let style = &ctx.theme.text_input;
         let text_origin = Point {
             x: Dip(self.bounds.origin.x.0 + style.padding_x.0),
@@ -94,7 +94,7 @@ impl TextInput {
         };
         ctx.fill_rect(
             self.bounds,
-            if self.focused {
+            if focused {
                 style.focused_background
             } else {
                 style.background
@@ -120,7 +120,7 @@ impl TextInput {
             );
         }
         ctx.draw_text(&self.text, text_origin, style.foreground, style.font_size);
-        if self.focused && ctx.now.duration_since(self.focus_started).as_millis() / 500 % 2 == 0 {
+        if focused && ctx.now.duration_since(self.focus_started).as_millis() / 500 % 2 == 0 {
             let caret_x = text_origin.x.0
                 + zui_render::measure_text(&self.text[..self.cursor], style.font_size).0;
             ctx.fill_rect(
@@ -255,7 +255,7 @@ impl Widget for TextInput {
                     }
                 )
             {
-                let focus_changed = !self.focused;
+                let focus_changed = ctx.request_focus(self.id);
                 self.focused = true;
                 self.cursor = self.cursor_at_x(point.x, &self.theme.text_input);
                 self.selection_anchor = Some(self.cursor);
@@ -268,7 +268,12 @@ impl Widget for TextInput {
                 return EventResult::RequestRedraw;
             }
         }
-        if !self.focused {
+        let focused = if ctx.has_tree_runtime() {
+            ctx.is_focused(self.id)
+        } else {
+            self.focused
+        };
+        if !focused {
             return EventResult::Ignored;
         }
 
@@ -363,7 +368,25 @@ impl Widget for TextInput {
 
     fn build_render_node(&self, theme: &Theme) -> zui_render::RenderNode {
         crate::widget::build_render_node_with_commands(self.id, self.bounds, theme, |ctx| {
-            self.build_render_commands(ctx)
+            self.build_render_commands(ctx, self.focused)
         })
+    }
+
+    fn build_render_node_incremental(
+        &self,
+        context: &mut crate::RenderBuildContext<'_>,
+    ) -> zui_render::RenderNode {
+        if !context.subtree_is_dirty(self.id) {
+            if let Some(previous) = context.previous() {
+                return previous.clone();
+            }
+        }
+        let focused = context.runtime().is_focused(self.id);
+        context.localize(crate::widget::build_render_node_with_commands(
+            self.id,
+            self.bounds,
+            context.theme(),
+            |ctx| self.build_render_commands(ctx, focused),
+        ))
     }
 }

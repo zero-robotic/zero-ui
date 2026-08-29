@@ -1,8 +1,11 @@
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
-};
 use std::time::Instant;
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 
 use zui_core::{Color, Point, Rect, Size};
 use zui_render::{
@@ -30,6 +33,100 @@ impl WidgetId {
     }
 }
 
+/// Tree-owned transient state. It is keyed by `WidgetId` so focus, hover and
+/// dirty information are not duplicated by every concrete widget type.
+#[derive(Clone, Debug, Default)]
+pub struct WidgetRuntime {
+    hovered: bool,
+    focused: bool,
+    pressed: bool,
+    dirty_regions: Vec<Rect>,
+}
+
+impl WidgetRuntime {
+    pub fn hovered(&self) -> bool {
+        self.hovered
+    }
+
+    pub fn focused(&self) -> bool {
+        self.focused
+    }
+
+    pub fn pressed(&self) -> bool {
+        self.pressed
+    }
+
+    pub fn dirty_regions(&self) -> &[Rect] {
+        &self.dirty_regions
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct WidgetRuntimeTable {
+    entries: HashMap<WidgetId, WidgetRuntime>,
+}
+
+impl WidgetRuntimeTable {
+    pub fn get(&self, id: WidgetId) -> WidgetRuntime {
+        self.entries.get(&id).cloned().unwrap_or_default()
+    }
+
+    pub fn is_hovered(&self, id: WidgetId) -> bool {
+        self.entries.get(&id).is_some_and(|entry| entry.hovered)
+    }
+
+    pub fn is_focused(&self, id: WidgetId) -> bool {
+        self.entries.get(&id).is_some_and(|entry| entry.focused)
+    }
+
+    pub fn set_hovered(&mut self, id: WidgetId, hovered: bool) -> bool {
+        let entry = self.entries.entry(id).or_default();
+        let changed = entry.hovered != hovered;
+        entry.hovered = hovered;
+        changed
+    }
+
+    pub fn set_pressed(&mut self, id: WidgetId, pressed: bool) -> bool {
+        let entry = self.entries.entry(id).or_default();
+        let changed = entry.pressed != pressed;
+        entry.pressed = pressed;
+        changed
+    }
+
+    pub fn set_focused(&mut self, id: WidgetId, focused: bool) -> bool {
+        let entry = self.entries.entry(id).or_default();
+        let changed = entry.focused != focused;
+        entry.focused = focused;
+        changed
+    }
+
+    pub fn clear_focus_except(&mut self, id: WidgetId) -> Vec<WidgetId> {
+        let mut cleared = Vec::new();
+        for (entry_id, entry) in &mut self.entries {
+            if *entry_id != id && entry.focused {
+                cleared.push(*entry_id);
+            }
+            entry.focused = *entry_id == id;
+        }
+        self.entries.entry(id).or_default().focused = true;
+        cleared
+    }
+
+    pub fn mark_dirty(&mut self, id: WidgetId, region: Rect) {
+        self.entries
+            .entry(id)
+            .or_default()
+            .dirty_regions
+            .push(region);
+    }
+
+    pub fn clear_dirty(&mut self) {
+        for entry in self.entries.values_mut() {
+            entry.dirty_regions.clear();
+        }
+    }
+}
+
 pub struct PaintContext<'a> {
     pub commands: &'a mut Vec<PaintCommand>,
     pub now: Instant,
@@ -42,6 +139,7 @@ pub struct RenderBuildContext<'a> {
     dirty_paths: Vec<DirtyPath>,
     force_rebuild: bool,
     theme: &'a Theme,
+    runtime: &'a WidgetRuntimeTable,
     parent_world_transform: Transform,
 }
 
@@ -59,6 +157,7 @@ impl<'a> RenderBuildContext<'a> {
         dirty_paths: &[Vec<usize>],
         force_rebuild: bool,
         theme: &'a Theme,
+        runtime: &'a WidgetRuntimeTable,
     ) -> Self {
         Self {
             previous,
@@ -71,12 +170,17 @@ impl<'a> RenderBuildContext<'a> {
                 .collect(),
             force_rebuild,
             theme,
+            runtime,
             parent_world_transform: Transform::IDENTITY,
         }
     }
 
     pub fn theme(&self) -> &'a Theme {
         self.theme
+    }
+
+    pub fn runtime(&self) -> &'a WidgetRuntimeTable {
+        self.runtime
     }
 
     pub fn previous(&self) -> Option<&'a RenderNode> {
@@ -100,6 +204,7 @@ impl<'a> RenderBuildContext<'a> {
                 .collect(),
             force_rebuild: self.force_rebuild,
             theme: self.theme,
+            runtime: self.runtime,
             parent_world_transform,
         }
     }

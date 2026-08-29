@@ -2,7 +2,7 @@ use crate::{
     event::{Action, EventContext, EventResult, SceneUpdate, UiEvent},
     layout::Constraints,
     theme::Theme,
-    widget::{RenderBuildContext, Widget},
+    widget::{RenderBuildContext, Widget, WidgetRuntimeTable},
 };
 use zui_core::Rect;
 use zui_render::RenderNodeIndex;
@@ -15,6 +15,7 @@ pub struct WidgetTree {
     layout_dirty: bool,
     paint_dirty: bool,
     scene_update: SceneUpdate,
+    runtime: WidgetRuntimeTable,
 }
 
 impl WidgetTree {
@@ -27,6 +28,7 @@ impl WidgetTree {
             layout_dirty: true,
             paint_dirty: true,
             scene_update: SceneUpdate::default(),
+            runtime: WidgetRuntimeTable::default(),
         }
     }
     pub fn measure(&mut self, constraints: Constraints) -> zui_core::Size {
@@ -48,10 +50,14 @@ impl WidgetTree {
         size
     }
     pub fn event(&mut self, event: &UiEvent) -> (EventResult, Vec<Action>) {
-        let mut ctx = EventContext::new();
-        let result = self.root.event(event, &mut ctx);
-        let actions = ctx.take_actions();
-        let mut update = ctx.take_scene_update();
+        let (result, actions, mut update, focus_changed) = {
+            let mut ctx = EventContext::with_runtime(&mut self.runtime);
+            let result = self.root.event(event, &mut ctx);
+            let actions = ctx.take_actions();
+            let update = ctx.take_scene_update();
+            let focus_changed = ctx.take_focus_changed();
+            (result, actions, update, focus_changed)
+        };
         if result == EventResult::RequestRedraw && update.is_empty() {
             update.request_full_rebuild();
         }
@@ -65,6 +71,22 @@ impl WidgetTree {
                 }
             }
         }
+        // A focus transfer changes both the new input and the old input's
+        // caret/background. Invalidate the old retained node as well, even
+        // though the pointer event was dispatched only to the new input.
+        if let Some(node) = self.render_node.as_mut() {
+            for widget in focus_changed {
+                if let (Some(path), Some(previous)) = (
+                    self.render_index.path_for(widget.value()),
+                    self.render_index.node(node, widget.value()),
+                ) {
+                    let region = previous.world_bounds();
+                    node.mark_dirty_path(path, zui_render::DirtyFlags::PAINT, Some(region));
+                    update.invalidate_node(widget.value(), region);
+                    self.runtime.mark_dirty(widget, region);
+                }
+            }
+        }
         if !update.is_empty() {
             self.paint_dirty = true;
             self.scene_update.merge(update);
@@ -73,7 +95,7 @@ impl WidgetTree {
     }
     pub fn render_node_cached(&mut self) -> &zui_render::RenderNode {
         if self.render_node.is_none() {
-            let mut context = RenderBuildContext::new(None, &[], true, &self.theme);
+            let mut context = RenderBuildContext::new(None, &[], true, &self.theme, &self.runtime);
             let mut node = self.root.build_render_node_incremental(&mut context);
             node.mark_dirty(zui_render::DirtyFlags::PAINT);
             self.render_index = node.build_index();
@@ -91,6 +113,7 @@ impl WidgetTree {
                 &dirty_paths,
                 self.scene_update.full_rebuild(),
                 &self.theme,
+                &self.runtime,
             );
             let mut node = self.root.build_render_node_incremental(&mut context);
             if self.scene_update.full_rebuild() {
@@ -112,7 +135,7 @@ impl WidgetTree {
             .expect("render node was just built")
     }
     pub fn build_render_node(&self) -> zui_render::RenderNode {
-        let mut context = RenderBuildContext::new(None, &[], true, &self.theme);
+        let mut context = RenderBuildContext::new(None, &[], true, &self.theme, &self.runtime);
         self.root.build_render_node_incremental(&mut context)
     }
     pub fn theme(&self) -> &Theme {
@@ -172,6 +195,7 @@ impl WidgetTree {
         if let Some(node) = self.render_node.as_mut() {
             node.clear_dirty();
         }
+        self.runtime.clear_dirty();
     }
     pub fn root(&self) -> &dyn Widget {
         &*self.root
@@ -182,6 +206,10 @@ impl WidgetTree {
 
     pub fn render_index(&self) -> &RenderNodeIndex {
         &self.render_index
+    }
+
+    pub fn runtime(&self) -> &WidgetRuntimeTable {
+        &self.runtime
     }
 
     /// Widget identities whose RenderNode subtrees changed since the last

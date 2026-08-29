@@ -88,8 +88,7 @@ impl Widget for IconButton {
     fn event(&mut self, event: &UiEvent, ctx: &mut EventContext) -> EventResult {
         if let (InputEvent::CursorMoved { .. }, Some(point)) = (&event.input, event.position) {
             let hovered = self.bounds.contains(point);
-            if hovered != self.hovered {
-                self.hovered = hovered;
+            if ctx.set_hovered(self.id, hovered) {
                 self.invalidate(ctx, self.bounds);
                 return EventResult::RequestRedraw;
             }
@@ -113,5 +112,52 @@ impl Widget for IconButton {
         build_render_node_with_commands(self.id, self.bounds, theme, |ctx| {
             self.build_render_commands(ctx)
         })
+    }
+    fn build_render_node_incremental(
+        &self,
+        context: &mut crate::RenderBuildContext<'_>,
+    ) -> zui_render::RenderNode {
+        if !context.subtree_is_dirty(self.id) {
+            if let Some(previous) = context.previous() {
+                return previous.clone();
+            }
+        }
+        let hovered = context.runtime().is_hovered(self.id);
+        context.localize(build_render_node_with_commands(
+            self.id,
+            self.bounds,
+            context.theme(),
+            |ctx| {
+                let style = &ctx.theme.icon_button;
+                ctx.fill_rounded_rect(
+                    self.bounds,
+                    style.radius,
+                    if hovered {
+                        style.hover_background
+                    } else {
+                        style.background
+                    },
+                );
+                let icon_rect = Rect {
+                    origin: Point {
+                        x: Dip(self.bounds.origin.x.0
+                            + (self.bounds.size.width.0 - style.icon_size.0) / 2.0),
+                        y: Dip(self.bounds.origin.y.0
+                            + (self.bounds.size.height.0 - style.icon_size.0) / 2.0),
+                    },
+                    size: Size {
+                        width: style.icon_size,
+                        height: style.icon_size,
+                    },
+                };
+                build_icon_commands(
+                    ctx,
+                    self.icon,
+                    icon_rect,
+                    style.foreground,
+                    style.stroke_width,
+                );
+            },
+        ))
     }
 }
