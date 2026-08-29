@@ -188,15 +188,10 @@ impl<'a> PaintContext<'a> {
         });
     }
     pub fn draw_icon(&mut self, rect: Rect, path: IconPath, color: Color, stroke: zui_core::Dip) {
-        let path = zui_render::IconPath::new(
-            path.segments
-                .into_iter()
-                .map(|segment| zui_render::LineSegment {
-                    start: self.local_point(segment.start),
-                    end: self.local_point(segment.end),
-                })
-                .collect::<Vec<_>>(),
-        );
+        let path = path.transformed(Transform::translate(
+            zui_core::Dip(-self.origin.x.0),
+            zui_core::Dip(-self.origin.y.0),
+        ));
         self.commands.push(PaintCommand::Icon {
             rect: self.local_rect(rect),
             path,

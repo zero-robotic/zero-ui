@@ -29,8 +29,8 @@ pub use widgets::{
 };
 pub use zui_render::{
     ClipShape, DirtyFlags, DirtyRegionSet, DirtyState, FillRule, FrameStats, IconPath, ImageId,
-    ImageResource, LineSegment, PathCommand, RenderNode, RenderNodeBuilder, RenderNodeIndex,
-    ResourceBudget, ResourceCache, ResourceHandle, ResourceManager, ResourceUsage, Transform,
+    ImageResource, PathCommand, RenderNode, RenderNodeBuilder, RenderNodeIndex, ResourceBudget,
+    ResourceCache, ResourceHandle, ResourceManager, ResourceUsage, Transform,
 };
 
 #[cfg(test)]

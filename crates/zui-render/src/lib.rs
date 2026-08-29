@@ -28,7 +28,7 @@ use draw_batches::*;
 pub use error::RenderError;
 use gpu_pipeline::*;
 use paint::transform_clip_shape;
-pub use paint::{ClipShape, FillRule, IconPath, LineSegment, PaintCommand, PathCommand};
+pub use paint::{ClipShape, FillRule, IconPath, PaintCommand, PathCommand};
 
 static SYSTEM_FONTS: OnceLock<Vec<fontdue::Font>> = OnceLock::new();
 static TEXT_MEASURE_CACHE: OnceLock<Mutex<HashMap<(String, u32), Dip>>> = OnceLock::new();
@@ -3439,16 +3439,9 @@ impl Renderer {
                     stroke,
                     ..
                 } => {
-                    for segment in &path.segments {
-                        let (vertices, indices) = line_batch(&mut batches, transform);
-                        append_line(
-                            vertices,
-                            indices,
-                            segment.start,
-                            segment.end,
-                            *stroke,
-                            apply_opacity(*color, opacity),
-                        );
+                    let mesh = path_stroke_mesh(path, *stroke, apply_opacity(*color, opacity));
+                    if !mesh.vertices.is_empty() {
+                        batches.push(RenderBatch::Rect(mesh.vertices, mesh.indices, transform));
                     }
                 }
                 PaintCommand::PathFill { path, color } => {

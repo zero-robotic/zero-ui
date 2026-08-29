@@ -5,7 +5,7 @@ use crate::{
     widget::{build_render_node_with_commands, Widget, WidgetId},
 };
 use zui_core::{Color, Dip, Point, Rect, Size};
-use zui_render::{IconPath, LineSegment};
+use zui_render::{FillRule, IconPath, PathCommand};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IconName {
@@ -105,9 +105,10 @@ pub(crate) fn build_icon_commands(
         x: Dip(x + px * size),
         y: Dip(y + py * size),
     };
-    let mut segments = Vec::new();
+    let mut commands = Vec::new();
     let mut line = |a: Point, b: Point| {
-        segments.push(LineSegment { start: a, end: b });
+        commands.push(PathCommand::MoveTo(a));
+        commands.push(PathCommand::LineTo(b));
     };
     match name {
         IconName::Check => {
@@ -148,5 +149,10 @@ pub(crate) fn build_icon_commands(
             line(point(0.65, 0.22), point(0.65, 0.78));
         }
     }
-    ctx.draw_icon(bounds, IconPath::new(segments), color, stroke);
+    ctx.draw_icon(
+        bounds,
+        IconPath::from_commands(commands, FillRule::EvenOdd),
+        color,
+        stroke,
+    );
 }

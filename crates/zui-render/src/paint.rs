@@ -192,16 +192,12 @@ impl PaintCommand {
                 color,
             } => {
                 validate_rect(*rect)?;
-                if !stroke.0.is_finite()
-                    || stroke.0 <= 0.0
-                    || path.segments.iter().any(|segment| {
-                        !point_is_finite(segment.start) || !point_is_finite(segment.end)
-                    })
-                {
+                if !stroke.0.is_finite() || stroke.0 <= 0.0 {
                     return Err(RenderError::InvalidCommand(
                         "icon geometry is invalid".into(),
                     ));
                 }
+                validate_path(path)?;
                 validate_color(*color)
             }
             Self::PathFill { path, color } => {
@@ -371,12 +367,6 @@ fn line_bounds(start: Point, end: Point, width: Dip) -> Rect {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LineSegment {
-    pub start: Point,
-    pub end: Point,
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FillRule {
     #[default]
@@ -402,35 +392,13 @@ pub enum PathCommand {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IconPath {
-    /// Compatibility representation for existing stroked icons. New filled
-    /// paths and clips should use `commands`.
-    pub segments: Vec<LineSegment>,
     pub commands: Vec<PathCommand>,
     pub fill_rule: FillRule,
 }
 
 impl IconPath {
-    pub fn new(segments: impl Into<Vec<LineSegment>>) -> Self {
-        let segments = segments.into();
-        let mut commands = Vec::with_capacity(segments.len() * 2);
-        let mut current = None;
-        for segment in &segments {
-            if current != Some(segment.start) {
-                commands.push(PathCommand::MoveTo(segment.start));
-            }
-            commands.push(PathCommand::LineTo(segment.end));
-            current = Some(segment.end);
-        }
-        Self {
-            segments,
-            commands,
-            fill_rule: FillRule::EvenOdd,
-        }
-    }
-
     pub fn from_commands(commands: impl Into<Vec<PathCommand>>, fill_rule: FillRule) -> Self {
         Self {
-            segments: Vec::new(),
             commands: commands.into(),
             fill_rule,
         }
@@ -439,14 +407,6 @@ impl IconPath {
     pub fn transformed(&self, transform: Transform) -> Self {
         let map = |point: Point| transform.point(point);
         Self {
-            segments: self
-                .segments
-                .iter()
-                .map(|segment| LineSegment {
-                    start: map(segment.start),
-                    end: map(segment.end),
-                })
-                .collect(),
             commands: self
                 .commands
                 .iter()
@@ -534,6 +494,6 @@ impl IconPath {
 
 impl Default for IconPath {
     fn default() -> Self {
-        Self::new(Vec::new())
+        Self::from_commands(Vec::new(), FillRule::EvenOdd)
     }
 }
