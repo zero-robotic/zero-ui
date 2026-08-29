@@ -7,8 +7,8 @@ use zui_platform::{Host, InputEvent, PlatformEvent, WindowOptions};
 use zui_render::RenderError;
 use zui_render_runtime::{ActiveRenderer, RendererError};
 use zui_ui::{
-    Button, Checkbox, ColumnLayout, Constraints, IconButton, IconName, Layout, Padding, Switch,
-    Text, TextInput, Theme, UiEvent, WidgetTree,
+    Button, Checkbox, ColumnLayout, Constraints, IconButton, IconName, Layout, Padding, Radio,
+    Switch, Text, TextInput, Theme, UiEvent, WidgetTree,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,6 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .child(IconButton::new(IconName::Menu))
             .child(Button::new("开始语音"))
             .child(Checkbox::new("启用语音识别"))
+            .child(Radio::new("普通模式").selected(true))
             .child(Switch::new("自动播放"))
             .child(TextInput::new()),
         Dip(16.0),

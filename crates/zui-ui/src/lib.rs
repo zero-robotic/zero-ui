@@ -19,13 +19,14 @@ pub use layouts::{
 };
 pub use semantics::{SemanticRole, SemanticsNode};
 pub use theme::{
-    ButtonStyle, CheckboxStyle, IconButtonStyle, IconStyle, SwitchStyle, TextInputStyle, TextStyle,
-    Theme, ThemeToken,
+    ButtonStyle, CheckboxStyle, IconButtonStyle, IconStyle, RadioStyle, SwitchStyle,
+    TextInputStyle, TextStyle, Theme, ThemeToken,
 };
 pub use tree::WidgetTree;
 pub use widget::{PaintContext, RenderBuildContext, Widget, WidgetId};
 pub use widgets::{
-    Button, Checkbox, Divider, DividerAxis, Icon, IconButton, IconName, Switch, Text, TextInput,
+    Button, Checkbox, Divider, DividerAxis, Icon, IconButton, IconName, Radio, Switch, Text,
+    TextInput,
 };
 pub use zui_render::{
     ClipShape, DirtyFlags, DirtyRegionSet, DirtyState, FillRule, FrameStats, IconPath, ImageId,
@@ -116,6 +117,47 @@ mod tests {
         );
         assert!(checkbox.is_checked());
         assert_eq!(context.actions()[0].kind, ActionKind::CheckedChanged);
+    }
+
+    #[test]
+    fn radio_selects_once_and_emits_selection_changed_action() {
+        let mut radio = Radio::new("Normal");
+        radio.set_bounds(Rect {
+            origin: Point {
+                x: Dip(10.0),
+                y: Dip(10.0),
+            },
+            size: Size {
+                width: Dip(120.0),
+                height: Dip(30.0),
+            },
+        });
+        let event = UiEvent::pointer(
+            None,
+            Point {
+                x: Dip(20.0),
+                y: Dip(20.0),
+            },
+            InputEvent::MouseInput {
+                button: MouseButton::Left,
+                state: KeyState::Pressed,
+            },
+        );
+        let mut context = EventContext::new();
+
+        assert_eq!(
+            radio.event(&event, &mut context),
+            EventResult::RequestRedraw
+        );
+        assert!(radio.is_selected());
+        assert_eq!(context.actions()[0].kind, ActionKind::SelectionChanged);
+
+        let mut second_context = EventContext::new();
+        assert_eq!(
+            radio.event(&event, &mut second_context),
+            EventResult::Handled
+        );
+        assert!(second_context.actions().is_empty());
     }
 
     #[test]

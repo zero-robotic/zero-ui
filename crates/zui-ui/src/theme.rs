@@ -21,6 +21,7 @@ pub struct Theme {
     pub text: TextStyle,
     pub button: ButtonStyle,
     pub checkbox: CheckboxStyle,
+    pub radio: RadioStyle,
     pub switch: SwitchStyle,
     pub icon: IconStyle,
     pub icon_button: IconButtonStyle,
@@ -52,6 +53,16 @@ pub struct CheckboxStyle {
     pub background: Color,
     pub checked_background: Color,
     pub foreground: Color,
+    pub font_size: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct RadioStyle {
+    pub size: Dip,
+    pub gap: Dip,
+    pub background: Color,
+    pub selected_background: Color,
+    pub dot: Color,
     pub font_size: u32,
 }
 
@@ -148,6 +159,19 @@ impl Default for Theme {
                 foreground: Color::WHITE,
                 font_size: 2,
             },
+            radio: RadioStyle {
+                size: Dip(22.0),
+                gap: Dip(8.0),
+                background: Color {
+                    r: 0.82,
+                    g: 0.85,
+                    b: 0.9,
+                    a: 1.0,
+                },
+                selected_background: accent,
+                dot: Color::WHITE,
+                font_size: 2,
+            },
             switch: SwitchStyle {
                 width: Dip(42.0),
                 height: Dip(24.0),
@@ -233,6 +257,7 @@ struct ThemeConfig {
     text: Option<TextConfig>,
     button: Option<ButtonConfig>,
     checkbox: Option<CheckboxConfig>,
+    radio: Option<RadioConfig>,
     switch: Option<SwitchConfig>,
     icon: Option<IconConfig>,
     icon_button: Option<IconButtonConfig>,
@@ -264,6 +289,16 @@ struct CheckboxConfig {
     background: Option<String>,
     checked_background: Option<String>,
     foreground: Option<String>,
+    font_size: Option<u32>,
+}
+
+#[derive(Default, Deserialize)]
+struct RadioConfig {
+    size: Option<f32>,
+    gap: Option<f32>,
+    background: Option<String>,
+    selected_background: Option<String>,
+    dot: Option<String>,
     font_size: Option<u32>,
 }
 
@@ -405,6 +440,26 @@ impl ThemeConfig {
             }
             if let Some(value) = config.font_size {
                 theme.checkbox.font_size = value;
+            }
+        }
+        if let Some(config) = self.radio {
+            if let Some(value) = config.size {
+                theme.radio.size = Dip(value);
+            }
+            if let Some(value) = config.gap {
+                theme.radio.gap = Dip(value);
+            }
+            if let Some(value) = config.background {
+                theme.radio.background = parse_color(&value)?;
+            }
+            if let Some(value) = config.selected_background {
+                theme.radio.selected_background = parse_color(&value)?;
+            }
+            if let Some(value) = config.dot {
+                theme.radio.dot = parse_color(&value)?;
+            }
+            if let Some(value) = config.font_size {
+                theme.radio.font_size = value;
             }
         }
         if let Some(config) = self.switch {

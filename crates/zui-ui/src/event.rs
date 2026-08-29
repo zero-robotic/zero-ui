@@ -37,6 +37,7 @@ pub enum EventResult {
 pub enum ActionKind {
     Clicked,
     CheckedChanged,
+    SelectionChanged,
     FocusRequested,
     TextChanged,
 }
