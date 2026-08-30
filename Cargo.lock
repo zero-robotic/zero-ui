@@ -320,11 +320,10 @@ dependencies = [
 name = "counter"
 version = "0.1.0"
 dependencies = [
- "zui-backend-winit",
+ "zui-app",
  "zui-core",
  "zui-platform",
  "zui-render",
- "zui-render-runtime",
  "zui-ui",
 ]
 
@@ -396,11 +395,8 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 name = "empty-window"
 version = "0.1.0"
 dependencies = [
- "zui-backend-winit",
+ "zui-app",
  "zui-core",
- "zui-platform",
- "zui-render",
- "zui-render-runtime",
  "zui-ui",
 ]
 
@@ -2634,6 +2630,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "zui-app"
+version = "0.1.0"
+dependencies = [
+ "zui-backend-winit",
+ "zui-core",
+ "zui-platform",
+ "zui-render",
+ "zui-render-runtime",
+ "zui-ui",
 ]
 
 [[package]]

@@ -1,5 +1,6 @@
 //! Platform-independent widgets, layout, events, focus and semantics.
 
+pub mod component;
 pub mod event;
 pub mod focus;
 pub mod layout;
@@ -10,6 +11,10 @@ pub mod tree;
 pub mod widget;
 pub mod widgets;
 
+pub use component::{
+    button, column, text, ButtonView, ColumnView, Component, ComponentCtx, ComponentRoot, TextView,
+    View, ViewCtx,
+};
 pub use event::{Action, ActionKind, EventContext, EventResult, SceneUpdate, UiEvent};
 pub use focus::FocusManager;
 pub use layout::{Constraints, LayoutBox};

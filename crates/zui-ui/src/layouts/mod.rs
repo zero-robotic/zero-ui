@@ -55,6 +55,10 @@ impl Layout {
         self.children.push(Box::new(child));
         self
     }
+    pub fn child_box(mut self, child: Box<dyn Widget>) -> Self {
+        self.children.push(child);
+        self
+    }
     pub fn children(&self) -> &[Box<dyn Widget>] {
         &self.children
     }

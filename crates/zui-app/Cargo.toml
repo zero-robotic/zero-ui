@@ -1,0 +1,14 @@
+[package]
+name = "zui-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+zui-backend-winit = { path = "../zui-backend-winit" }
+zui-core = { path = "../zui-core" }
+zui-platform = { path = "../zui-platform" }
+zui-render = { path = "../zui-render" }
+zui-render-runtime = { path = "../zui-render-runtime" }
+zui-ui = { path = "../zui-ui" }

@@ -209,6 +209,19 @@ impl<'a> RenderBuildContext<'a> {
         }
     }
 
+    /// Forces rebuilding a subtree after its retained widget structure was
+    /// replaced by a declarative component reconciliation pass.
+    pub fn force_rebuild_subtree(&self) -> Self {
+        Self {
+            previous: self.previous,
+            dirty_paths: self.dirty_paths.clone(),
+            force_rebuild: true,
+            theme: self.theme,
+            runtime: self.runtime,
+            parent_world_transform: self.parent_world_transform,
+        }
+    }
+
     pub fn subtree_is_dirty(&self, _id: WidgetId) -> bool {
         self.force_rebuild || !self.dirty_paths.is_empty()
     }

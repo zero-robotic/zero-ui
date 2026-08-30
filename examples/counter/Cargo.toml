@@ -6,9 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-zui-backend-winit = { path = "../../crates/zui-backend-winit" }
+zui-app = { path = "../../crates/zui-app" }
 zui-core = { path = "../../crates/zui-core" }
+zui-ui = { path = "../../crates/zui-ui" }
+
+[dev-dependencies]
 zui-platform = { path = "../../crates/zui-platform" }
 zui-render = { path = "../../crates/zui-render" }
-zui-render-runtime = { path = "../../crates/zui-render-runtime" }
-zui-ui = { path = "../../crates/zui-ui" }

@@ -8,6 +8,7 @@ members = [
     "crates/zui-render-cpu",
     "crates/zui-render-runtime",
     "crates/zui-ui",
+    "crates/zui-app",
     "crates/zui-backend-headless",
     "crates/zui-backend-winit",
     "examples/empty_window",
