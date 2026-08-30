@@ -303,10 +303,11 @@ impl Runner<'_> {
                 host.window.request_redraw();
             }
         } else {
-            self.redraw_at = Some(
-                self.redraw_at
-                    .map_or(deadline, |current| current.min(deadline)),
-            );
+            // A later deferred request supersedes an earlier one. This is
+            // essential for resize debouncing: every native resize event must
+            // extend the quiet period instead of preserving the first event's
+            // deadline.
+            self.redraw_at = Some(deadline);
         }
     }
 }

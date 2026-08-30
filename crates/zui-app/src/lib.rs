@@ -4,7 +4,11 @@
 //! and renderer surface management so applications only provide a root widget
 //! (or a declarative [`Component`]).
 
-use std::{cell::RefCell, rc::Rc, time::Instant};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use zui_backend_winit::{WinitBackend, WinitHost};
 use zui_core::{Dip, PhysicalSize, Point};
@@ -108,6 +112,8 @@ impl WindowRunner {
                 x: Dip::ZERO,
                 y: Dip::ZERO,
             },
+            pending_resize: None,
+            resize_deadline: None,
         }));
 
         let window_state = Rc::clone(&state);
@@ -131,6 +137,15 @@ struct RunnerState {
     tree: WidgetTree,
     background: zui_core::Color,
     pointer_position: Point,
+    /// Native resize notifications can arrive much faster than the GPU can
+    /// recreate render targets. Retain only the latest dimensions.
+    pending_resize: Option<(
+        zui_core::WindowId,
+        zui_core::Size,
+        PhysicalSize,
+        zui_core::ScaleFactor,
+    )>,
+    resize_deadline: Option<Instant>,
 }
 
 impl RunnerState {
@@ -154,13 +169,12 @@ impl RunnerState {
                 scale_factor,
             } => {
                 let physical = scale_factor.to_physical(size);
-                if physical != PhysicalSize::default() {
-                    self.tree.layout(Constraints::loose(size));
-                    self.renderer
-                        .resize(window, physical, scale_factor)
-                        .expect("failed to resize render surface");
-                }
-                Some(Instant::now())
+                self.pending_resize = Some((window, size, physical, scale_factor));
+                // Let the platform composite the previous frame while its
+                // maximize/live-resize animation is still changing size.
+                let deadline = Instant::now() + Duration::from_millis(100);
+                self.resize_deadline = Some(deadline);
+                Some(deadline)
             }
             PlatformEvent::Input { window, event } => {
                 if let InputEvent::CursorMoved { position } = &event {
@@ -187,6 +201,21 @@ impl RunnerState {
     }
 
     fn redraw(&mut self, window: zui_core::WindowId) -> Option<Instant> {
+        if let Some(deadline) = self.resize_deadline {
+            if Instant::now() < deadline {
+                return Some(deadline);
+            }
+            self.resize_deadline = None;
+        }
+        if let Some((resize_window, size, physical, scale_factor)) = self.pending_resize.take() {
+            if physical != PhysicalSize::default() {
+                self.tree.layout(Constraints::loose(size));
+                self.renderer
+                    .resize(resize_window, physical, scale_factor)
+                    .expect("failed to resize render surface");
+                self.tree.request_paint(None);
+            }
+        }
         if !self.tree.needs_redraw() {
             if self.tree.next_redraw().is_some() {
                 self.tree.request_paint(None);
