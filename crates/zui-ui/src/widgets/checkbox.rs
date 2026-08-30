@@ -2,13 +2,15 @@ use crate::{
     event::{is_left_press, ActionKind, EventContext, EventResult, UiEvent},
     layout::Constraints,
     theme::Theme,
-    widget::{build_render_node_with_commands, Widget, WidgetId},
+    widget::{build_render_node_with_commands, RenderBuildContext, Widget, WidgetId},
+    Text,
 };
 use zui_core::{Dip, Point, Rect, Size};
+use zui_render::{RenderNode, Transform};
 
 pub struct Checkbox {
     id: WidgetId,
-    label: String,
+    label: Text,
     checked: bool,
     bounds: Rect,
     theme: Theme,
@@ -16,12 +18,16 @@ pub struct Checkbox {
 
 impl Checkbox {
     pub fn new(label: impl Into<String>) -> Self {
+        let theme = Theme::default();
+        let mut label = Text::new(label);
+        label.set_font_size(theme.checkbox.font_size);
+        label.set_color(theme.text.color);
         Self {
             id: WidgetId::new(),
-            label: label.into(),
+            label,
             checked: false,
             bounds: Rect::default(),
-            theme: Theme::default(),
+            theme,
         }
     }
 
@@ -39,12 +45,11 @@ impl Checkbox {
     }
 
     pub fn label(&self) -> &str {
-        &self.label
+        self.label.text()
     }
 
     fn build_render_commands(&self, ctx: &mut crate::PaintContext<'_>) {
         let style = &ctx.theme.checkbox;
-        let text_metrics = zui_render::text_metrics(style.font_size);
         let box_rect = Rect {
             origin: self.bounds.origin,
             size: Size {
@@ -98,16 +103,6 @@ impl Checkbox {
             ctx.draw_line(left, middle, stroke, style.foreground);
             ctx.draw_line(middle, right, stroke, style.foreground);
         }
-        ctx.draw_text(
-            &self.label,
-            Point {
-                x: Dip(box_rect.origin.x.0 + style.size.0 + style.gap.0),
-                y: Dip(self.bounds.origin.y.0
-                    + (self.bounds.size.height.0 - text_metrics.line_height.0) / 2.0),
-            },
-            ctx.theme.text.color,
-            style.font_size,
-        );
     }
 }
 
@@ -122,13 +117,22 @@ impl Widget for Checkbox {
 
     fn arrange(&mut self, bounds: Rect) {
         self.bounds = bounds;
+        let size = self.label.bounds().size;
+        let style = &self.theme.checkbox;
+        self.label.arrange(Rect {
+            origin: Point {
+                x: Dip(bounds.origin.x.0 + style.size.0 + style.gap.0),
+                y: Dip(bounds.origin.y.0 + (bounds.size.height.0 - size.height.0) / 2.0),
+            },
+            size,
+        });
     }
 
     fn measure(&mut self, constraints: Constraints) -> Size {
         let style = &self.theme.checkbox;
-        let label_width = zui_render::measure_text(&self.label, style.font_size).0;
+        let label = self.label.measure(Constraints::loose(constraints.max));
         let size = constraints.constrain(Size {
-            width: Dip(style.size.0 + style.gap.0 + label_width),
+            width: Dip(style.size.0 + style.gap.0 + label.width.0),
             height: Dip(style
                 .size
                 .0
@@ -155,11 +159,35 @@ impl Widget for Checkbox {
 
     fn set_theme(&mut self, theme: &Theme) {
         self.theme = theme.clone();
+        self.label.set_font_size(theme.checkbox.font_size);
+        self.label.set_color(theme.text.color);
+        self.label.set_theme(theme);
     }
 
-    fn build_render_node(&self, theme: &Theme) -> zui_render::RenderNode {
-        build_render_node_with_commands(self.id, self.bounds, theme, |ctx| {
+    fn build_render_node(&self, theme: &Theme) -> RenderNode {
+        let mut node = build_render_node_with_commands(self.id, self.bounds, theme, |ctx| {
             self.build_render_commands(ctx)
-        })
+        });
+        node.add_child(self.label.build_render_node(theme));
+        node
+    }
+    fn build_render_node_incremental(&self, context: &mut RenderBuildContext<'_>) -> RenderNode {
+        if !context.subtree_is_dirty(self.id) {
+            if let Some(previous) = context.previous() {
+                return previous.clone();
+            }
+        }
+        let mut node = context.localize(build_render_node_with_commands(
+            self.id,
+            self.bounds,
+            context.theme(),
+            |ctx| self.build_render_commands(ctx),
+        ));
+        let mut label_context = context.child(
+            0,
+            Transform::translate(self.bounds.origin.x, self.bounds.origin.y),
+        );
+        node.add_child(self.label.build_render_node_incremental(&mut label_context));
+        node
     }
 }

@@ -61,6 +61,7 @@ pub enum TextOverflow {
 struct Line {
     text: String,
     width: Dip,
+    metrics: zui_render::TextRunMetrics,
 }
 
 /// A styled text widget with multiline layout and overflow handling.
@@ -90,6 +91,7 @@ impl Text {
             lines: vec![Line {
                 width: Dip::ZERO,
                 text: text.clone(),
+                metrics: zui_render::text_run_metrics(&text, Theme::default().text.font_size),
             }],
             text,
             font_family: None,
@@ -160,6 +162,16 @@ impl Text {
         self.text = text.into();
     }
 
+    /// Updates an explicit foreground color for composite controls.
+    pub fn set_color(&mut self, color: Color) {
+        self.color = Some(color);
+    }
+
+    /// Updates an explicit scale for composite controls.
+    pub fn set_font_size(&mut self, size: u32) {
+        self.font_size = Some(size.max(1));
+    }
+
     pub fn requested_font_family(&self) -> Option<&str> {
         self.font_family.as_deref()
     }
@@ -200,6 +212,7 @@ impl Text {
         let text = text.into();
         Line {
             width: zui_render::measure_text(&text, self.font_size_value()),
+            metrics: zui_render::text_run_metrics(&text, self.font_size_value()),
             text,
         }
     }
@@ -328,7 +341,10 @@ impl Text {
                 &line.text,
                 Point {
                     x: Dip(x),
-                    y: Dip(top + index as f32 * line_height),
+                    y: Dip(top
+                        + index as f32 * line_height
+                        + (line_height - line.metrics.ink_height().0).max(0.0) / 2.0
+                        - line.metrics.ink_top.0),
                 },
                 self.color_value(),
                 self.font_size_value(),

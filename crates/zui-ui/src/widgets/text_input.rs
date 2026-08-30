@@ -87,11 +87,14 @@ impl TextInput {
 
     fn build_render_commands(&self, ctx: &mut crate::PaintContext<'_>, focused: bool) {
         let style = &ctx.theme.text_input;
-        let text_metrics = zui_render::text_metrics(style.font_size);
+        let text_metrics = zui_render::text_run_metrics(&self.text, style.font_size);
+        let ink_height = text_metrics.ink_height();
+        let baseline = self.bounds.origin.y.0
+            + (self.bounds.size.height.0 - ink_height.0).max(0.0) / 2.0
+            - text_metrics.ink_top.0;
         let text_origin = Point {
             x: Dip(self.bounds.origin.x.0 + style.padding_x.0),
-            y: Dip(self.bounds.origin.y.0
-                + (self.bounds.size.height.0 - text_metrics.line_height.0) / 2.0),
+            y: Dip(baseline),
         };
         ctx.fill_rect(
             self.bounds,
@@ -110,11 +113,11 @@ impl TextInput {
                 Rect {
                     origin: Point {
                         x: Dip(start_x),
-                        y: text_origin.y,
+                        y: Dip(baseline + text_metrics.ink_top.0),
                     },
                     size: Size {
                         width: Dip(end_x - start_x),
-                        height: text_metrics.line_height,
+                        height: ink_height,
                     },
                 },
                 style.selection_background,
@@ -128,12 +131,11 @@ impl TextInput {
                 Rect {
                     origin: Point {
                         x: Dip(caret_x),
-                        y: Dip(self.bounds.origin.y.0
-                            + (self.bounds.size.height.0 - text_metrics.line_height.0) / 2.0),
+                        y: Dip(baseline + text_metrics.ink_top.0),
                     },
                     size: Size {
                         width: Dip(2.0),
-                        height: text_metrics.line_height,
+                        height: ink_height,
                     },
                 },
                 style.caret_color,

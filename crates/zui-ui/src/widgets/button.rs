@@ -2,58 +2,59 @@ use crate::{
     event::{is_left_press, ActionKind, EventContext, EventResult, UiEvent},
     layout::Constraints,
     theme::Theme,
-    widget::{build_render_node_with_commands, Widget, WidgetId},
+    widget::{build_render_node_with_commands, RenderBuildContext, Widget, WidgetId},
+    Text,
 };
 use zui_core::{Dip, Point, Rect, Size};
 use zui_platform::InputEvent;
+use zui_render::{RenderNode, Transform};
 
 pub struct Button {
     id: WidgetId,
-    label: String,
+    label: Text,
     bounds: Rect,
-    hovered: bool,
     theme: Theme,
 }
-
 impl Button {
     pub fn new(label: impl Into<String>) -> Self {
+        let theme = Theme::default();
+        let mut text = Text::new(label);
+        text.set_font_size(theme.button.font_size);
+        text.set_color(theme.button.foreground);
         Self {
             id: WidgetId::new(),
-            label: label.into(),
+            label: text,
             bounds: Rect::default(),
-            hovered: false,
-            theme: Theme::default(),
+            theme,
         }
     }
     pub fn label(&self) -> &str {
-        &self.label
+        self.label.text()
     }
-
-    fn build_render_commands(&self, ctx: &mut crate::PaintContext<'_>) {
+    fn place_label(&mut self) {
+        let style = &self.theme.button;
+        let size = self.label.bounds().size;
+        self.label.arrange(Rect {
+            origin: Point {
+                x: Dip(self.bounds.origin.x.0 + style.padding_x.0),
+                y: Dip(self.bounds.origin.y.0 + (self.bounds.size.height.0 - size.height.0) / 2.0),
+            },
+            size,
+        });
+    }
+    fn background(&self, ctx: &mut crate::PaintContext<'_>, hovered: bool) {
         let style = &ctx.theme.button;
-        let text_metrics = zui_render::text_metrics(style.font_size);
         ctx.fill_rounded_rect(
             self.bounds,
             style.radius,
-            if self.hovered {
+            if hovered {
                 style.hover_background
             } else {
                 style.background
             },
         );
-        ctx.draw_text(
-            &self.label,
-            Point {
-                x: Dip(self.bounds.origin.x.0 + style.padding_x.0),
-                y: Dip(self.bounds.origin.y.0
-                    + (self.bounds.size.height.0 - text_metrics.line_height.0) / 2.0),
-            },
-            style.foreground,
-            style.font_size,
-        );
     }
 }
-
 impl Widget for Button {
     fn id(&self) -> WidgetId {
         self.id
@@ -63,31 +64,32 @@ impl Widget for Button {
     }
     fn arrange(&mut self, bounds: Rect) {
         self.bounds = bounds;
+        self.place_label();
     }
     fn measure(&mut self, constraints: Constraints) -> Size {
+        let label = self.label.measure(Constraints::loose(constraints.max));
         let size = constraints.constrain(Size {
-            width: Dip(
-                zui_render::measure_text(&self.label, self.theme.button.font_size).0
-                    + self.theme.button.padding_x.0 * 2.0,
-            ),
+            width: Dip(label.width.0 + self.theme.button.padding_x.0 * 2.0),
             height: self.theme.button.height,
         });
         self.bounds.size = size;
         size
     }
+    fn next_redraw(&self) -> Option<std::time::Instant> {
+        self.label.next_redraw()
+    }
     fn event(&mut self, event: &UiEvent, ctx: &mut EventContext) -> EventResult {
         if let (InputEvent::CursorMoved { .. }, Some(point)) = (&event.input, event.position) {
-            let hovered = self.bounds.contains(point);
-            if ctx.set_hovered(self.id, hovered) {
+            if ctx.set_hovered(self.id, self.bounds.contains(point)) {
                 self.invalidate(ctx, self.bounds);
                 return EventResult::RequestRedraw;
             }
         }
-        let clicked = is_left_press(event)
+        if is_left_press(event)
             && event
                 .position
-                .is_some_and(|point| self.bounds.contains(point));
-        if clicked {
+                .is_some_and(|point| self.bounds.contains(point))
+        {
             ctx.emit(self.id, ActionKind::Clicked);
             self.invalidate(ctx, self.bounds);
             EventResult::RequestRedraw
@@ -97,50 +99,35 @@ impl Widget for Button {
     }
     fn set_theme(&mut self, theme: &Theme) {
         self.theme = theme.clone();
+        self.label.set_font_size(theme.button.font_size);
+        self.label.set_color(theme.button.foreground);
+        self.label.set_theme(theme);
     }
-    fn build_render_node(&self, theme: &Theme) -> zui_render::RenderNode {
-        build_render_node_with_commands(self.id, self.bounds, theme, |ctx| {
-            self.build_render_commands(ctx)
-        })
+    fn build_render_node(&self, theme: &Theme) -> RenderNode {
+        let mut node = build_render_node_with_commands(self.id, self.bounds, theme, |ctx| {
+            self.background(ctx, false)
+        });
+        node.add_child(self.label.build_render_node(theme));
+        node
     }
-    fn build_render_node_incremental(
-        &self,
-        context: &mut crate::RenderBuildContext<'_>,
-    ) -> zui_render::RenderNode {
+    fn build_render_node_incremental(&self, context: &mut RenderBuildContext<'_>) -> RenderNode {
         if !context.subtree_is_dirty(self.id) {
             if let Some(previous) = context.previous() {
                 return previous.clone();
             }
         }
         let hovered = context.runtime().is_hovered(self.id);
-        let node = crate::widget::build_render_node_with_commands(
+        let mut node = context.localize(build_render_node_with_commands(
             self.id,
             self.bounds,
             context.theme(),
-            |ctx| {
-                let style = &ctx.theme.button;
-                let text_metrics = zui_render::text_metrics(style.font_size);
-                ctx.fill_rounded_rect(
-                    self.bounds,
-                    style.radius,
-                    if hovered {
-                        style.hover_background
-                    } else {
-                        style.background
-                    },
-                );
-                ctx.draw_text(
-                    &self.label,
-                    Point {
-                        x: Dip(self.bounds.origin.x.0 + style.padding_x.0),
-                        y: Dip(self.bounds.origin.y.0
-                            + (self.bounds.size.height.0 - text_metrics.line_height.0) / 2.0),
-                    },
-                    style.foreground,
-                    style.font_size,
-                );
-            },
+            |ctx| self.background(ctx, hovered),
+        ));
+        let mut label_context = context.child(
+            0,
+            Transform::translate(self.bounds.origin.x, self.bounds.origin.y),
         );
-        context.localize(node)
+        node.add_child(self.label.build_render_node_incremental(&mut label_context));
+        node
     }
 }

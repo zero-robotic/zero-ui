@@ -96,6 +96,21 @@ pub struct TextMetrics {
     pub line_height: Dip,
 }
 
+/// Measured visible bounds of one text run, expressed relative to its
+/// baseline. `ink_top` is normally negative and `ink_bottom` positive.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextRunMetrics {
+    pub line: TextMetrics,
+    pub ink_top: Dip,
+    pub ink_bottom: Dip,
+}
+
+impl TextRunMetrics {
+    pub fn ink_height(self) -> Dip {
+        Dip((self.ink_bottom.0 - self.ink_top.0).max(0.0))
+    }
+}
+
 /// Converts the toolkit's scale token to the point size passed to the font
 /// rasterizer. Keeping this conversion here prevents widget-side constants
 /// from drifting away from the renderer.
@@ -131,6 +146,46 @@ pub fn text_metrics(scale: u32) -> TextMetrics {
         descent: Dip(descent),
         line_gap: Dip(line_gap),
         line_height: Dip(line_height),
+    }
+}
+
+/// Returns both line-box metrics and the actual visible glyph envelope for a
+/// run. Layout code uses this to derive a baseline from a desired visual
+/// (ink) position, while the renderer only consumes that baseline.
+pub fn text_run_metrics(text: &str, scale: u32) -> TextRunMetrics {
+    let size = text_font_size(scale);
+    let mut top = 0.0_f32;
+    let mut bottom = 0.0_f32;
+    let mut has_ink = false;
+    for character in text.chars() {
+        if let Some(font) = cached_system_fonts()
+            .iter()
+            .find(|font| font.lookup_glyph_index(character) != 0)
+        {
+            let metrics = font.metrics(character, size);
+            if metrics.width > 0 && metrics.height > 0 {
+                let glyph_top = -(metrics.height as f32) - metrics.ymin as f32;
+                let glyph_bottom = -metrics.ymin as f32;
+                if has_ink {
+                    top = top.min(glyph_top);
+                    bottom = bottom.max(glyph_bottom);
+                } else {
+                    top = glyph_top;
+                    bottom = glyph_bottom;
+                    has_ink = true;
+                }
+            }
+        }
+    }
+    let line = text_metrics(scale);
+    if !has_ink {
+        top = -line.ascent.0;
+        bottom = line.descent.0;
+    }
+    TextRunMetrics {
+        line,
+        ink_top: Dip(top),
+        ink_bottom: Dip(bottom),
     }
 }
 

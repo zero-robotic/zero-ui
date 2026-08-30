@@ -40,7 +40,7 @@ pub use zui_render::{
     ClipShape, DirtyFlags, DirtyRegionSet, DirtyState, FillRule, FrameStats, IconPath, ImageId,
     ImageResource, PathCommand, RenderNode, RenderNodeBuilder, RenderNodeId, RenderNodeIndex,
     ResourceBudget, ResourceCache, ResourceHandle, ResourceManager, ResourceUsage, TextMetrics,
-    Transform,
+    TextRunMetrics, Transform,
 };
 
 #[cfg(test)]

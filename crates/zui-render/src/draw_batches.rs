@@ -189,7 +189,9 @@ pub(crate) fn append_text(
         let scale_factor = scale_factor.max(1.0);
         let logical_font_size = text_font_size(scale);
         let font_size = logical_font_size * scale_factor;
-        let baseline = (origin.y.0 + text_metrics(scale).ascent.0) * scale_factor;
+        // `origin` is a baseline produced by the UI text-layout layer. The
+        // renderer deliberately does no line-box positioning of its own.
+        let baseline = origin.y.0 * scale_factor;
         let mut x = origin.x.0;
         for character in text.chars() {
             let font_id = *resources.font_cache.entry(character).or_insert_with(|| {
