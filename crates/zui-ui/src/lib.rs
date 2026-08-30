@@ -27,7 +27,7 @@ pub use theme::{
     ButtonStyle, CheckboxStyle, IconButtonStyle, IconStyle, RadioStyle, SwitchStyle,
     TextInputStyle, TextStyle, Theme, ThemeToken,
 };
-pub use tree::WidgetTree;
+pub use tree::{SceneSubmission, WidgetTree};
 pub use widget::{
     PaintContext, RenderBuildContext, Widget, WidgetId, WidgetRuntime, WidgetRuntimeTable,
 };
@@ -39,7 +39,8 @@ pub use widgets::{
 pub use zui_render::{
     ClipShape, DirtyFlags, DirtyRegionSet, DirtyState, FillRule, FrameStats, IconPath, ImageId,
     ImageResource, PathCommand, RenderNode, RenderNodeBuilder, RenderNodeId, RenderNodeIndex,
-    ResourceBudget, ResourceCache, ResourceHandle, ResourceManager, ResourceUsage, Transform,
+    ResourceBudget, ResourceCache, ResourceHandle, ResourceManager, ResourceUsage, TextMetrics,
+    Transform,
 };
 
 #[cfg(test)]
@@ -394,7 +395,7 @@ mod tests {
         assert_eq!(size.width, Dip(100.0));
         assert_eq!(
             size.height,
-            Dip((Theme::default().text.font_size * 7) as f32)
+            zui_render::text_metrics(Theme::default().text.font_size).line_height
         );
     }
 
@@ -409,9 +410,33 @@ mod tests {
             align.child().bounds().origin,
             Point {
                 x: Dip(0.0),
-                y: Dip((40.0 - (Theme::default().text.font_size * 7) as f32) / 2.0),
+                y: Dip((40.0
+                    - zui_render::text_metrics(Theme::default().text.font_size)
+                        .line_height
+                        .0)
+                    / 2.0,),
             }
         );
+    }
+
+    #[test]
+    fn scene_submission_keeps_snapshot_and_update_in_one_revision() {
+        let mut tree = WidgetTree::new(Layout::new(ColumnLayout::new()).child(Text::new("A")));
+        tree.layout(Constraints::loose(Size {
+            width: Dip(200.0),
+            height: Dip(100.0),
+        }));
+        let first_revision = {
+            let submission = tree.scene_submission();
+            assert!(submission.update.full_rebuild());
+            assert_eq!(submission.node.children.len(), 1);
+            submission.update.revision()
+        };
+        tree.mark_clean();
+        tree.request_paint(None);
+        let submission = tree.scene_submission();
+        assert!(submission.update.full_rebuild());
+        assert_eq!(submission.update.revision(), first_revision + 1);
     }
 
     #[test]

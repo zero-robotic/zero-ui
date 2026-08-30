@@ -172,7 +172,7 @@ impl Text {
     }
     fn line_height_value(&self) -> Dip {
         self.line_height
-            .unwrap_or(Dip((self.font_size_value() * 7) as f32))
+            .unwrap_or(zui_render::text_metrics(self.font_size_value()).line_height)
     }
     fn color_value(&self) -> Color {
         self.color.unwrap_or(self.theme.text.color)
@@ -328,7 +328,7 @@ impl Text {
                 &line.text,
                 Point {
                     x: Dip(x),
-                    y: Dip(top + index as f32 * line_height + 4.0),
+                    y: Dip(top + index as f32 * line_height),
                 },
                 self.color_value(),
                 self.font_size_value(),

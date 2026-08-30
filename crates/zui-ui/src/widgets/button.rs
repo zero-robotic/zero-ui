@@ -31,6 +31,7 @@ impl Button {
 
     fn build_render_commands(&self, ctx: &mut crate::PaintContext<'_>) {
         let style = &ctx.theme.button;
+        let text_metrics = zui_render::text_metrics(style.font_size);
         ctx.fill_rounded_rect(
             self.bounds,
             style.radius,
@@ -45,7 +46,7 @@ impl Button {
             Point {
                 x: Dip(self.bounds.origin.x.0 + style.padding_x.0),
                 y: Dip(self.bounds.origin.y.0
-                    + (self.bounds.size.height.0 - style.font_size as f32 * 7.0) / 2.0),
+                    + (self.bounds.size.height.0 - text_metrics.line_height.0) / 2.0),
             },
             style.foreground,
             style.font_size,
@@ -118,6 +119,7 @@ impl Widget for Button {
             context.theme(),
             |ctx| {
                 let style = &ctx.theme.button;
+                let text_metrics = zui_render::text_metrics(style.font_size);
                 ctx.fill_rounded_rect(
                     self.bounds,
                     style.radius,
@@ -132,7 +134,7 @@ impl Widget for Button {
                     Point {
                         x: Dip(self.bounds.origin.x.0 + style.padding_x.0),
                         y: Dip(self.bounds.origin.y.0
-                            + (self.bounds.size.height.0 - style.font_size as f32 * 7.0) / 2.0),
+                            + (self.bounds.size.height.0 - text_metrics.line_height.0) / 2.0),
                     },
                     style.foreground,
                     style.font_size,

@@ -86,6 +86,54 @@ impl TextMeasureCache {
 
 type GlyphKey = (usize, char, u32, u32);
 
+/// Vertical metrics shared by text measurement and glyph rasterization.
+/// All values are logical DIPs and use positive distances.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextMetrics {
+    pub ascent: Dip,
+    pub descent: Dip,
+    pub line_gap: Dip,
+    pub line_height: Dip,
+}
+
+/// Converts the toolkit's scale token to the point size passed to the font
+/// rasterizer. Keeping this conversion here prevents widget-side constants
+/// from drifting away from the renderer.
+pub fn text_font_size(scale: u32) -> f32 {
+    (scale.max(1) * 7) as f32
+}
+
+/// Returns line metrics from the same fallback font set used to rasterize
+/// [`PaintCommand::Text`]. The envelope covers every loaded fallback font so
+/// mixed Latin/CJK text has a line box large enough for all selected glyphs.
+pub fn text_metrics(scale: u32) -> TextMetrics {
+    let font_size = text_font_size(scale);
+    let mut ascent = 0.0_f32;
+    let mut descent = 0.0_f32;
+    let mut line_gap = 0.0_f32;
+    let mut line_height = 0.0_f32;
+    for font in cached_system_fonts() {
+        if let Some(metrics) = font.horizontal_line_metrics(font_size) {
+            ascent = ascent.max(metrics.ascent);
+            descent = descent.max((-metrics.descent).max(0.0));
+            line_gap = line_gap.max(metrics.line_gap.max(0.0));
+            line_height = line_height.max(metrics.new_line_size);
+        }
+    }
+    if line_height <= 0.0 {
+        ascent = font_size * 0.8;
+        descent = font_size - ascent;
+        line_height = font_size;
+    }
+    line_height = line_height.max(ascent + descent + line_gap);
+    TextMetrics {
+        ascent: Dip(ascent),
+        descent: Dip(descent),
+        line_gap: Dip(line_gap),
+        line_height: Dip(line_height),
+    }
+}
+
 /// Measures text using the same system font used by the renderer.
 pub fn measure_text(text: &str, scale: u32) -> Dip {
     let scale = scale.max(1);
@@ -96,7 +144,7 @@ pub fn measure_text(text: &str, scale: u32) -> Dip {
     }
     let fonts = cached_system_fonts();
     let width = if !fonts.is_empty() {
-        let size = (scale * 7) as f32;
+        let size = text_font_size(scale);
         Dip(text
             .chars()
             .map(|character| {
@@ -916,6 +964,10 @@ pub struct SceneUpdate {
     dirty_nodes: BTreeMap<RenderNodeId, DirtyRegionSet>,
     damage: DirtyRegionSet,
     full_rebuild: bool,
+    /// Monotonically increasing version assigned by the UI scene owner.
+    /// Zero denotes an unversioned submission for backwards-compatible
+    /// renderer integrations.
+    revision: u64,
 }
 
 impl SceneUpdate {
@@ -928,6 +980,12 @@ impl SceneUpdate {
     }
     pub fn full_rebuild(&self) -> bool {
         self.full_rebuild
+    }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub fn set_revision(&mut self, revision: u64) {
+        self.revision = revision;
     }
     pub fn is_empty(&self) -> bool {
         !self.full_rebuild && self.dirty_nodes.is_empty() && self.damage.is_empty()
@@ -951,6 +1009,7 @@ impl SceneUpdate {
     }
     pub fn merge(&mut self, mut update: Self) {
         self.full_rebuild |= update.full_rebuild;
+        self.revision = self.revision.max(update.revision);
         self.damage.extend(
             std::mem::take(&mut update.damage)
                 .as_slice()
@@ -1757,6 +1816,10 @@ struct SurfaceState {
     composition_tiles: CompositionTiles,
     spatial_index: Option<SpatialIndex>,
     tile_submission_index: Option<TileSubmissionIndex>,
+    /// The last version of the UI-owned scene successfully materialized for
+    /// this surface. A missing or non-sequential version means incremental
+    /// caches cannot be trusted and must be rebuilt from the submitted root.
+    submitted_scene_revision: Option<u64>,
     last_frame_stats: FrameStats,
 }
 
@@ -3327,6 +3390,7 @@ impl Renderer {
                 composition_tiles: CompositionTiles::new(size),
                 spatial_index: None,
                 tile_submission_index: None,
+                submitted_scene_revision: None,
                 last_frame_stats: FrameStats::default(),
             },
         );
@@ -3432,6 +3496,7 @@ impl Renderer {
                 composition_tiles: CompositionTiles::new(size),
                 spatial_index: None,
                 tile_submission_index: None,
+                submitted_scene_revision: None,
                 last_frame_stats: FrameStats::default(),
             },
         );
@@ -3483,6 +3548,7 @@ impl Renderer {
         state.composition_tiles = CompositionTiles::new(size);
         state.spatial_index = None;
         state.tile_submission_index = None;
+        state.submitted_scene_revision = None;
         state.last_frame_stats = FrameStats::default();
         Ok(())
     }
@@ -4290,6 +4356,7 @@ impl Renderer {
         damage_regions: &[Rect],
         clear: Color,
         dirty_paths: &[Vec<usize>],
+        force_scene_rebuild: bool,
     ) -> Result<(), RenderError> {
         let mut retained = self
             .surfaces
@@ -4297,10 +4364,10 @@ impl Renderer {
             .and_then(|state| state.retained_items.take())
             .unwrap_or_default();
         let initial_scene = retained.is_empty();
-        let scene_changed = node.dirty.is_dirty() || initial_scene;
+        let scene_changed = force_scene_rebuild || node.dirty.is_dirty() || initial_scene;
         let mut changed_paths = Vec::new();
         if scene_changed {
-            if initial_scene || dirty_paths.is_empty() {
+            if force_scene_rebuild || initial_scene || dirty_paths.is_empty() {
                 let mut path = Vec::new();
                 update_retained_subtree(
                     node,
@@ -4310,7 +4377,7 @@ impl Renderer {
                     None,
                     1.0,
                     &[],
-                    initial_scene,
+                    force_scene_rebuild || initial_scene,
                     &mut changed_paths,
                 );
             } else {
@@ -4553,7 +4620,19 @@ impl Renderer {
         // empty path. Previously this flag was only consumed by WidgetTree;
         // the renderer still received individual dirty paths and could keep
         // stale GPU batches for a rebuilt subtree.
-        let full_rebuild = update.full_rebuild();
+        let versioned_submission = update.revision() != 0;
+        let previous_revision = self
+            .surfaces
+            .get(&window)
+            .ok_or(RenderError::SurfaceNotAttached(window))?
+            .submitted_scene_revision;
+        // Incremental replay is valid only if this surface consumed the
+        // immediately preceding scene snapshot. A newly attached surface,
+        // resize, dropped frame, or skipped submission automatically falls
+        // back to rebuilding from the complete RenderNode root.
+        let revision_gap =
+            versioned_submission && previous_revision != Some(update.revision().saturating_sub(1));
+        let full_rebuild = update.full_rebuild() || revision_gap;
         let dirty_paths = if full_rebuild {
             Vec::new()
         } else {
@@ -4572,13 +4651,20 @@ impl Renderer {
         } else {
             update.damage_regions()
         };
-        self.render_node_with_damage_regions_indexed(
+        let result = self.render_node_with_damage_regions_indexed(
             window,
             node,
             damage_regions,
             clear,
             &dirty_paths,
-        )
+            full_rebuild,
+        );
+        if result.is_ok() && versioned_submission {
+            if let Some(state) = self.surfaces.get_mut(&window) {
+                state.submitted_scene_revision = Some(update.revision());
+            }
+        }
+        result
     }
 
     pub fn device(&self) -> &wgpu::Device {

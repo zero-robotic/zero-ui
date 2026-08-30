@@ -175,16 +175,17 @@ impl RunnerState {
                 return None;
             }
         }
-        let scene_update = self.tree.scene_update().clone();
-        let node = self.tree.render_node_cached().clone();
-        let render_index = self.tree.render_index().clone();
-        match self.renderer.render_scene(
-            window,
-            &node,
-            self.background,
-            &render_index,
-            &scene_update,
-        ) {
+        let result = {
+            let scene = self.tree.scene_submission();
+            self.renderer.render_scene(
+                window,
+                scene.node,
+                self.background,
+                scene.index,
+                scene.update,
+            )
+        };
+        match result {
             Ok(()) => self.tree.mark_clean(),
             Err(RendererError::HardwareGpu(RenderError::SurfaceLost)) => {
                 eprintln!("render surface lost; waiting for resize")

@@ -49,6 +49,7 @@ impl Radio {
 
     fn build_render_commands(&self, ctx: &mut crate::PaintContext<'_>) {
         let style = &ctx.theme.radio;
+        let text_metrics = zui_render::text_metrics(style.font_size);
         let indicator = Rect {
             origin: Point {
                 x: self.bounds.origin.x,
@@ -90,7 +91,7 @@ impl Radio {
             Point {
                 x: Dip(indicator.origin.x.0 + style.size.0 + style.gap.0),
                 y: Dip(self.bounds.origin.y.0
-                    + (self.bounds.size.height.0 - style.font_size as f32 * 7.0) / 2.0),
+                    + (self.bounds.size.height.0 - text_metrics.line_height.0) / 2.0),
             },
             ctx.theme.text.color,
             style.font_size,
@@ -116,7 +117,10 @@ impl Widget for Radio {
         let label_width = zui_render::measure_text(&self.label, style.font_size).0;
         let size = constraints.constrain(Size {
             width: Dip(style.size.0 + style.gap.0 + label_width),
-            height: Dip(style.size.0.max(style.font_size as f32 * 7.0)),
+            height: Dip(style
+                .size
+                .0
+                .max(zui_render::text_metrics(style.font_size).line_height.0)),
         });
         self.bounds.size = size;
         size

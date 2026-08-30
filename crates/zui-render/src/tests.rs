@@ -1130,6 +1130,13 @@ fn rectangular_clip_uses_scissor_without_gpu_mask_geometry() {
 }
 
 #[test]
+fn text_line_metrics_enclose_the_glyph_baseline_box() {
+    let metrics = text_metrics(3);
+    assert!(metrics.ascent.0 > 0.0);
+    assert!(metrics.line_height.0 >= metrics.ascent.0 + metrics.descent.0);
+}
+
+#[test]
 fn atlas_free_slots_coalesce_after_resource_release() {
     let slot = |x| AtlasSlot {
         page: 0,

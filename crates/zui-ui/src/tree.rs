@@ -7,6 +7,17 @@ use crate::{
 use zui_core::Rect;
 use zui_render::RenderNodeIndex;
 
+/// An atomic view of the retained scene that is ready for renderer submission.
+///
+/// The root, index, and update always describe the same scene revision. This
+/// prevents callers from accidentally pairing a newly rebuilt RenderNode with
+/// an earlier dirty set (or the reverse).
+pub struct SceneSubmission<'a> {
+    pub node: &'a zui_render::RenderNode,
+    pub index: &'a RenderNodeIndex,
+    pub update: &'a SceneUpdate,
+}
+
 pub struct WidgetTree {
     root: Box<dyn Widget>,
     theme: Theme,
@@ -15,6 +26,7 @@ pub struct WidgetTree {
     layout_dirty: bool,
     paint_dirty: bool,
     scene_update: SceneUpdate,
+    scene_revision: u64,
     runtime: WidgetRuntimeTable,
 }
 
@@ -28,6 +40,7 @@ impl WidgetTree {
             layout_dirty: true,
             paint_dirty: true,
             scene_update: SceneUpdate::default(),
+            scene_revision: 0,
             runtime: WidgetRuntimeTable::default(),
         }
     }
@@ -47,6 +60,7 @@ impl WidgetTree {
         self.render_index = RenderNodeIndex::default();
         self.scene_update.clear();
         self.scene_update.request_full_rebuild();
+        self.advance_scene_revision();
         size
     }
     pub fn event(&mut self, event: &UiEvent) -> (EventResult, Vec<Action>) {
@@ -90,6 +104,7 @@ impl WidgetTree {
         if !update.is_empty() {
             self.paint_dirty = true;
             self.scene_update.merge(update);
+            self.advance_scene_revision();
         }
         (result, actions)
     }
@@ -138,6 +153,18 @@ impl WidgetTree {
         let mut context = RenderBuildContext::new(None, &[], true, &self.theme, &self.runtime);
         self.root.build_render_node_incremental(&mut context)
     }
+    /// Builds, indexes, and returns one coherent scene submission.
+    pub fn scene_submission(&mut self) -> SceneSubmission<'_> {
+        self.render_node_cached();
+        SceneSubmission {
+            node: self
+                .render_node
+                .as_ref()
+                .expect("render node was just built"),
+            index: &self.render_index,
+            update: &self.scene_update,
+        }
+    }
     pub fn theme(&self) -> &Theme {
         &self.theme
     }
@@ -153,6 +180,7 @@ impl WidgetTree {
         self.render_index = RenderNodeIndex::default();
         self.scene_update.clear();
         self.scene_update.request_full_rebuild();
+        self.advance_scene_revision();
     }
     pub fn request_paint(&mut self, region: Option<Rect>) {
         self.paint_dirty = true;
@@ -163,11 +191,13 @@ impl WidgetTree {
             self.scene_update.clear();
             self.scene_update.request_full_rebuild();
         }
+        self.advance_scene_revision();
     }
     pub fn request_paint_regions(&mut self, regions: impl IntoIterator<Item = Rect>) {
         self.paint_dirty = true;
         self.scene_update.request_full_rebuild();
         self.scene_update.extend_damage(regions);
+        self.advance_scene_revision();
     }
     pub fn needs_redraw(&self) -> bool {
         self.layout_dirty || self.paint_dirty
@@ -196,6 +226,11 @@ impl WidgetTree {
             node.clear_dirty();
         }
         self.runtime.clear_dirty();
+    }
+
+    fn advance_scene_revision(&mut self) {
+        self.scene_revision = self.scene_revision.wrapping_add(1).max(1);
+        self.scene_update.set_revision(self.scene_revision);
     }
     pub fn root(&self) -> &dyn Widget {
         &*self.root

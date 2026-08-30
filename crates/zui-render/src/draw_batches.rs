@@ -187,9 +187,9 @@ pub(crate) fn append_text(
     let fonts = resources.fonts;
     if !fonts.is_empty() {
         let scale_factor = scale_factor.max(1.0);
-        let logical_font_size = (scale.max(1) * 7) as f32;
+        let logical_font_size = text_font_size(scale);
         let font_size = logical_font_size * scale_factor;
-        let baseline = (origin.y.0 + logical_font_size * 0.8) * scale_factor;
+        let baseline = (origin.y.0 + text_metrics(scale).ascent.0) * scale_factor;
         let mut x = origin.x.0;
         for character in text.chars() {
             let font_id = *resources.font_cache.entry(character).or_insert_with(|| {

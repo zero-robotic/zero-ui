@@ -87,10 +87,11 @@ impl TextInput {
 
     fn build_render_commands(&self, ctx: &mut crate::PaintContext<'_>, focused: bool) {
         let style = &ctx.theme.text_input;
+        let text_metrics = zui_render::text_metrics(style.font_size);
         let text_origin = Point {
             x: Dip(self.bounds.origin.x.0 + style.padding_x.0),
             y: Dip(self.bounds.origin.y.0
-                + (self.bounds.size.height.0 - style.font_size as f32 * 7.0) / 2.0),
+                + (self.bounds.size.height.0 - text_metrics.line_height.0) / 2.0),
         };
         ctx.fill_rect(
             self.bounds,
@@ -113,7 +114,7 @@ impl TextInput {
                     },
                     size: Size {
                         width: Dip(end_x - start_x),
-                        height: Dip(style.font_size as f32 * 7.0),
+                        height: text_metrics.line_height,
                     },
                 },
                 style.selection_background,
@@ -127,11 +128,12 @@ impl TextInput {
                 Rect {
                     origin: Point {
                         x: Dip(caret_x),
-                        y: Dip(self.bounds.origin.y.0 + (self.bounds.size.height.0 - 26.0) / 2.0),
+                        y: Dip(self.bounds.origin.y.0
+                            + (self.bounds.size.height.0 - text_metrics.line_height.0) / 2.0),
                     },
                     size: Size {
                         width: Dip(2.0),
-                        height: Dip(26.0),
+                        height: text_metrics.line_height,
                     },
                 },
                 style.caret_color,
