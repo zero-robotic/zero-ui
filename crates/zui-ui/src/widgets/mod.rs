@@ -1,5 +1,6 @@
 mod button;
 mod checkbox;
+mod container;
 mod divider;
 mod icon;
 mod icon_button;
@@ -10,6 +11,7 @@ mod text_input;
 
 pub use button::Button;
 pub use checkbox::Checkbox;
+pub use container::{Container, ContainerAlignment, EdgeInsets};
 pub use divider::{Divider, DividerAxis};
 pub use icon::{Icon, IconName};
 pub use icon_button::IconButton;

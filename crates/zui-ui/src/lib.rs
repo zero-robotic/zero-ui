@@ -32,8 +32,8 @@ pub use widget::{
     PaintContext, RenderBuildContext, Widget, WidgetId, WidgetRuntime, WidgetRuntimeTable,
 };
 pub use widgets::{
-    Button, Checkbox, Divider, DividerAxis, Icon, IconButton, IconName, Radio, Switch, Text,
-    TextInput,
+    Button, Checkbox, Container, ContainerAlignment, Divider, DividerAxis, EdgeInsets, Icon,
+    IconButton, IconName, Radio, Switch, Text, TextInput,
 };
 pub use zui_render::{
     ClipShape, DirtyFlags, DirtyRegionSet, DirtyState, FillRule, FrameStats, IconPath, ImageId,
