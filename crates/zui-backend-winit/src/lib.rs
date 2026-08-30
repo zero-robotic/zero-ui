@@ -3,7 +3,7 @@
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
-use winit::event::{ElementState, Ime, WindowEvent};
+use winit::event::{ElementState, Ime, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::raw_window_handle::{
@@ -217,6 +217,21 @@ impl ApplicationHandler for Runner<'_> {
                     },
                 });
                 request_redraw
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let id = self.host.as_ref().expect("host exists").id;
+                let scale = self.host.as_ref().expect("host exists").scale_factor.0 as f32;
+                let (delta_x, delta_y) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (Dip(x * 24.0), Dip(y * 24.0)),
+                    MouseScrollDelta::PixelDelta(position) => (
+                        Dip(position.x as f32 / scale),
+                        Dip(position.y as f32 / scale),
+                    ),
+                };
+                (self.handler)(PlatformEvent::Input {
+                    window: id,
+                    event: InputEvent::MouseWheel { delta_x, delta_y },
+                })
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if self.ime_composing {

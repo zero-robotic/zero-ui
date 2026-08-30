@@ -31,7 +31,7 @@ impl Component for Counter {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let theme = Theme::from_toml_str(include_str!("../../empty_window/theme.toml"))?;
+    let theme = Theme::from_toml_str(include_str!("../../widgets/theme.toml"))?;
     Application::new()
         .title("zero-ui counter example")
         .theme(theme)

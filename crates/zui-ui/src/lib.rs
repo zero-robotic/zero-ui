@@ -12,8 +12,8 @@ pub mod widget;
 pub mod widgets;
 
 pub use component::{
-    button, column, text, ButtonView, ColumnView, Component, ComponentCtx, ComponentRoot, TextView,
-    View, ViewCtx,
+    button, column, text, ButtonView, ColumnView, Component, ComponentCtx, ComponentRoot,
+    TextView as ComponentTextView, View, ViewCtx,
 };
 pub use event::{Action, ActionKind, EventContext, EventResult, SceneUpdate, UiEvent};
 pub use focus::FocusManager;
@@ -33,8 +33,8 @@ pub use widget::{
 };
 pub use widgets::{
     Button, Checkbox, Container, ContainerAlignment, Divider, DividerAxis, EdgeInsets, FontWeight,
-    Icon, IconButton, IconName, Label, Radio, Switch, Text, TextAlign, TextInput, TextOverflow,
-    TextVerticalAlign, TextWrap,
+    Icon, IconButton, IconName, Image, ImageFit, Label, Radio, ScrollArea, ScrollAxis, Switch,
+    Text, TextAlign, TextEditor, TextInput, TextOverflow, TextVerticalAlign, TextView, TextWrap,
 };
 pub use zui_render::{
     ClipShape, DirtyFlags, DirtyRegionSet, DirtyState, FillRule, FrameStats, IconPath, ImageId,

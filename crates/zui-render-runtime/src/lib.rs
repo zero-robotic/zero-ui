@@ -113,6 +113,11 @@ pub enum ActiveRenderer {
 }
 
 impl ActiveRenderer {
+    pub fn register_image(&mut self, id: zui_render::ImageId, image: zui_render::ImageResource) {
+        if let Self::HardwareGpu(renderer) = self {
+            renderer.register_image(id, image);
+        }
+    }
     /// Selects the first available backend. The latter two branches are
     /// intentionally unreachable until their packages gain implementations.
     pub fn new_blocking() -> Result<Self, RendererError> {

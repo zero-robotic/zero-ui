@@ -11,7 +11,8 @@ members = [
     "crates/zui-app",
     "crates/zui-backend-headless",
     "crates/zui-backend-winit",
-    "examples/empty_window",
+    "examples/widgets",
+    "examples/scroll_area",
     "examples/counter",
 ]
 

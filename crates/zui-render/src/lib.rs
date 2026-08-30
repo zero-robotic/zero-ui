@@ -3269,6 +3269,35 @@ struct CachedGlyph {
 }
 
 impl Renderer {
+    /// Fits a native surface within the active device's texture limit while
+    /// preserving its aspect ratio. The compositor scales that surface to the
+    /// native window, so oversized high-DPI windows remain fully visible.
+    fn constrained_surface_size(&self, size: PhysicalSize) -> PhysicalSize {
+        let limit = self.device.limits().max_texture_dimension_2d.max(1);
+        if size.width <= limit && size.height <= limit {
+            return size;
+        }
+        let ratio =
+            (limit as f64 / size.width.max(1) as f64).min(limit as f64 / size.height.max(1) as f64);
+        PhysicalSize {
+            width: (size.width as f64 * ratio).floor().max(1.0) as u32,
+            height: (size.height as f64 * ratio).floor().max(1.0) as u32,
+        }
+    }
+
+    fn surface_scale_factor(
+        requested: PhysicalSize,
+        configured: PhysicalSize,
+        scale_factor: ScaleFactor,
+    ) -> ScaleFactor {
+        if requested.width == 0 || requested.height == 0 {
+            return scale_factor;
+        }
+        let ratio = (configured.width as f64 / requested.width as f64)
+            .min(configured.height as f64 / requested.height as f64);
+        ScaleFactor(scale_factor.0 * ratio)
+    }
+
     pub async fn new() -> Result<Self, RenderError> {
         let instance = wgpu::Instance::default();
         let adapter = instance
@@ -3361,8 +3390,14 @@ impl Renderer {
         };
         let surface = unsafe { self.instance.create_surface_unsafe(target) }
             .map_err(|error| RenderError::Surface(error.to_string()))?;
+        let surface_size = self.constrained_surface_size(size);
+        let surface_scale_factor = Self::surface_scale_factor(size, surface_size, scale_factor);
         let mut config = surface
-            .get_default_config(&self.adapter, size.width.max(1), size.height.max(1))
+            .get_default_config(
+                &self.adapter,
+                surface_size.width.max(1),
+                surface_size.height.max(1),
+            )
             .ok_or_else(|| RenderError::Surface("adapter cannot present to this surface".into()))?;
         let direct_copy_present = surface
             .get_capabilities(&self.adapter)
@@ -3384,8 +3419,8 @@ impl Renderer {
         let stencil_pipeline = create_stencil_pipeline(&self.device, config.format);
         let stencil_mask_pipeline =
             create_stencil_mask_pipeline(&self.device, config.format, &transform_layout);
-        let (canvas, canvas_view) = create_canvas(&self.device, size, config.format);
-        let (stencil, stencil_view) = create_stencil(&self.device, size);
+        let (canvas, canvas_view) = create_canvas(&self.device, surface_size, config.format);
+        let (stencil, stencil_view) = create_stencil(&self.device, surface_size);
         let stencil_reset = create_stencil_reset_buffer(&self.device);
         let damage_clear_pipeline = create_damage_clear_pipeline(&self.device, config.format);
         let damage_clear_color =
@@ -3410,7 +3445,7 @@ impl Renderer {
             SurfaceState {
                 surface,
                 config,
-                size,
+                size: surface_size,
                 pipeline,
                 rounded_pipeline,
                 stencil_rounded_pipeline,
@@ -3434,7 +3469,7 @@ impl Renderer {
                 blit_pipeline,
                 blit_bind_group,
                 direct_copy_present,
-                scale_factor,
+                scale_factor: surface_scale_factor,
                 has_contents: false,
                 retained_items: None,
                 retained_gpu_items: None,
@@ -3442,7 +3477,7 @@ impl Renderer {
                 vertex_arenas: VertexArenas::new(&self.device),
                 index_arena: IndexArena::new(&self.device),
                 indirect_arena: IndirectArena::new(&self.device),
-                composition_tiles: CompositionTiles::new(size),
+                composition_tiles: CompositionTiles::new(surface_size),
                 spatial_index: None,
                 tile_submission_index: None,
                 submitted_scene_revision: None,
@@ -3467,8 +3502,14 @@ impl Renderer {
         };
         let surface = unsafe { self.instance.create_surface_unsafe(target) }
             .map_err(|error| RenderError::Surface(error.to_string()))?;
+        let surface_size = self.constrained_surface_size(size);
+        let surface_scale_factor = Self::surface_scale_factor(size, surface_size, scale_factor);
         let mut config = surface
-            .get_default_config(&self.adapter, size.width.max(1), size.height.max(1))
+            .get_default_config(
+                &self.adapter,
+                surface_size.width.max(1),
+                surface_size.height.max(1),
+            )
             .ok_or_else(|| RenderError::Surface("adapter cannot present to this surface".into()))?;
         let direct_copy_present = surface
             .get_capabilities(&self.adapter)
@@ -3490,8 +3531,8 @@ impl Renderer {
         let stencil_pipeline = create_stencil_pipeline(&self.device, config.format);
         let stencil_mask_pipeline =
             create_stencil_mask_pipeline(&self.device, config.format, &transform_layout);
-        let (canvas, canvas_view) = create_canvas(&self.device, size, config.format);
-        let (stencil, stencil_view) = create_stencil(&self.device, size);
+        let (canvas, canvas_view) = create_canvas(&self.device, surface_size, config.format);
+        let (stencil, stencil_view) = create_stencil(&self.device, surface_size);
         let stencil_reset = create_stencil_reset_buffer(&self.device);
         let damage_clear_pipeline = create_damage_clear_pipeline(&self.device, config.format);
         let damage_clear_color =
@@ -3516,7 +3557,7 @@ impl Renderer {
             SurfaceState {
                 surface,
                 config,
-                size,
+                size: surface_size,
                 pipeline,
                 rounded_pipeline,
                 stencil_rounded_pipeline,
@@ -3540,7 +3581,7 @@ impl Renderer {
                 blit_pipeline,
                 blit_bind_group,
                 direct_copy_present,
-                scale_factor,
+                scale_factor: surface_scale_factor,
                 has_contents: false,
                 retained_items: None,
                 retained_gpu_items: None,
@@ -3548,7 +3589,7 @@ impl Renderer {
                 vertex_arenas: VertexArenas::new(&self.device),
                 index_arena: IndexArena::new(&self.device),
                 indirect_arena: IndirectArena::new(&self.device),
-                composition_tiles: CompositionTiles::new(size),
+                composition_tiles: CompositionTiles::new(surface_size),
                 spatial_index: None,
                 tile_submission_index: None,
                 submitted_scene_revision: None,
@@ -3562,8 +3603,10 @@ impl Renderer {
         &mut self,
         window: WindowId,
         size: PhysicalSize,
-        _scale_factor: ScaleFactor,
+        scale_factor: ScaleFactor,
     ) -> Result<(), RenderError> {
+        let surface_size = self.constrained_surface_size(size);
+        let surface_scale_factor = Self::surface_scale_factor(size, surface_size, scale_factor);
         let state = self
             .surfaces
             .get_mut(&window)
@@ -3572,14 +3615,15 @@ impl Renderer {
             state.size = size;
             return Ok(());
         }
-        state.size = size;
-        state.config.width = size.width;
-        state.config.height = size.height;
+        state.size = surface_size;
+        state.scale_factor = surface_scale_factor;
+        state.config.width = surface_size.width;
+        state.config.height = surface_size.height;
         state.surface.configure(&self.device, &state.config);
-        let (canvas, canvas_view) = create_canvas(&self.device, size, state.config.format);
+        let (canvas, canvas_view) = create_canvas(&self.device, surface_size, state.config.format);
         state.canvas = canvas;
         state.canvas_view = canvas_view;
-        let (stencil, stencil_view) = create_stencil(&self.device, size);
+        let (stencil, stencil_view) = create_stencil(&self.device, surface_size);
         state.stencil = stencil;
         state.stencil_view = stencil_view;
         state.blit_bind_group =
@@ -3600,7 +3644,7 @@ impl Renderer {
         state.vertex_arenas = VertexArenas::new(&self.device);
         state.index_arena = IndexArena::new(&self.device);
         state.indirect_arena = IndirectArena::new(&self.device);
-        state.composition_tiles = CompositionTiles::new(size);
+        state.composition_tiles = CompositionTiles::new(surface_size);
         state.spatial_index = None;
         state.tile_submission_index = None;
         state.submitted_scene_revision = None;

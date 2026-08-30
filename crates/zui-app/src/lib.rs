@@ -9,7 +9,7 @@ use std::{cell::RefCell, rc::Rc, time::Instant};
 use zui_backend_winit::{WinitBackend, WinitHost};
 use zui_core::{Dip, PhysicalSize, Point};
 use zui_platform::{Host, InputEvent, PlatformEvent, WindowOptions};
-use zui_render::RenderError;
+use zui_render::{ImageId, ImageResource, RenderError};
 use zui_render_runtime::{ActiveRenderer, RendererError};
 use zui_ui::{
     Component, ComponentRoot, Constraints, EventResult, Theme, UiEvent, Widget, WidgetTree,
@@ -19,6 +19,7 @@ use zui_ui::{
 pub struct Application {
     options: WindowOptions,
     theme: Theme,
+    images: Vec<(ImageId, ImageResource)>,
 }
 
 impl Default for Application {
@@ -32,6 +33,7 @@ impl Application {
         Self {
             options: WindowOptions::default(),
             theme: Theme::default(),
+            images: Vec::new(),
         }
     }
 
@@ -49,9 +51,13 @@ impl Application {
         self.theme = theme;
         self
     }
+    pub fn image(mut self, id: ImageId, image: ImageResource) -> Self {
+        self.images.push((id, image));
+        self
+    }
 
     pub fn run(self, root: impl Widget + 'static) -> Result<(), Box<dyn std::error::Error>> {
-        WindowRunner::new(self.options, self.theme, root).run()
+        WindowRunner::new(self.options, self.theme, self.images, root).run()
     }
 
     pub fn run_component<C: Component>(
@@ -67,22 +73,35 @@ pub struct WindowRunner {
     options: WindowOptions,
     theme: Theme,
     tree: WidgetTree,
+    images: Vec<(ImageId, ImageResource)>,
 }
 
 impl WindowRunner {
-    pub fn new(options: WindowOptions, theme: Theme, root: impl Widget + 'static) -> Self {
+    pub fn new(
+        options: WindowOptions,
+        theme: Theme,
+        images: Vec<(ImageId, ImageResource)>,
+        root: impl Widget + 'static,
+    ) -> Self {
         let mut tree = WidgetTree::new(root);
         tree.set_theme(theme.clone());
         Self {
             options,
             theme,
             tree,
+            images,
         }
     }
 
     pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {
         let state = Rc::new(RefCell::new(RunnerState {
-            renderer: ActiveRenderer::new_blocking()?,
+            renderer: {
+                let mut renderer = ActiveRenderer::new_blocking()?;
+                for (id, image) in self.images {
+                    renderer.register_image(id, image);
+                }
+                renderer
+            },
             tree: self.tree,
             background: self.theme.background,
             pointer_position: Point {

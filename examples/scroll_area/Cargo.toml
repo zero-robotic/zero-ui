@@ -1,0 +1,11 @@
+[package]
+name = "scroll-area"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+zui-app = { path = "../../crates/zui-app" }
+zui-core = { path = "../../crates/zui-core" }
+zui-ui = { path = "../../crates/zui-ui" }
