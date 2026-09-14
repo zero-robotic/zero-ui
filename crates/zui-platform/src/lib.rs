@@ -96,6 +96,10 @@ pub enum PlatformEvent {
         event: InputEvent,
     },
     RedrawRequested(WindowId),
+    WindowOccluded {
+        window: WindowId,
+        occluded: bool,
+    },
     CloseRequested(WindowId),
     AboutToWait,
 }
@@ -155,7 +159,10 @@ impl LoopControl {
 /// Headless implementations follow the same ordering as native backends.
 pub trait AppLoop<H: Host> {
     fn host_ready(&mut self, host: &H) -> LoopControl;
-    fn event(&mut self, event: PlatformEvent) -> LoopControl;
+    /// Handles an event while borrowing the live host. Keeping the host in
+    /// this callback lets renderers recreate a lost native surface without
+    /// leaking raw-window details into application code.
+    fn event(&mut self, host: &H, event: PlatformEvent) -> LoopControl;
 }
 
 pub trait Backend {

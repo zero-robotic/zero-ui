@@ -4,11 +4,15 @@
 //! default `winit` feature adds the [`Application::run`] convenience path but
 //! does not change the shared `AppLoop` lifecycle used by other backends.
 
+use std::time::{Duration, Instant};
+
 #[cfg(feature = "winit")]
 use zui_backend_winit::WinitBackend;
 use zui_core::{Dip, Point, Size};
 use zui_platform::{AppLoop, Backend, Host, InputEvent, LoopControl, PlatformEvent, WindowOptions};
-use zui_render::{ImageId, ImageResource, RenderError, SurfaceMetrics};
+use zui_render::{
+    FrameDeferReason, FrameOutcome, ImageId, ImageResource, RenderError, SurfaceMetrics,
+};
 #[cfg(feature = "winit")]
 use zui_render_runtime::ActiveRenderer;
 use zui_render_runtime::{ApplicationRenderer, RendererError};
@@ -152,6 +156,7 @@ impl<R> WindowRunner<R> {
                 y: Dip::ZERO,
             },
             pending_resize: None,
+            pending_present: false,
             error: None,
         };
 
@@ -173,6 +178,9 @@ struct RunnerState<R> {
     /// Native resize notifications can arrive much faster than the GPU can
     /// recreate render targets. Retain only the latest dimensions.
     pending_resize: Option<(zui_core::WindowId, Size, SurfaceMetrics)>,
+    /// The renderer accepted the latest scene but could not present it because
+    /// the native drawable was temporarily unavailable.
+    pending_present: bool,
     error: Option<RendererError>,
 }
 
@@ -188,8 +196,8 @@ where
         }
     }
 
-    fn event(&mut self, event: PlatformEvent) -> LoopControl {
-        match self.handle::<H>(event) {
+    fn event(&mut self, host: &H, event: PlatformEvent) -> LoopControl {
+        match self.handle(host, event) {
             Ok(control) => control,
             Err(error) => self.fail(error),
         }
@@ -216,13 +224,13 @@ impl<R> RunnerState<R> {
         )
     }
 
-    fn handle<H>(&mut self, event: PlatformEvent) -> Result<LoopControl, RendererError>
+    fn handle<H>(&mut self, host: &H, event: PlatformEvent) -> Result<LoopControl, RendererError>
     where
         H: Host,
         R: ApplicationRenderer<H>,
     {
         match event {
-            PlatformEvent::RedrawRequested(window) => self.redraw::<H>(window),
+            PlatformEvent::RedrawRequested(window) => self.redraw(host, window),
             PlatformEvent::WindowResized {
                 window,
                 size,
@@ -256,15 +264,24 @@ impl<R> RunnerState<R> {
             }
             PlatformEvent::CloseRequested(window) => {
                 self.renderer.detach_surface(window);
+                self.pending_present = false;
                 Ok(LoopControl::Continue)
             }
+            PlatformEvent::WindowOccluded {
+                occluded: false, ..
+            } if self.pending_present || self.tree.needs_redraw() => Ok(LoopControl::RequestRedraw),
+            PlatformEvent::WindowOccluded { .. } => Ok(LoopControl::Continue),
             PlatformEvent::WindowCreated(_) | PlatformEvent::AboutToWait => {
                 Ok(LoopControl::Continue)
             }
         }
     }
 
-    fn redraw<H>(&mut self, window: zui_core::WindowId) -> Result<LoopControl, RendererError>
+    fn redraw<H>(
+        &mut self,
+        host: &H,
+        window: zui_core::WindowId,
+    ) -> Result<LoopControl, RendererError>
     where
         H: Host,
         R: ApplicationRenderer<H>,
@@ -274,9 +291,10 @@ impl<R> RunnerState<R> {
                 self.tree.layout(Constraints::loose(size));
                 self.renderer.resize(resize_window, metrics)?;
                 self.tree.request_paint(None);
+                self.pending_present = false;
             }
         }
-        if !self.tree.needs_redraw() {
+        if !self.tree.needs_redraw() && !self.pending_present {
             if self.tree.next_redraw().is_some() {
                 self.tree.request_paint(None);
             } else {
@@ -294,9 +312,37 @@ impl<R> RunnerState<R> {
             )
         };
         match result {
-            Ok(()) => self.tree.mark_clean(),
-            Err(RendererError::HardwareGpu(RenderError::SurfaceLost)) => {
-                return Ok(LoopControl::Continue);
+            Ok(FrameOutcome::Presented) => {
+                self.tree.mark_clean();
+                self.pending_present = false;
+            }
+            Ok(FrameOutcome::Deferred(reason)) => {
+                // The renderer retained this exact scene revision, so the UI
+                // can clear its build dirtiness while keeping presentation
+                // pending. A retry submits the cached scene with no update.
+                self.tree.mark_clean();
+                self.pending_present = true;
+                return Ok(match reason {
+                    FrameDeferReason::Timeout => {
+                        LoopControl::WaitUntil(Instant::now() + Duration::from_millis(16))
+                    }
+                    FrameDeferReason::Occluded => LoopControl::Continue,
+                });
+            }
+            Err(RendererError::HardwareGpu(
+                RenderError::SurfaceLost | RenderError::SurfaceOutdated,
+            )) => {
+                // Recreate rather than merely resize: wgpu requires a lost
+                // surface to be recreated from the live native host.
+                self.renderer.detach_surface(window);
+                self.renderer.attach_surface(
+                    window,
+                    host,
+                    native_surface_metrics(host.size(), host.scale_factor()),
+                )?;
+                self.tree.request_paint(None);
+                self.pending_present = false;
+                return Ok(LoopControl::RequestRedraw);
             }
             Err(error) => return Err(error),
         }
@@ -319,8 +365,8 @@ fn native_surface_metrics(
 mod tests {
     use super::*;
     use zui_backend_headless::HeadlessBackend;
-    use zui_render::PaintCommand;
-    use zui_render_runtime::HeadlessRenderer;
+    use zui_render::{FrameDeferReason, FrameOutcome, PaintCommand, RenderNode, RenderNodeIndex};
+    use zui_render_runtime::{ApplicationRenderer, HeadlessRenderer};
     use zui_ui::Text;
 
     fn contains_text(node: &zui_render::RenderNode, expected: &str) -> bool {
@@ -382,5 +428,185 @@ mod tests {
         assert!(frame.update.revision() > 0);
         assert!(frame.index.path_for(root_id).is_some());
         assert!(contains_text(&frame.node, "headless end-to-end frame"));
+    }
+
+    #[derive(Default)]
+    struct DeferredOnceRenderer {
+        attempts: usize,
+        updates: Vec<(bool, bool, u64)>,
+        attach_count: usize,
+        detach_count: usize,
+        lose_first_surface: bool,
+        occlude_first_frame: bool,
+    }
+
+    impl<H: Host> ApplicationRenderer<H> for DeferredOnceRenderer {
+        fn register_image(&mut self, _id: ImageId, _image: ImageResource) {}
+
+        fn attach_surface(
+            &mut self,
+            _window: zui_core::WindowId,
+            _host: &H,
+            _metrics: SurfaceMetrics,
+        ) -> Result<(), RendererError> {
+            self.attach_count += 1;
+            Ok(())
+        }
+
+        fn resize(
+            &mut self,
+            _window: zui_core::WindowId,
+            _metrics: SurfaceMetrics,
+        ) -> Result<(), RendererError> {
+            Ok(())
+        }
+
+        fn detach_surface(&mut self, _window: zui_core::WindowId) {
+            self.detach_count += 1;
+        }
+
+        fn render_scene(
+            &mut self,
+            _window: zui_core::WindowId,
+            _node: &RenderNode,
+            _clear: zui_core::Color,
+            _index: &RenderNodeIndex,
+            update: &zui_render::SceneUpdate,
+        ) -> Result<FrameOutcome, RendererError> {
+            self.attempts += 1;
+            self.updates
+                .push((update.full_rebuild(), update.is_empty(), update.revision()));
+            if self.attempts == 1 {
+                if self.lose_first_surface {
+                    Err(RendererError::HardwareGpu(RenderError::SurfaceLost))
+                } else if self.occlude_first_frame {
+                    Ok(FrameOutcome::Deferred(FrameDeferReason::Occluded))
+                } else {
+                    Ok(FrameOutcome::Deferred(FrameDeferReason::Timeout))
+                }
+            } else {
+                Ok(FrameOutcome::Presented)
+            }
+        }
+    }
+
+    #[test]
+    fn deferred_frame_is_retried_without_rebuilding_the_accepted_scene() {
+        let renderer = Application::new()
+            .run_with(
+                HeadlessBackend::new(),
+                DeferredOnceRenderer::default(),
+                Text::new("deferred frame"),
+            )
+            .expect("a deferred frame should be retried");
+
+        assert_eq!(renderer.attempts, 2);
+        assert_eq!(renderer.attach_count, 1);
+        assert_eq!(renderer.detach_count, 0);
+        assert!(renderer.updates[0].0);
+        assert!(!renderer.updates[0].1);
+        assert!(renderer.updates[1].1);
+        assert_eq!(renderer.updates[1].2, renderer.updates[0].2);
+    }
+
+    #[test]
+    fn lost_surface_is_recreated_and_forces_a_complete_frame() {
+        let renderer = Application::new()
+            .run_with(
+                HeadlessBackend::new(),
+                DeferredOnceRenderer {
+                    lose_first_surface: true,
+                    ..DeferredOnceRenderer::default()
+                },
+                Text::new("surface recovery"),
+            )
+            .expect("a lost surface should be recreated");
+
+        assert_eq!(renderer.attempts, 2);
+        assert_eq!(renderer.attach_count, 2);
+        assert_eq!(renderer.detach_count, 1);
+        assert!(renderer.updates[0].0);
+        assert!(renderer.updates[1].0);
+        assert!(!renderer.updates[1].1);
+        assert!(renderer.updates[1].2 > renderer.updates[0].2);
+    }
+
+    struct VisibilityHost {
+        id: zui_core::WindowId,
+        size: Size,
+    }
+
+    impl Host for VisibilityHost {
+        fn id(&self) -> zui_core::WindowId {
+            self.id
+        }
+
+        fn size(&self) -> Size {
+            self.size
+        }
+
+        fn scale_factor(&self) -> zui_core::ScaleFactor {
+            zui_core::ScaleFactor::default()
+        }
+
+        fn request_redraw(&self) -> Result<(), zui_platform::PlatformError> {
+            Ok(())
+        }
+    }
+
+    struct OcclusionCycleBackend;
+
+    impl Backend for OcclusionCycleBackend {
+        type Host = VisibilityHost;
+
+        fn run(
+            self,
+            options: WindowOptions,
+            app: &mut dyn AppLoop<Self::Host>,
+        ) -> Result<(), zui_platform::PlatformError> {
+            let host = VisibilityHost {
+                id: zui_core::WindowId(zui_core::Id::new(77)),
+                size: options.size,
+            };
+            let created = app.event(&host, PlatformEvent::WindowCreated(host.id));
+            assert!(!matches!(created, LoopControl::Exit));
+            assert_eq!(app.host_ready(&host), LoopControl::RequestRedraw);
+
+            assert_eq!(
+                app.event(&host, PlatformEvent::RedrawRequested(host.id)),
+                LoopControl::Continue
+            );
+            assert_eq!(
+                app.event(
+                    &host,
+                    PlatformEvent::WindowOccluded {
+                        window: host.id,
+                        occluded: false,
+                    },
+                ),
+                LoopControl::RequestRedraw
+            );
+            let _ = app.event(&host, PlatformEvent::RedrawRequested(host.id));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn deferred_occluded_frame_is_presented_after_window_reappears() {
+        let renderer = Application::new()
+            .run_with(
+                OcclusionCycleBackend,
+                DeferredOnceRenderer {
+                    occlude_first_frame: true,
+                    ..DeferredOnceRenderer::default()
+                },
+                Text::new("occlusion recovery"),
+            )
+            .expect("an unoccluded window should present its retained scene");
+
+        assert_eq!(renderer.attempts, 2);
+        assert!(renderer.updates[0].0);
+        assert!(renderer.updates[1].1);
+        assert_eq!(renderer.updates[1].2, renderer.updates[0].2);
     }
 }

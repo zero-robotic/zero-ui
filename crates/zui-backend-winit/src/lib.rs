@@ -112,7 +112,10 @@ impl ApplicationHandler for Runner<'_> {
             size,
             scale_factor,
         });
-        let created = self.app.event(PlatformEvent::WindowCreated(id));
+        let created = self.app.event(
+            self.host.as_ref().expect("host was just installed"),
+            PlatformEvent::WindowCreated(id),
+        );
         self.apply_control(event_loop, created);
         if matches!(created, LoopControl::Exit) {
             return;
@@ -135,7 +138,10 @@ impl ApplicationHandler for Runner<'_> {
         let control = match event {
             WindowEvent::CloseRequested => {
                 let id = self.host.as_ref().expect("host exists").id;
-                let _ = self.app.event(PlatformEvent::CloseRequested(id));
+                let _ = self.app.event(
+                    self.host.as_ref().expect("host exists"),
+                    PlatformEvent::CloseRequested(id),
+                );
                 LoopControl::Exit
             }
             WindowEvent::RedrawRequested => {
@@ -143,7 +149,10 @@ impl ApplicationHandler for Runner<'_> {
                 // Any previous deadline has now produced (or been superseded
                 // by) a frame. The application can return a fresh deadline.
                 self.redraw_at = None;
-                self.app.event(PlatformEvent::RedrawRequested(id))
+                self.app.event(
+                    self.host.as_ref().expect("host exists"),
+                    PlatformEvent::RedrawRequested(id),
+                )
             }
             WindowEvent::Resized(size) => {
                 let host = self.host.as_mut().expect("host exists");
@@ -151,11 +160,14 @@ impl ApplicationHandler for Runner<'_> {
                     width: Dip(size.width as f32 / host.scale_factor.0 as f32),
                     height: Dip(size.height as f32 / host.scale_factor.0 as f32),
                 };
-                self.app.event(PlatformEvent::WindowResized {
-                    window: host.id,
-                    size: host.size,
-                    scale_factor: host.scale_factor,
-                })
+                self.app.event(
+                    host,
+                    PlatformEvent::WindowResized {
+                        window: host.id,
+                        size: host.size,
+                        scale_factor: host.scale_factor,
+                    },
+                )
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let host = self.host.as_mut().expect("host exists");
@@ -165,11 +177,14 @@ impl ApplicationHandler for Runner<'_> {
                     width: Dip(physical.width as f32 / scale_factor as f32),
                     height: Dip(physical.height as f32 / scale_factor as f32),
                 };
-                self.app.event(PlatformEvent::WindowResized {
-                    window: host.id,
-                    size: host.size,
-                    scale_factor: host.scale_factor,
-                })
+                self.app.event(
+                    host,
+                    PlatformEvent::WindowResized {
+                        window: host.id,
+                        size: host.size,
+                        scale_factor: host.scale_factor,
+                    },
+                )
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let id = self.host.as_ref().expect("host exists").id;
@@ -189,15 +204,18 @@ impl ApplicationHandler for Runner<'_> {
                     }
                 }
                 let scale_factor = self.host.as_ref().expect("host exists").scale_factor.0;
-                self.app.event(PlatformEvent::Input {
-                    window: id,
-                    event: InputEvent::CursorMoved {
-                        position: Point {
-                            x: Dip(position.x as f32 / scale_factor as f32),
-                            y: Dip(position.y as f32 / scale_factor as f32),
+                self.app.event(
+                    self.host.as_ref().expect("host exists"),
+                    PlatformEvent::Input {
+                        window: id,
+                        event: InputEvent::CursorMoved {
+                            position: Point {
+                                x: Dip(position.x as f32 / scale_factor as f32),
+                                y: Dip(position.y as f32 / scale_factor as f32),
+                            },
                         },
                     },
-                })
+                )
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 let state = modifiers.state();
@@ -227,13 +245,16 @@ impl ApplicationHandler for Runner<'_> {
                         );
                     }
                 }
-                self.app.event(PlatformEvent::Input {
-                    window: id,
-                    event: InputEvent::MouseInput {
-                        button: map_button(button),
-                        state: map_state(state),
+                self.app.event(
+                    self.host.as_ref().expect("host exists"),
+                    PlatformEvent::Input {
+                        window: id,
+                        event: InputEvent::MouseInput {
+                            button: map_button(button),
+                            state: map_state(state),
+                        },
                     },
-                })
+                )
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let id = self.host.as_ref().expect("host exists").id;
@@ -245,10 +266,13 @@ impl ApplicationHandler for Runner<'_> {
                         Dip(position.y as f32 / scale),
                     ),
                 };
-                self.app.event(PlatformEvent::Input {
-                    window: id,
-                    event: InputEvent::MouseWheel { delta_x, delta_y },
-                })
+                self.app.event(
+                    self.host.as_ref().expect("host exists"),
+                    PlatformEvent::Input {
+                        window: id,
+                        event: InputEvent::MouseWheel { delta_x, delta_y },
+                    },
+                )
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if self.ime_composing {
@@ -256,14 +280,17 @@ impl ApplicationHandler for Runner<'_> {
                 } else {
                     let key = map_key(&event.logical_key);
                     let id = self.host.as_ref().expect("host exists").id;
-                    self.app.event(PlatformEvent::Input {
-                        window: id,
-                        event: InputEvent::Keyboard {
-                            key,
-                            state: map_state(event.state),
-                            modifiers: self.modifiers,
+                    self.app.event(
+                        self.host.as_ref().expect("host exists"),
+                        PlatformEvent::Input {
+                            window: id,
+                            event: InputEvent::Keyboard {
+                                key,
+                                state: map_state(event.state),
+                                modifiers: self.modifiers,
+                            },
                         },
-                    })
+                    )
                 }
             }
             WindowEvent::Ime(ime) => match ime {
@@ -278,23 +305,40 @@ impl ApplicationHandler for Runner<'_> {
                 Ime::Commit(text) if !text.is_empty() => {
                     self.ime_composing = false;
                     let id = self.host.as_ref().expect("host exists").id;
-                    self.app.event(PlatformEvent::Input {
-                        window: id,
-                        event: InputEvent::Text(text),
-                    })
+                    self.app.event(
+                        self.host.as_ref().expect("host exists"),
+                        PlatformEvent::Input {
+                            window: id,
+                            event: InputEvent::Text(text),
+                        },
+                    )
                 }
                 Ime::Commit(_) => {
                     self.ime_composing = false;
                     LoopControl::Continue
                 }
             },
+            WindowEvent::Occluded(occluded) => {
+                let host = self.host.as_ref().expect("host exists");
+                self.app.event(
+                    host,
+                    PlatformEvent::WindowOccluded {
+                        window: host.id,
+                        occluded,
+                    },
+                )
+            }
             _ => LoopControl::Continue,
         };
         self.apply_control(event_loop, control);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let control = self.app.event(PlatformEvent::AboutToWait);
+        let Some(host) = self.host.as_ref() else {
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        };
+        let control = self.app.event(host, PlatformEvent::AboutToWait);
         self.apply_control(event_loop, control);
         if matches!(control, LoopControl::Exit) {
             return;

@@ -10,8 +10,8 @@ use zui_core::{Color, WindowId};
 use zui_platform::spi::RawWindowHandleProvider;
 use zui_platform::Host;
 use zui_render::{
-    ImageId, ImageResource, RenderError, RenderNode, RenderNodeIndex, Renderer, SceneUpdate,
-    SurfaceMetrics,
+    FrameOutcome, ImageId, ImageResource, RenderError, RenderNode, RenderNodeIndex, Renderer,
+    SceneUpdate, SurfaceMetrics,
 };
 use zui_render_cpu::CpuRenderer;
 use zui_render_software_gpu::SoftwareGpuRenderer;
@@ -67,7 +67,7 @@ pub trait ApplicationRenderer<H: Host> {
         clear: Color,
         index: &RenderNodeIndex,
         update: &SceneUpdate,
-    ) -> Result<(), RendererError>;
+    ) -> Result<FrameOutcome, RendererError>;
 }
 
 /// One deterministic frame submitted through the same application renderer
@@ -147,7 +147,7 @@ impl<H: Host> ApplicationRenderer<H> for HeadlessRenderer {
         clear: Color,
         index: &RenderNodeIndex,
         update: &SceneUpdate,
-    ) -> Result<(), RendererError> {
+    ) -> Result<FrameOutcome, RendererError> {
         let metrics =
             self.surfaces.get(&window).copied().ok_or_else(|| {
                 RendererError::Backend(format!("surface {window:?} is not attached"))
@@ -160,7 +160,7 @@ impl<H: Host> ApplicationRenderer<H> for HeadlessRenderer {
             index: index.clone(),
             update: update.clone(),
         });
-        Ok(())
+        Ok(FrameOutcome::Presented)
     }
 }
 
@@ -177,7 +177,7 @@ pub trait RenderBackend {
         clear: Color,
         index: &RenderNodeIndex,
         update: &SceneUpdate,
-    ) -> Result<(), RendererError>;
+    ) -> Result<FrameOutcome, RendererError>;
 }
 
 impl RenderBackend for Renderer {
@@ -192,7 +192,7 @@ impl RenderBackend for Renderer {
         clear: Color,
         index: &RenderNodeIndex,
         update: &SceneUpdate,
-    ) -> Result<(), RendererError> {
+    ) -> Result<FrameOutcome, RendererError> {
         self.render_scene(window, node, clear, index, update)
             .map_err(RendererError::HardwareGpu)
     }
@@ -210,7 +210,7 @@ impl RenderBackend for SoftwareGpuRenderer {
         _: Color,
         _: &RenderNodeIndex,
         _: &SceneUpdate,
-    ) -> Result<(), RendererError> {
+    ) -> Result<FrameOutcome, RendererError> {
         Err(RendererError::NoImplementedFallback)
     }
 }
@@ -227,7 +227,7 @@ impl RenderBackend for CpuRenderer {
         _: Color,
         _: &RenderNodeIndex,
         _: &SceneUpdate,
-    ) -> Result<(), RendererError> {
+    ) -> Result<FrameOutcome, RendererError> {
         Err(RendererError::NoImplementedFallback)
     }
 }
@@ -309,7 +309,7 @@ impl ActiveRenderer {
         clear: Color,
         index: &RenderNodeIndex,
         update: &SceneUpdate,
-    ) -> Result<(), RendererError> {
+    ) -> Result<FrameOutcome, RendererError> {
         match self {
             Self::HardwareGpu(renderer) => {
                 RenderBackend::render_scene(renderer, window, node, clear, index, update)
@@ -356,7 +356,7 @@ where
         clear: Color,
         index: &RenderNodeIndex,
         update: &SceneUpdate,
-    ) -> Result<(), RendererError> {
+    ) -> Result<FrameOutcome, RendererError> {
         ActiveRenderer::render_scene(self, window, node, clear, index, update)
     }
 }

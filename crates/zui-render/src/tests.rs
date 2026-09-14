@@ -1184,6 +1184,30 @@ fn retained_submission_table_keeps_gpu_batches_node_owned() {
 }
 
 #[test]
+fn repeated_scene_revision_is_a_presentation_retry_not_a_gap() {
+    assert!(!scene_revision_has_gap(Some(7), 7));
+    assert!(!scene_revision_has_gap(Some(7), 8));
+    assert!(scene_revision_has_gap(Some(7), 9));
+    assert!(scene_revision_has_gap(None, 7));
+    assert!(!scene_revision_has_gap(None, 0));
+}
+
+#[test]
+fn deferred_canvas_forces_full_replay_even_for_a_later_partial_update() {
+    let damage = [Rect {
+        origin: Point::default(),
+        size: zui_core::Size {
+            width: Dip(10.0),
+            height: Dip(10.0),
+        },
+    }];
+
+    assert!(full_replay_required(true, &damage));
+    assert!(!full_replay_required(false, &damage));
+    assert!(full_replay_required(false, &[]));
+}
+
+#[test]
 fn resource_eviction_never_discards_a_retained_image() {
     let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     let mut resources = ResourceManager::new(&device);

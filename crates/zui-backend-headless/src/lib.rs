@@ -81,7 +81,7 @@ impl Backend for HeadlessBackend {
             scale_factor: ScaleFactor::default(),
             redraws: Cell::new(0),
         };
-        let mut exit = apply_control(&host, app.event(PlatformEvent::WindowCreated(id)))?;
+        let mut exit = apply_control(&host, app.event(&host, PlatformEvent::WindowCreated(id)))?;
         if !exit {
             exit = apply_control(&host, app.host_ready(&host))?;
         }
@@ -93,13 +93,13 @@ impl Backend for HeadlessBackend {
             }
             if delivered < host.redraw_count() {
                 delivered += 1;
-                exit = apply_control(&host, app.event(PlatformEvent::RedrawRequested(id)))?;
+                exit = apply_control(&host, app.event(&host, PlatformEvent::RedrawRequested(id)))?;
             }
             if exit {
                 break;
             }
             let before_wait = host.redraw_count();
-            exit = apply_control(&host, app.event(PlatformEvent::AboutToWait))?;
+            exit = apply_control(&host, app.event(&host, PlatformEvent::AboutToWait))?;
             if exit || (delivered >= host.redraw_count() && host.redraw_count() == before_wait) {
                 break;
             }
@@ -116,8 +116,10 @@ impl Backend for HeadlessBackend {
 
 fn apply_control(host: &HeadlessHost, control: LoopControl) -> Result<bool, PlatformError> {
     match control {
-        LoopControl::Continue | LoopControl::WaitUntil(_) => Ok(false),
-        LoopControl::RequestRedraw => {
+        LoopControl::Continue => Ok(false),
+        // Headless has no wall-clock event source. Advance a scheduled frame
+        // immediately while retaining the iteration guard against runaways.
+        LoopControl::RequestRedraw | LoopControl::WaitUntil(_) => {
             host.request_redraw()?;
             Ok(false)
         }
@@ -141,7 +143,7 @@ mod tests {
             LoopControl::RequestRedraw
         }
 
-        fn event(&mut self, event: PlatformEvent) -> LoopControl {
+        fn event(&mut self, _host: &HeadlessHost, event: PlatformEvent) -> LoopControl {
             self.events.push(event);
             LoopControl::Continue
         }
@@ -175,7 +177,7 @@ mod tests {
                 LoopControl::RequestRedraw
             }
 
-            fn event(&mut self, event: PlatformEvent) -> LoopControl {
+            fn event(&mut self, _host: &HeadlessHost, event: PlatformEvent) -> LoopControl {
                 if matches!(event, PlatformEvent::RedrawRequested(_)) {
                     LoopControl::RequestRedraw
                 } else {

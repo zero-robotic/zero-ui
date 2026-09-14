@@ -374,6 +374,26 @@ pub struct FrameStats {
     pub full_frame: bool,
 }
 
+/// A temporary reason why an accepted scene was not presented to a native
+/// surface. The renderer retains the submitted scene so a later redraw can
+/// present it without requiring the UI to rebuild it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameDeferReason {
+    Timeout,
+    Occluded,
+}
+
+/// Result of submitting one coherent scene revision to a renderer.
+///
+/// `Deferred` is not a presented frame: it only confirms that the renderer
+/// accepted and retained the scene. Callers must schedule another presentation
+/// attempt and must not treat the window as visually up to date.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameOutcome {
+    Presented,
+    Deferred(FrameDeferReason),
+}
+
 /// Complete scale contract for a native rendering surface.
 ///
 /// `device_scale_factor` is owned by the window system (for example Retina
@@ -1745,6 +1765,10 @@ fn path_starts_with(path: &[usize], prefix: &[usize]) -> bool {
     path.len() >= prefix.len() && path[..prefix.len()] == *prefix
 }
 
+fn scene_revision_has_gap(previous: Option<u64>, revision: u64) -> bool {
+    revision != 0 && previous != Some(revision) && previous != Some(revision.saturating_sub(1))
+}
+
 fn remove_cached_subtree(cache: &mut BTreeMap<Vec<usize>, RenderNodeItem>, path: &[usize]) {
     cache.retain(|cached_path, _| !path_starts_with(cached_path, path));
 }
@@ -1870,6 +1894,10 @@ fn coalesce_damage_for_spatial_index(regions: &[Rect], index: Option<&SpatialInd
     result
 }
 
+fn full_replay_required(needs_full_present: bool, damage_regions: &[Rect]) -> bool {
+    needs_full_present || damage_regions.is_empty()
+}
+
 fn union_rect(a: Rect, b: Rect) -> Rect {
     let left = a.origin.x.0.min(b.origin.x.0);
     let top = a.origin.y.0.min(b.origin.y.0);
@@ -1980,6 +2008,9 @@ struct SurfaceState {
     direct_copy_present: bool,
     scale_factor: ScaleFactor,
     has_contents: bool,
+    /// The persistent canvas is older than the accepted retained scene and
+    /// must be replayed completely before the next presentation.
+    needs_full_present: bool,
     /// Retained renderer items. A clean RenderNode reuses this ordered list
     /// without walking the widget/render tree again.
     retained_items: Option<BTreeMap<Vec<usize>, RenderNodeItem>>,
@@ -2002,7 +2033,7 @@ struct SurfaceState {
     /// The last version of the UI-owned scene successfully materialized for
     /// this surface. A missing or non-sequential version means incremental
     /// caches cannot be trusted and must be rebuilt from the submitted root.
-    submitted_scene_revision: Option<u64>,
+    accepted_scene_revision: Option<u64>,
     last_frame_stats: FrameStats,
 }
 
@@ -3663,6 +3694,7 @@ impl Renderer {
                 direct_copy_present,
                 scale_factor: surface_scale_factor,
                 has_contents: false,
+                needs_full_present: true,
                 retained_items: None,
                 retained_gpu_items: None,
                 retained_submission_batches: None,
@@ -3672,7 +3704,7 @@ impl Renderer {
                 composition_tiles: CompositionTiles::new(surface_size),
                 spatial_index: None,
                 tile_submission_index: None,
-                submitted_scene_revision: None,
+                accepted_scene_revision: None,
                 last_frame_stats: FrameStats::default(),
             },
         );
@@ -3774,6 +3806,7 @@ impl Renderer {
                 direct_copy_present,
                 scale_factor: surface_scale_factor,
                 has_contents: false,
+                needs_full_present: true,
                 retained_items: None,
                 retained_gpu_items: None,
                 retained_submission_batches: None,
@@ -3783,7 +3816,7 @@ impl Renderer {
                 composition_tiles: CompositionTiles::new(surface_size),
                 spatial_index: None,
                 tile_submission_index: None,
-                submitted_scene_revision: None,
+                accepted_scene_revision: None,
                 last_frame_stats: FrameStats::default(),
             },
         );
@@ -3816,6 +3849,7 @@ impl Renderer {
         state.blit_bind_group =
             create_blit_bind_group(&self.device, &state.blit_pipeline, &state.canvas_view);
         state.has_contents = false;
+        state.needs_full_present = true;
         state.transform_bindings.clear();
         state.transform_binding_clock = 0;
         state.retained_items = None;
@@ -3834,7 +3868,7 @@ impl Renderer {
         state.composition_tiles = CompositionTiles::new(surface_size);
         state.spatial_index = None;
         state.tile_submission_index = None;
-        state.submitted_scene_revision = None;
+        state.accepted_scene_revision = None;
         state.last_frame_stats = FrameStats::default();
         Ok(())
     }
@@ -4069,22 +4103,15 @@ impl Renderer {
         window: WindowId,
         damage_regions: &[Rect],
         clear: Color,
-    ) -> Result<(), RenderError> {
+    ) -> Result<FrameOutcome, RenderError> {
         let state = self
             .surfaces
             .get_mut(&window)
             .ok_or(RenderError::SurfaceNotAttached(window))?;
-        // Temporarily move retained GPU items out of SurfaceState. This keeps
-        // the replay table stable while the pass mutates other per-surface
-        // caches (transform bindings) without cloning every node batch.
-        let mut retained_gpu_items = state
-            .retained_gpu_items
-            .take()
-            .expect("retained scene is prepared before replay");
         // An empty damage list means full invalidation at the UI layer. On a
         // newly attached (or resized) surface, make that explicit so the
         // first frame cannot take a partial replay/composite path.
-        let full_frame = damage_regions.is_empty();
+        let full_frame = full_replay_required(state.needs_full_present, damage_regions);
         let tiled_damage_regions =
             state
                 .composition_tiles
@@ -4095,18 +4122,33 @@ impl Renderer {
             full_frame,
             ..FrameStats::default()
         };
-        let frame = match state.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
-                return Err(RenderError::SurfaceLost)
+        // Acquiring the fallible swap-chain texture must happen before moving
+        // retained state out of `SurfaceState`. A deferred/lost acquisition
+        // therefore leaves the accepted scene intact for retry or recovery.
+        let (frame, suboptimal) = match state.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame) => (frame, false),
+            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (frame, true),
+            wgpu::CurrentSurfaceTexture::Lost => return Err(RenderError::SurfaceLost),
+            wgpu::CurrentSurfaceTexture::Outdated => return Err(RenderError::SurfaceOutdated),
+            wgpu::CurrentSurfaceTexture::Timeout => {
+                state.needs_full_present = true;
+                return Ok(FrameOutcome::Deferred(FrameDeferReason::Timeout));
             }
-            wgpu::CurrentSurfaceTexture::Timeout => return Ok(()),
-            wgpu::CurrentSurfaceTexture::Occluded => return Ok(()),
+            wgpu::CurrentSurfaceTexture::Occluded => {
+                state.needs_full_present = true;
+                return Ok(FrameOutcome::Deferred(FrameDeferReason::Occluded));
+            }
             wgpu::CurrentSurfaceTexture::Validation => {
                 return Err(RenderError::Surface("surface validation failed".into()))
             }
         };
+        // Temporarily move retained GPU items out of SurfaceState. This keeps
+        // the replay table stable while the pass mutates other per-surface
+        // caches (transform bindings) without cloning every node batch.
+        let mut retained_gpu_items = state
+            .retained_gpu_items
+            .take()
+            .expect("retained scene is prepared before replay");
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -4467,7 +4509,7 @@ impl Renderer {
                 }
             };
             let node_batches = &retained_gpu_items;
-            if state.has_contents && !damage_regions.is_empty() {
+            if !full_frame && state.has_contents && !damage_regions.is_empty() {
                 let index = state
                     .tile_submission_index
                     .as_ref()
@@ -4629,6 +4671,7 @@ impl Renderer {
             }
         }
         state.has_contents = true;
+        state.needs_full_present = false;
         state.last_frame_stats = frame_stats;
         state.retained_gpu_items = Some(retained_gpu_items);
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -4638,7 +4681,10 @@ impl Renderer {
         // recycle a glyph before its just-built batch reaches the GPU.
         self.resources.evict_glyphs();
         frame.present();
-        Ok(())
+        if suboptimal {
+            state.surface.configure(&self.device, &state.config);
+        }
+        Ok(FrameOutcome::Presented)
     }
 
     /// Internal retained rendering path. Widget ids are resolved to
@@ -4652,7 +4698,7 @@ impl Renderer {
         clear: Color,
         dirty_paths: &[Vec<usize>],
         force_scene_rebuild: bool,
-    ) -> Result<(), RenderError> {
+    ) -> Result<FrameOutcome, RenderError> {
         let mut retained = self
             .surfaces
             .get_mut(&window)
@@ -4910,7 +4956,7 @@ impl Renderer {
         clear: Color,
         index: &RenderNodeIndex,
         update: &SceneUpdate,
-    ) -> Result<(), RenderError> {
+    ) -> Result<FrameOutcome, RenderError> {
         // An explicit full rebuild must reach the retained-scene cache as an
         // empty path. Previously this flag was only consumed by WidgetTree;
         // the renderer still received individual dirty paths and could keep
@@ -4920,13 +4966,13 @@ impl Renderer {
             .surfaces
             .get(&window)
             .ok_or(RenderError::SurfaceNotAttached(window))?
-            .submitted_scene_revision;
-        // Incremental replay is valid only if this surface consumed the
-        // immediately preceding scene snapshot. A newly attached surface,
-        // resize, dropped frame, or skipped submission automatically falls
-        // back to rebuilding from the complete RenderNode root.
-        let revision_gap =
-            versioned_submission && previous_revision != Some(update.revision().saturating_sub(1));
+            .accepted_scene_revision;
+        // Incremental replay is valid when this surface consumed either the
+        // immediately preceding revision or this exact revision. The latter
+        // is a presentation retry after a deferred frame: its retained scene
+        // is already current and must not be rebuilt merely because no new UI
+        // update was produced.
+        let revision_gap = scene_revision_has_gap(previous_revision, update.revision());
         let full_rebuild = update.full_rebuild() || revision_gap;
         let dirty_paths = if full_rebuild {
             Vec::new()
@@ -4956,7 +5002,7 @@ impl Renderer {
         );
         if result.is_ok() && versioned_submission {
             if let Some(state) = self.surfaces.get_mut(&window) {
-                state.submitted_scene_revision = Some(update.revision());
+                state.accepted_scene_revision = Some(update.revision());
             }
         }
         result

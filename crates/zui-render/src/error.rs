@@ -10,6 +10,7 @@ pub enum RenderError {
     Device(String),
     Surface(String),
     SurfaceNotAttached(WindowId),
+    SurfaceOutdated,
     SurfaceLost,
     InvalidCommand(String),
     MissingImage(ImageId),
@@ -22,7 +23,8 @@ impl std::fmt::Display for RenderError {
             Self::Device(message) => write!(f, "GPU device error: {message}"),
             Self::Surface(message) => write!(f, "surface error: {message}"),
             Self::SurfaceNotAttached(id) => write!(f, "surface {id:?} is not attached"),
-            Self::SurfaceLost => write!(f, "surface was lost or outdated"),
+            Self::SurfaceOutdated => write!(f, "surface configuration is outdated"),
+            Self::SurfaceLost => write!(f, "surface was lost"),
             Self::InvalidCommand(message) => write!(f, "invalid paint command: {message}"),
             Self::MissingImage(id) => write!(f, "image resource {id:?} is not registered"),
         }
