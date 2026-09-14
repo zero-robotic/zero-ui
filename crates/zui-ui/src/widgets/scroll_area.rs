@@ -8,6 +8,12 @@ use zui_core::{Dip, Point, Rect, Size};
 use zui_platform::InputEvent;
 use zui_render::{ClipShape, RenderNode, Transform};
 
+const VERTICAL_SCROLLBAR_WIDTH: f32 = 6.0;
+const VERTICAL_SCROLLBAR_RIGHT_INSET: f32 = 2.0;
+const VERTICAL_SCROLLBAR_CONTENT_GAP: f32 = 4.0;
+const VERTICAL_SCROLLBAR_GUTTER: f32 =
+    VERTICAL_SCROLLBAR_WIDTH + VERTICAL_SCROLLBAR_RIGHT_INSET + VERTICAL_SCROLLBAR_CONTENT_GAP;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScrollAxis {
     Vertical,
@@ -93,11 +99,13 @@ impl ScrollArea {
         let travel = track - thumb;
         Some(Rect {
             origin: Point {
-                x: Dip(self.bounds.origin.x.0 + self.bounds.size.width.0 - 8.0),
+                x: Dip(self.bounds.origin.x.0 + self.bounds.size.width.0
+                    - VERTICAL_SCROLLBAR_WIDTH
+                    - VERTICAL_SCROLLBAR_RIGHT_INSET),
                 y: Dip(self.bounds.origin.y.0 + travel * self.offset.y.0 / max_offset),
             },
             size: Size {
-                width: Dip(6.0),
+                width: Dip(VERTICAL_SCROLLBAR_WIDTH),
                 height: Dip(thumb),
             },
         })
@@ -165,7 +173,7 @@ impl Widget for ScrollArea {
             },
         };
         self.content_size = self.child.measure(Constraints::loose(max));
-        let size = constraints.constrain(Size {
+        let mut size = constraints.constrain(Size {
             width: self
                 .width
                 .unwrap_or(if matches!(self.axis, ScrollAxis::Vertical) {
@@ -181,6 +189,23 @@ impl Widget for ScrollArea {
                     self.content_size.height
                 }),
         });
+        if matches!(self.axis, ScrollAxis::Vertical | ScrollAxis::Both)
+            && self.content_size.height.0 > size.height.0
+        {
+            // The scrollbar is painted inside the viewport. Once vertical
+            // overflow is known, remeasure the child against a content width
+            // that excludes the thumb and a small visual gap. This keeps text
+            // wrapping and arbitrary child painting out from under the bar.
+            let content_max = Size {
+                width: Dip((size.width.0 - VERTICAL_SCROLLBAR_GUTTER).max(0.0)),
+                height: max.height,
+            };
+            self.content_size = self.child.measure(Constraints::loose(content_max));
+            size = constraints.constrain(Size {
+                width: self.width.unwrap_or(size.width),
+                height: self.height.unwrap_or(self.content_size.height),
+            });
+        }
         self.bounds.size = size;
         size
     }
@@ -314,5 +339,98 @@ impl Widget for ScrollArea {
                 });
         }
         node
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FillingChild {
+        id: WidgetId,
+        bounds: Rect,
+        height: Dip,
+    }
+
+    impl FillingChild {
+        fn new(height: f32) -> Self {
+            Self {
+                id: WidgetId::new(),
+                bounds: Rect::default(),
+                height: Dip(height),
+            }
+        }
+    }
+
+    impl Widget for FillingChild {
+        fn id(&self) -> WidgetId {
+            self.id
+        }
+
+        fn bounds(&self) -> Rect {
+            self.bounds
+        }
+
+        fn measure(&mut self, constraints: Constraints) -> Size {
+            let size = constraints.constrain(Size {
+                width: constraints.max.width,
+                height: self.height,
+            });
+            self.bounds.size = size;
+            size
+        }
+
+        fn arrange(&mut self, bounds: Rect) {
+            self.bounds = bounds;
+        }
+
+        fn event(&mut self, _event: &UiEvent, _ctx: &mut EventContext) -> EventResult {
+            EventResult::Ignored
+        }
+
+        fn build_render_node(&self, _theme: &Theme) -> RenderNode {
+            RenderNode::for_widget(self.bounds)
+        }
+    }
+
+    #[test]
+    fn vertical_scrollbar_reserves_space_outside_content() {
+        let mut area = ScrollArea::vertical(FillingChild::new(100.0)).height(40.0);
+        let size = area.measure(Constraints::loose(Size {
+            width: Dip(160.0),
+            height: Dip(200.0),
+        }));
+        area.arrange(Rect {
+            origin: Point {
+                x: Dip(20.0),
+                y: Dip(30.0),
+            },
+            size,
+        });
+
+        let thumb = area
+            .vertical_thumb()
+            .expect("fixed-height content should overflow vertically");
+        let child_bounds = area.child.bounds();
+        let child_right = child_bounds.origin.x.0 + child_bounds.size.width.0;
+
+        assert_eq!(
+            child_bounds.size.width,
+            Dip(160.0 - VERTICAL_SCROLLBAR_GUTTER)
+        );
+        assert!(child_right + VERTICAL_SCROLLBAR_CONTENT_GAP <= thumb.origin.x.0);
+    }
+
+    #[test]
+    fn vertical_scroll_area_uses_full_width_without_overflow() {
+        let mut area = ScrollArea::vertical(FillingChild::new(20.0)).height(40.0);
+
+        area.measure(Constraints::loose(Size {
+            width: Dip(160.0),
+            height: Dip(200.0),
+        }));
+
+        assert!(area.vertical_thumb().is_none());
+        assert_eq!(area.child.bounds().size.width, Dip(160.0));
     }
 }
