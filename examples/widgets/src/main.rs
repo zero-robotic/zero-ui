@@ -27,6 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .child(email_label)
         .child(email_input);
     let content = Layout::new(ColumnLayout::new().spacing(Dip(8.0)))
+            .flex(1.0)
             .child(Text::new("Image"))
             .child(
                 Image::new(ImageId(1), 2.0, 2.0)

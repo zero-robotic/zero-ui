@@ -72,6 +72,7 @@ pub(crate) fn build_gpu_batches(
             }
             RenderBatch::Image {
                 page,
+                sampling,
                 images,
                 vertices,
                 indices,
@@ -79,6 +80,7 @@ pub(crate) fn build_gpu_batches(
             } if !vertices.is_empty() => Some(GpuBatch::Draw(
                 BatchKind::Image {
                     page,
+                    sampling,
                     images: Arc::new(images),
                 },
                 arenas.upload(
@@ -141,35 +143,13 @@ pub(crate) fn build_gpu_batches(
         .collect()
 }
 
-pub(crate) fn cached_system_fonts() -> &'static [fontdue::Font] {
-    SYSTEM_FONTS.get_or_init(load_system_fonts).as_slice()
-}
-
-fn load_system_fonts() -> Vec<fontdue::Font> {
-    let candidates = [
-        std::env::var("ZUI_FONT_PATH").ok(),
-        std::env::var("ZUI_LATIN_FONT_PATH").ok(),
-        Some("/System/Library/Fonts/SFNS.ttf".into()),
-        Some("/System/Library/Fonts/SFNSRounded.ttf".into()),
-        Some("/System/Library/Fonts/Hiragino Sans GB.ttc".into()),
-        Some("/System/Library/Fonts/Supplemental/Verdana.ttf".into()),
-        Some("/System/Library/Fonts/Supplemental/Tahoma.ttf".into()),
-        Some("/System/Library/Fonts/Supplemental/Arial.ttf".into()),
-        Some("/System/Library/Fonts/Supplemental/Arial Unicode.ttf".into()),
-        Some("/System/Library/Fonts/Supplemental/NISC18030.ttf".into()),
-        Some("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".into()),
-        std::env::var("ZUI_CJK_FONT_PATH").ok(),
-        Some("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc".into()),
-        Some("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc".into()),
-        Some("C:\\Windows\\Fonts\\segoeui.ttf".into()),
-        Some("C:\\Windows\\Fonts\\msyh.ttc".into()),
-    ];
-    candidates
-        .into_iter()
-        .flatten()
-        .filter_map(|path| std::fs::read(path).ok())
-        .filter_map(|bytes| fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok())
-        .collect()
+pub(crate) struct TextDraw<'a> {
+    pub text: &'a str,
+    pub origin: Point,
+    pub color: Color,
+    pub scale: u32,
+    pub pixels_per_dip: f32,
+    pub transform: Transform,
 }
 
 pub(crate) fn append_text(
@@ -177,118 +157,99 @@ pub(crate) fn append_text(
     resources: &mut ResourceManager,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    text: &str,
-    origin: Point,
-    color: Color,
-    scale: u32,
-    scale_factor: f32,
-    transform: Transform,
+    draw: TextDraw<'_>,
 ) {
-    let fonts = resources.fonts;
-    if !fonts.is_empty() {
-        let scale_factor = scale_factor.max(1.0);
-        let logical_font_size = text_font_size(scale);
-        let font_size = logical_font_size * scale_factor;
-        // `origin` is a baseline produced by the UI text-layout layer. The
-        // renderer deliberately does no line-box positioning of its own.
-        let baseline = origin.y.0 * scale_factor;
-        let mut x = origin.x.0;
-        for character in text.chars() {
-            let font_id = *resources.font_cache.entry(character).or_insert_with(|| {
-                fonts
-                    .iter()
-                    .enumerate()
-                    .find(|(_, font)| font.lookup_glyph_index(character) != 0)
-                    .map(|(font_id, _)| font_id)
-            });
-            let Some(font_id) = font_id else {
-                x += font_size;
-                continue;
-            };
-            let font = &fonts[font_id];
-            let key = (
-                font_id,
-                character,
-                scale.max(1),
-                (scale_factor * 100.0).round() as u32,
+    let scale_factor = draw.pixels_per_dip.max(1.0);
+    let [a, b, c, d, _, _] = draw.transform.matrix;
+    let translation_only = a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0;
+    let transform_scale = (a.hypot(b)).max(c.hypot(d)).max(f32::EPSILON);
+    let (text_origin, raster_scale, vertex_transform) = if translation_only {
+        (
+            draw.transform.point(draw.origin),
+            scale_factor,
+            Transform::IDENTITY,
+        )
+    } else {
+        (draw.origin, scale_factor * transform_scale, draw.transform)
+    };
+    let mut system = text_system().lock().expect("text system poisoned");
+    let TextSystem { fonts, rasterizer } = &mut *system;
+    let buffer = text_buffer(fonts, draw.text, text_font_size(draw.scale));
+    let first_baseline = buffer
+        .layout_runs()
+        .next()
+        .map(|run| run.line_y)
+        .unwrap_or(0.0);
+
+    for run in buffer.layout_runs() {
+        let baseline = text_origin.y.0 + run.line_y - first_baseline;
+        for layout_glyph in run.glyphs {
+            // Cosmic Text bakes the final font size and the subpixel phase of
+            // the glyph into the cache key. The returned x/y are integer
+            // physical pixels, so the atlas bitmap is never enlarged a
+            // second time by the image pipeline.
+            let physical = layout_glyph.physical(
+                (text_origin.x.0 * raster_scale, baseline * raster_scale),
+                raster_scale,
             );
+            let key = physical.cache_key;
             if !resources.glyph_cache.contains_key(&key) {
-                let (metrics, bitmap) = font.rasterize(character, font_size);
-                let image = resources.register_glyph(
-                    device,
-                    queue,
-                    metrics.width as u32,
-                    metrics.height as u32,
-                    &bitmap,
+                let Some(glyph_image) = rasterizer.get_image_uncached(fonts, key) else {
+                    continue;
+                };
+                let image = resources.register_glyph(device, queue, &glyph_image);
+                resources.glyph_cache.insert(
+                    key,
+                    CachedGlyph {
+                        image,
+                        left: glyph_image.placement.left,
+                        top: glyph_image.placement.top,
+                        width: glyph_image.placement.width,
+                        height: glyph_image.placement.height,
+                        is_color: glyph_image.content == SwashContent::Color,
+                    },
                 );
-                resources
-                    .glyph_cache
-                    .insert(key, CachedGlyph { metrics, image });
             }
             resources.touch_glyph(key);
             let glyph = resources
                 .glyph_cache
                 .get(&key)
+                .copied()
                 .expect("glyph was inserted into the cache");
-            let metrics = glyph.metrics;
+            if glyph.width == 0 || glyph.height == 0 {
+                continue;
+            }
             let image = glyph.image;
             let Some((page, uv)) = resources.ensure_image_atlas_slot(device, queue, image) else {
-                x += metrics.advance_width / scale_factor;
                 continue;
             };
-            // Fontdue reports glyph bounds relative to the baseline. Keeping
-            // one baseline for the complete run prevents punctuation and
-            // lowercase glyphs from drifting vertically.
-            let top = baseline - metrics.height as f32 - metrics.ymin as f32;
-            let (vertices, indices) = image_batch(batches, page, image, transform);
+            let left = physical.x + glyph.left;
+            let top = physical.y - glyph.top;
+            let glyph_color = if glyph.is_color {
+                Color::WHITE
+            } else {
+                draw.color
+            };
+            let (vertices, indices) =
+                image_batch(batches, page, image, ImageSampling::Glyph, vertex_transform);
             append_image(
                 vertices,
                 indices,
                 Rect {
                     origin: Point {
-                        x: Dip(x),
-                        y: Dip(top / scale_factor),
+                        x: Dip(left as f32 / raster_scale),
+                        y: Dip(top as f32 / raster_scale),
                     },
                     size: zui_core::Size {
-                        width: Dip(metrics.width as f32 / scale_factor),
-                        height: Dip(metrics.height as f32 / scale_factor),
+                        width: Dip(glyph.width as f32 / raster_scale),
+                        height: Dip(glyph.height as f32 / raster_scale),
                     },
                 },
-                1.0,
-                color,
+                if glyph.is_color { draw.color.a } else { 1.0 },
+                glyph_color,
                 uv,
             );
-            x += metrics.advance_width / scale_factor;
         }
-        return;
-    }
-
-    let scale = scale.max(1) as f32;
-    let mut x = origin.x.0;
-    for character in text.chars() {
-        for (row, bits) in glyph_rows(character).iter().enumerate() {
-            for column in 0..5 {
-                if bits & (1 << (4 - column)) != 0 {
-                    let (vertices, indices) = rect_batch(batches, transform);
-                    append_rect(
-                        vertices,
-                        indices,
-                        Rect {
-                            origin: Point {
-                                x: Dip(x + column as f32 * scale as f32),
-                                y: Dip(origin.y.0 + row as f32 * scale as f32),
-                            },
-                            size: zui_core::Size {
-                                width: Dip(scale as f32),
-                                height: Dip(scale as f32),
-                            },
-                        },
-                        color,
-                    );
-                }
-            }
-        }
-        x += 6.0 * scale;
     }
 }
 
@@ -549,6 +510,7 @@ pub(crate) fn append_rounded_rect(
     indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
+#[allow(dead_code)]
 fn glyph_rows(character: char) -> [u8; 7] {
     match character.to_ascii_uppercase() {
         'A' => [

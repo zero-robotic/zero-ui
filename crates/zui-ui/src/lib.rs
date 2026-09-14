@@ -459,6 +459,36 @@ mod tests {
     }
 
     #[test]
+    fn window_growth_changes_flexible_space_but_not_intrinsic_controls() {
+        let flexible_content = Layout::new(ColumnLayout::new())
+            .flex(1.0)
+            .child(Text::new("弹性内容"));
+        let mut row = Layout::new(RowLayout::new())
+            .child(Button::new("左侧"))
+            .child(flexible_content);
+
+        let small = row.layout(Constraints::loose(Size {
+            width: Dip(240.0),
+            height: Dip(80.0),
+        }));
+        let fixed_control_size = row.children()[0].bounds().size;
+        let small_content_width = row.children()[1].bounds().size.width;
+
+        let large = row.layout(Constraints::loose(Size {
+            width: Dip(480.0),
+            height: Dip(160.0),
+        }));
+
+        assert_eq!(small.width, Dip(240.0));
+        assert_eq!(large.width, Dip(480.0));
+        assert_eq!(row.children()[0].bounds().size, fixed_control_size);
+        assert_eq!(
+            row.children()[1].bounds().size.width,
+            Dip(small_content_width.0 + 240.0)
+        );
+    }
+
+    #[test]
     fn column_allocates_remaining_space_to_flexible_spacer() {
         let mut column = Layout::new(ColumnLayout::new())
             .child(Text::new("A"))
@@ -469,12 +499,10 @@ mod tests {
             height: Dip(100.0),
         }));
         assert_eq!(size.height, Dip(100.0));
-        assert_eq!(
-            column.children()[1].bounds().size.height,
-            Dip(100.0
-                - column.children()[0].bounds().size.height.0
-                - column.children()[2].bounds().size.height.0,)
-        );
+        let expected = 100.0
+            - column.children()[0].bounds().size.height.0
+            - column.children()[2].bounds().size.height.0;
+        assert!((column.children()[1].bounds().size.height.0 - expected).abs() < 0.0001);
     }
 
     #[test]

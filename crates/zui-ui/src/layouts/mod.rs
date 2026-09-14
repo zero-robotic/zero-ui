@@ -40,6 +40,7 @@ pub struct Layout {
     id: WidgetId,
     strategy: Box<dyn LayoutStrategy>,
     children: Vec<Box<dyn Widget>>,
+    flex: Option<f32>,
     bounds: Rect,
 }
 impl Layout {
@@ -48,8 +49,16 @@ impl Layout {
             id: WidgetId::new(),
             strategy: Box::new(strategy),
             children: Vec::new(),
+            flex: None,
             bounds: Rect::default(),
         }
+    }
+    /// Lets a row or column allocate this layout a share of its remaining
+    /// main-axis space. Without this opt-in, the layout keeps its intrinsic
+    /// size when the window grows.
+    pub fn flex(mut self, factor: f32) -> Self {
+        self.flex = (factor.is_finite() && factor > 0.0).then_some(factor);
+        self
     }
     pub fn child(mut self, child: impl Widget + 'static) -> Self {
         self.children.push(Box::new(child));
@@ -80,6 +89,9 @@ impl Widget for Layout {
         self.bounds = bounds;
         let mut context = LayoutContext::new(&mut self.children, Constraints::tight(bounds.size));
         self.strategy.arrange(&mut context, bounds);
+    }
+    fn flex_factor(&self) -> Option<f32> {
+        self.flex
     }
     fn next_redraw(&self) -> Option<std::time::Instant> {
         self.children

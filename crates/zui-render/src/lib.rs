@@ -3,11 +3,15 @@
 //! This crate deliberately exposes no `wgpu::Device` to widgets. Widgets produce
 //! drawing data; `Renderer` owns the GPU and the per-window swap-chain surfaces.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use cosmic_text::{
+    Attrs, Buffer as TextBuffer, CacheKey as GlyphKey, FontSystem, Metrics as CosmicMetrics,
+    Shaping, SwashCache, SwashContent, SwashImage, Wrap,
+};
 use lyon_path::{math::point as lyon_point, Path as LyonPath};
 use lyon_tessellation::{
     BuffersBuilder, FillOptions, FillRule as LyonFillRule, FillTessellator, FillVertex,
@@ -30,23 +34,44 @@ use gpu_pipeline::*;
 use paint::transform_clip_shape;
 pub use paint::{ClipShape, FillRule, IconPath, PaintCommand, PathCommand};
 
-static SYSTEM_FONTS: OnceLock<Vec<fontdue::Font>> = OnceLock::new();
 static TEXT_MEASURE_CACHE: OnceLock<Mutex<TextMeasureCache>> = OnceLock::new();
+static TEXT_SYSTEM: OnceLock<Mutex<TextSystem>> = OnceLock::new();
+
+struct TextSystem {
+    fonts: FontSystem,
+    rasterizer: SwashCache,
+}
+
+impl Default for TextSystem {
+    fn default() -> Self {
+        Self {
+            fonts: FontSystem::new(),
+            rasterizer: SwashCache::new(),
+        }
+    }
+}
 
 /// Bounded LRU for CPU text metrics. Text input and log-style views can
 /// produce unbounded distinct strings, so this cache must not grow with the
 /// lifetime of the process.
 struct TextMeasureCache {
-    widths: HashMap<(String, u32), Dip>,
+    measurements: HashMap<(String, u32), TextMeasurement>,
     last_used: HashMap<(String, u32), u64>,
     clock: u64,
     capacity: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TextMeasurement {
+    width: Dip,
+    ink_top: Dip,
+    ink_bottom: Dip,
+}
+
 impl Default for TextMeasureCache {
     fn default() -> Self {
         Self {
-            widths: HashMap::new(),
+            measurements: HashMap::new(),
             last_used: HashMap::new(),
             clock: 0,
             capacity: 4096,
@@ -55,16 +80,16 @@ impl Default for TextMeasureCache {
 }
 
 impl TextMeasureCache {
-    fn get(&mut self, key: &(String, u32)) -> Option<Dip> {
-        let width = self.widths.get(key).copied()?;
+    fn get(&mut self, key: &(String, u32)) -> Option<TextMeasurement> {
+        let measurement = self.measurements.get(key).copied()?;
         self.touch(key);
-        Some(width)
+        Some(measurement)
     }
 
-    fn insert(&mut self, key: (String, u32), width: Dip) {
-        self.widths.insert(key.clone(), width);
+    fn insert(&mut self, key: (String, u32), measurement: TextMeasurement) {
+        self.measurements.insert(key.clone(), measurement);
         self.touch(&key);
-        while self.widths.len() > self.capacity {
+        while self.measurements.len() > self.capacity {
             let Some(oldest) = self
                 .last_used
                 .iter()
@@ -73,7 +98,7 @@ impl TextMeasureCache {
             else {
                 break;
             };
-            self.widths.remove(&oldest);
+            self.measurements.remove(&oldest);
             self.last_used.remove(&oldest);
         }
     }
@@ -83,8 +108,6 @@ impl TextMeasureCache {
         self.last_used.insert(key.clone(), self.clock);
     }
 }
-
-type GlyphKey = (usize, char, u32, u32);
 
 /// Vertical metrics shared by text measurement and glyph rasterization.
 /// All values are logical DIPs and use positive distances.
@@ -118,29 +141,14 @@ pub fn text_font_size(scale: u32) -> f32 {
     (scale.max(1) * 7) as f32
 }
 
-/// Returns line metrics from the same fallback font set used to rasterize
-/// [`PaintCommand::Text`]. The envelope covers every loaded fallback font so
-/// mixed Latin/CJK text has a line box large enough for all selected glyphs.
+/// Returns the toolkit's logical line-box metrics. Actual ink bounds are
+/// obtained from the same shaped glyph run used by [`PaintCommand::Text`].
 pub fn text_metrics(scale: u32) -> TextMetrics {
     let font_size = text_font_size(scale);
-    let mut ascent = 0.0_f32;
-    let mut descent = 0.0_f32;
-    let mut line_gap = 0.0_f32;
-    let mut line_height = 0.0_f32;
-    for font in cached_system_fonts() {
-        if let Some(metrics) = font.horizontal_line_metrics(font_size) {
-            ascent = ascent.max(metrics.ascent);
-            descent = descent.max((-metrics.descent).max(0.0));
-            line_gap = line_gap.max(metrics.line_gap.max(0.0));
-            line_height = line_height.max(metrics.new_line_size);
-        }
-    }
-    if line_height <= 0.0 {
-        ascent = font_size * 0.8;
-        descent = font_size - ascent;
-        line_height = font_size;
-    }
-    line_height = line_height.max(ascent + descent + line_gap);
+    let line_height = font_size * 1.2;
+    let ascent = font_size * 0.8;
+    let descent = font_size * 0.2;
+    let line_gap = (line_height - ascent - descent).max(0.0);
     TextMetrics {
         ascent: Dip(ascent),
         descent: Dip(descent),
@@ -153,71 +161,84 @@ pub fn text_metrics(scale: u32) -> TextMetrics {
 /// run. Layout code uses this to derive a baseline from a desired visual
 /// (ink) position, while the renderer only consumes that baseline.
 pub fn text_run_metrics(text: &str, scale: u32) -> TextRunMetrics {
-    let size = text_font_size(scale);
-    let mut top = 0.0_f32;
-    let mut bottom = 0.0_f32;
-    let mut has_ink = false;
-    for character in text.chars() {
-        if let Some(font) = cached_system_fonts()
-            .iter()
-            .find(|font| font.lookup_glyph_index(character) != 0)
-        {
-            let metrics = font.metrics(character, size);
-            if metrics.width > 0 && metrics.height > 0 {
-                let glyph_top = -(metrics.height as f32) - metrics.ymin as f32;
-                let glyph_bottom = -metrics.ymin as f32;
-                if has_ink {
-                    top = top.min(glyph_top);
-                    bottom = bottom.max(glyph_bottom);
-                } else {
-                    top = glyph_top;
-                    bottom = glyph_bottom;
-                    has_ink = true;
-                }
-            }
-        }
-    }
     let line = text_metrics(scale);
-    if !has_ink {
-        top = -line.ascent.0;
-        bottom = line.descent.0;
-    }
+    let measurement = text_measurement(text, scale);
     TextRunMetrics {
         line,
-        ink_top: Dip(top),
-        ink_bottom: Dip(bottom),
+        ink_top: measurement.ink_top,
+        ink_bottom: measurement.ink_bottom,
     }
 }
 
 /// Measures text using the same system font used by the renderer.
 pub fn measure_text(text: &str, scale: u32) -> Dip {
+    text_measurement(text, scale).width
+}
+
+fn text_measurement(text: &str, scale: u32) -> TextMeasurement {
     let scale = scale.max(1);
     let key = (text.to_owned(), scale);
     let cache = TEXT_MEASURE_CACHE.get_or_init(|| Mutex::new(TextMeasureCache::default()));
-    if let Some(width) = cache.lock().expect("text measure cache poisoned").get(&key) {
-        return width;
+    if let Some(measurement) = cache.lock().expect("text measure cache poisoned").get(&key) {
+        return measurement;
     }
-    let fonts = cached_system_fonts();
-    let width = if !fonts.is_empty() {
-        let size = text_font_size(scale);
-        Dip(text
-            .chars()
-            .map(|character| {
-                fonts
-                    .iter()
-                    .find(|font| font.lookup_glyph_index(character) != 0)
-                    .map(|font| font.metrics(character, size).advance_width)
-                    .unwrap_or(size)
-            })
-            .sum())
-    } else {
-        Dip(text.chars().count() as f32 * 6.0 * scale as f32)
+    let line = text_metrics(scale);
+    let (width, ink) = shape_text_metrics(text, text_font_size(scale));
+    let (ink_top, ink_bottom) = ink.unwrap_or((-line.ascent.0, line.descent.0));
+    let measurement = TextMeasurement {
+        width: Dip(width),
+        ink_top: Dip(ink_top),
+        ink_bottom: Dip(ink_bottom),
     };
     cache
         .lock()
         .expect("text measure cache poisoned")
-        .insert(key, width);
-    width
+        .insert(key, measurement);
+    measurement
+}
+
+fn text_system() -> &'static Mutex<TextSystem> {
+    TEXT_SYSTEM.get_or_init(|| Mutex::new(TextSystem::default()))
+}
+
+fn text_buffer(fonts: &mut FontSystem, text: &str, font_size: f32) -> TextBuffer {
+    let metrics = CosmicMetrics::new(font_size, font_size * 1.2);
+    let mut buffer = TextBuffer::new(fonts, metrics);
+    buffer.set_wrap(fonts, Wrap::None);
+    buffer.set_size(fonts, None, None);
+    buffer.set_text(fonts, text, &Attrs::new(), Shaping::Advanced);
+    buffer.shape_until_scroll(fonts, false);
+    buffer
+}
+
+/// Shapes and rasterizes at one logical pixel per DIP. This is used only for
+/// layout and ink bounds; frame rendering rasterizes again at the surface's
+/// final physical pixel density.
+fn shape_text_metrics(text: &str, font_size: f32) -> (f32, Option<(f32, f32)>) {
+    let mut system = text_system().lock().expect("text system poisoned");
+    let TextSystem { fonts, rasterizer } = &mut *system;
+    let buffer = text_buffer(fonts, text, font_size);
+    let mut width = 0.0_f32;
+    let mut ink: Option<(f32, f32)> = None;
+    for run in buffer.layout_runs() {
+        width = width.max(run.line_w);
+        for glyph in run.glyphs {
+            let physical = glyph.physical((0.0, 0.0), 1.0);
+            let Some(image) = rasterizer.get_image_uncached(fonts, physical.cache_key) else {
+                continue;
+            };
+            if image.placement.width == 0 || image.placement.height == 0 {
+                continue;
+            }
+            let top = physical.y as f32 - image.placement.top as f32;
+            let bottom = top + image.placement.height as f32;
+            ink = Some(match ink {
+                Some((old_top, old_bottom)) => (old_top.min(top), old_bottom.max(bottom)),
+                None => (top, bottom),
+            });
+        }
+    }
+    (width, ink)
 }
 
 // Paint commands and vector path types live in `paint.rs`.
@@ -284,20 +305,23 @@ pub struct ResourceManager {
     cpu: ResourceCache,
     gpu_images: HashMap<ImageId, GpuImage>,
     image_atlases: Vec<ImageAtlas>,
-    image_bind_groups: HashMap<(WindowId, usize), wgpu::BindGroup>,
+    image_bind_groups: HashMap<(WindowId, usize, ImageSampling), wgpu::BindGroup>,
     last_used: HashMap<ImageId, u64>,
     clock: u64,
     max_gpu_images: usize,
-    image_sampler: wgpu::Sampler,
+    linear_image_sampler: wgpu::Sampler,
+    glyph_sampler: wgpu::Sampler,
     icons: HashMap<u64, IconPath>,
     budget: ResourceBudget,
-    fonts: &'static [fontdue::Font],
     glyph_cache: HashMap<GlyphKey, CachedGlyph>,
     glyph_last_used: HashMap<GlyphKey, u64>,
-    font_cache: HashMap<char, Option<usize>>,
     path_cache: HashMap<u64, PathMesh>,
     references: HashMap<ResourceHandle, usize>,
     auxiliary_last_used: HashMap<ResourceHandle, u64>,
+    /// Images touched while CPU batches are being materialized. Their atlas
+    /// slots must not be recycled until the batches have captured final UVs
+    /// and the retained item has acquired its resource references.
+    materializing_images: HashSet<ImageId>,
     next_internal_image_id: u64,
 }
 
@@ -350,8 +374,42 @@ pub struct FrameStats {
     pub full_frame: bool,
 }
 
+/// Complete scale contract for a native rendering surface.
+///
+/// `device_scale_factor` is owned by the window system (for example Retina
+/// 2x), while `ui_scale` is application content zoom. Keeping them separate
+/// prevents a resize animation from being mistaken for a monitor-DPI change.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SurfaceMetrics {
+    pub physical_size: PhysicalSize,
+    pub device_scale_factor: ScaleFactor,
+    pub ui_scale: f32,
+}
+
+impl SurfaceMetrics {
+    pub fn new(
+        physical_size: PhysicalSize,
+        device_scale_factor: ScaleFactor,
+        ui_scale: f32,
+    ) -> Self {
+        Self {
+            physical_size,
+            device_scale_factor,
+            ui_scale: if ui_scale.is_finite() && ui_scale > 0.0 {
+                ui_scale
+            } else {
+                1.0
+            },
+        }
+    }
+
+    pub fn pixels_per_content_dip(self) -> ScaleFactor {
+        ScaleFactor(self.device_scale_factor.0 * self.ui_scale as f64)
+    }
+}
+
 impl ResourceManager {
-    fn new(device: &wgpu::Device, fonts: &'static [fontdue::Font]) -> Self {
+    fn new(device: &wgpu::Device) -> Self {
         Self {
             cpu: ResourceCache::default(),
             gpu_images: HashMap::new(),
@@ -360,23 +418,46 @@ impl ResourceManager {
             last_used: HashMap::new(),
             clock: 0,
             max_gpu_images: 256,
-            image_sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+            linear_image_sampler: device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("zui-render image sampler"),
                 mag_filter: wgpu::FilterMode::Linear,
                 min_filter: wgpu::FilterMode::Linear,
                 ..Default::default()
             }),
+            // Swash has already encoded hinted grayscale antialiasing into
+            // each final physical glyph texel. Nearest sampling preserves
+            // that coverage instead of filtering it a second time.
+            glyph_sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("zui-render glyph sampler"),
+                mag_filter: wgpu::FilterMode::Nearest,
+                min_filter: wgpu::FilterMode::Nearest,
+                ..Default::default()
+            }),
             icons: HashMap::new(),
             budget: ResourceBudget::default(),
-            fonts,
             glyph_cache: HashMap::new(),
             glyph_last_used: HashMap::new(),
-            font_cache: HashMap::new(),
             path_cache: HashMap::new(),
             references: HashMap::new(),
             auxiliary_last_used: HashMap::new(),
+            materializing_images: HashSet::new(),
             next_internal_image_id: u64::MAX,
         }
+    }
+
+    fn begin_batch_materialization(&mut self) {
+        // A failed render may leave a scope unfinished. It never submitted
+        // those UVs, so a later attempt can safely start a fresh lease set.
+        self.materializing_images.clear();
+    }
+
+    fn retain_materialized(&mut self, handles: &[ResourceHandle]) {
+        // Acquire the retained item's durable references before releasing the
+        // temporary leases. Keeping this transition atomic prevents eager
+        // budget enforcement from recycling a just-materialized atlas slot.
+        self.retain_all(handles);
+        self.materializing_images.clear();
+        self.evict_gpu_images();
     }
 
     pub fn set_gpu_image_capacity(&mut self, capacity: usize) {
@@ -482,10 +563,32 @@ impl ResourceManager {
         id: ImageId,
         image: &ImageResource,
     ) {
-        let Some(slot) = self.allocate_atlas_slot(device, image.width, image.height) else {
+        // Linear filtering may sample just outside an image's UV rectangle.
+        // Reserve a transparent texel around atlas entries so the sample can
+        // never bleed pixels from a neighbouring image or glyph.
+        const ATLAS_PADDING: u32 = 1;
+        let padded_size = image
+            .width
+            .checked_add(ATLAS_PADDING * 2)
+            .zip(image.height.checked_add(ATLAS_PADDING * 2));
+        let Some((slot, padding)) = padded_size
+            .and_then(|(width, height)| {
+                self.allocate_atlas_slot(device, width, height)
+                    .map(|slot| (slot, ATLAS_PADDING))
+            })
+            .or_else(|| {
+                self.allocate_atlas_slot(device, image.width, image.height)
+                    .map(|slot| (slot, 0))
+            })
+        else {
             // Keep the CPU copy registered. A later eviction or a larger
             // resource budget may make this image resident again.
             return;
+        };
+        let upload = if padding == 0 {
+            image.rgba8.clone()
+        } else {
+            padded_rgba8(image, padding)
         };
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -494,23 +597,24 @@ impl ResourceManager {
                 origin: slot.origin,
                 aspect: wgpu::TextureAspect::All,
             },
-            &image.rgba8,
+            &upload,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(image.width * 4),
-                rows_per_image: Some(image.height),
+                bytes_per_row: Some(slot.width * 4),
+                rows_per_image: Some(slot.height),
             },
             wgpu::Extent3d {
-                width: image.width,
-                height: image.height,
+                width: slot.width,
+                height: slot.height,
                 depth_or_array_layers: 1,
             },
         );
         self.gpu_images.insert(
             id,
             GpuImage {
-                bytes: image.rgba8.len(),
+                bytes: upload.len(),
                 slot,
+                padding,
             },
         );
         self.touch(id);
@@ -599,7 +703,10 @@ impl ResourceManager {
         let Some(oldest) = self
             .last_used
             .iter()
-            .filter(|(id, _)| self.reference_count(ResourceHandle::Image(**id)) == 0)
+            .filter(|(id, _)| {
+                !self.materializing_images.contains(id)
+                    && self.reference_count(ResourceHandle::Image(**id)) == 0
+            })
             .min_by_key(|(_, stamp)| *stamp)
             .map(|(id, _)| *id)
         else {
@@ -645,28 +752,40 @@ impl ResourceManager {
         }
         let page_count = self.image_atlases.len();
         self.image_bind_groups
-            .retain(|(_, page), _| *page < page_count);
+            .retain(|(_, page, _), _| *page < page_count);
     }
 
     fn register_glyph(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        width: u32,
-        height: u32,
-        alpha: &[u8],
+        glyph: &SwashImage,
     ) -> ImageId {
         let id = ImageId(self.next_internal_image_id);
         self.next_internal_image_id = self.next_internal_image_id.wrapping_sub(1);
-        let mut rgba8 = Vec::with_capacity(alpha.len() * 4);
-        for alpha in alpha {
-            rgba8.extend_from_slice(&[255, 255, 255, *alpha]);
-        }
+        // `register_image` enforces the GPU image budget immediately. Mark a
+        // new glyph before uploading it so the upload cannot evict its own
+        // atlas slot (or an earlier glyph from the same not-yet-retained text
+        // batch) while vertices are still being assembled.
+        self.materializing_images.insert(id);
+        let rgba8 = match glyph.content {
+            SwashContent::Mask => glyph
+                .data
+                .iter()
+                .flat_map(|alpha| [255, 255, 255, *alpha])
+                .collect(),
+            SwashContent::Color => glyph.data.clone(),
+            SwashContent::SubpixelMask => glyph
+                .data
+                .chunks_exact(3)
+                .flat_map(|rgb| [255, 255, 255, *rgb.iter().max().unwrap_or(&0)])
+                .collect(),
+        };
         // Rasterizers may report an empty bitmap for whitespace. Keep a
         // transparent texel so the atlas contract always has valid geometry.
         let image = ImageResource::new(
-            width.max(1),
-            height.max(1),
+            glyph.placement.width.max(1),
+            glyph.placement.height.max(1),
             if rgba8.is_empty() { vec![0; 4] } else { rgba8 },
         )
         .expect("glyph bitmap dimensions are valid");
@@ -771,31 +890,37 @@ impl ResourceManager {
         queue: &wgpu::Queue,
         id: ImageId,
     ) -> Option<(usize, [f32; 4])> {
+        // UVs written into a batch remain valid only while this slot cannot
+        // be recycled. The retained item takes over ownership after batch
+        // construction; until then this short-lived materialization set is
+        // the resource's lease.
+        self.materializing_images.insert(id);
         if !self.gpu_images.contains_key(&id) {
             let image = self.cpu.image(id)?.clone();
             self.upload_gpu_image(device, queue, id, &image);
         }
         self.touch(id);
         let slot = self.gpu_images.get(&id)?.slot;
-        Some((
-            slot.page,
-            [
-                slot.origin.x as f32 / slot.atlas_width as f32,
-                slot.origin.y as f32 / slot.atlas_height as f32,
-                (slot.origin.x + slot.width) as f32 / slot.atlas_width as f32,
-                (slot.origin.y + slot.height) as f32 / slot.atlas_height as f32,
-            ],
-        ))
+        let padding = self.gpu_images.get(&id)?.padding;
+        Some((slot.page, atlas_content_uv(slot, padding)))
     }
 
     fn bind_group(
         &mut self,
         window: WindowId,
         page: usize,
+        sampling: ImageSampling,
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
     ) -> Option<wgpu::BindGroup> {
-        if !self.image_bind_groups.contains_key(&(window, page)) {
+        if !self
+            .image_bind_groups
+            .contains_key(&(window, page, sampling))
+        {
+            let sampler = match sampling {
+                ImageSampling::Linear => &self.linear_image_sampler,
+                ImageSampling::Glyph => &self.glyph_sampler,
+            };
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("zui-render image atlas page bind group"),
                 layout,
@@ -808,13 +933,16 @@ impl ResourceManager {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.image_sampler),
+                        resource: wgpu::BindingResource::Sampler(sampler),
                     },
                 ],
             });
-            self.image_bind_groups.insert((window, page), bind_group);
+            self.image_bind_groups
+                .insert((window, page, sampling), bind_group);
         }
-        self.image_bind_groups.get(&(window, page)).cloned()
+        self.image_bind_groups
+            .get(&(window, page, sampling))
+            .cloned()
     }
 }
 
@@ -2688,12 +2816,19 @@ enum RenderBatch {
     Line(Vec<LineVertex>, Vec<u32>, Transform),
     Image {
         page: usize,
+        sampling: ImageSampling,
         images: Vec<ImageId>,
         vertices: Vec<ImageVertex>,
         indices: Vec<u32>,
         transform: Transform,
     },
     Clip(ClipGeometry, Transform),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ImageSampling {
+    Linear,
+    Glyph,
 }
 
 #[derive(Clone, Debug)]
@@ -2724,6 +2859,7 @@ enum BatchKind {
     Line,
     Image {
         page: usize,
+        sampling: ImageSampling,
         /// All source images represented by this material run. This keeps
         /// resource lifetime accounting correct after same-page merging.
         images: Arc<Vec<ImageId>>,
@@ -2896,9 +3032,18 @@ fn group_ordered_draws(batches: Vec<GpuBatch>) -> Vec<GpuBatch> {
 
 fn same_batch_material(left: &BatchKind, right: &BatchKind) -> bool {
     match (left, right) {
-        (BatchKind::Image { page: left, .. }, BatchKind::Image { page: right, .. }) => {
-            left == right
-        }
+        (
+            BatchKind::Image {
+                page: left_page,
+                sampling: left_sampling,
+                ..
+            },
+            BatchKind::Image {
+                page: right_page,
+                sampling: right_sampling,
+                ..
+            },
+        ) => left_page == right_page && left_sampling == right_sampling,
         _ => left == right,
     }
 }
@@ -3060,12 +3205,14 @@ fn image_batch(
     batches: &mut Vec<RenderBatch>,
     page: usize,
     image: ImageId,
+    sampling: ImageSampling,
     transform: Transform,
 ) -> (&mut Vec<ImageVertex>, &mut Vec<u32>) {
-    if !matches!(batches.last(), Some(RenderBatch::Image { page: current, transform: current_transform, .. }) if *current == page && *current_transform == transform)
+    if !matches!(batches.last(), Some(RenderBatch::Image { page: current, sampling: current_sampling, transform: current_transform, .. }) if *current == page && *current_sampling == sampling && *current_transform == transform)
     {
         batches.push(RenderBatch::Image {
             page,
+            sampling,
             images: vec![image],
             vertices: Vec::new(),
             indices: Vec::new(),
@@ -3101,6 +3248,7 @@ pub struct Renderer {
 struct GpuImage {
     bytes: usize,
     slot: AtlasSlot,
+    padding: u32,
 }
 
 struct ImageAtlas {
@@ -3122,6 +3270,34 @@ struct AtlasSlot {
     height: u32,
     atlas_width: u32,
     atlas_height: u32,
+}
+
+fn padded_rgba8(image: &ImageResource, padding: u32) -> Vec<u8> {
+    let width = image.width + padding * 2;
+    let height = image.height + padding * 2;
+    let mut padded = vec![0; width as usize * height as usize * 4];
+    for row in 0..image.height as usize {
+        let source_start = row * image.width as usize * 4;
+        let source_end = source_start + image.width as usize * 4;
+        let destination_start = ((row + padding as usize) * width as usize + padding as usize) * 4;
+        let destination_end = destination_start + image.width as usize * 4;
+        padded[destination_start..destination_end]
+            .copy_from_slice(&image.rgba8[source_start..source_end]);
+    }
+    padded
+}
+
+fn atlas_content_uv(slot: AtlasSlot, padding: u32) -> [f32; 4] {
+    let left = slot.origin.x + padding;
+    let top = slot.origin.y + padding;
+    let right = slot.origin.x + slot.width - padding;
+    let bottom = slot.origin.y + slot.height - padding;
+    [
+        left as f32 / slot.atlas_width as f32,
+        top as f32 / slot.atlas_height as f32,
+        right as f32 / slot.atlas_width as f32,
+        bottom as f32 / slot.atlas_height as f32,
+    ]
 }
 
 impl ImageAtlas {
@@ -3263,33 +3439,49 @@ fn coalesce_atlas_slots(free: &mut Vec<AtlasSlot>) {
     }
 }
 
+#[derive(Clone, Copy)]
 struct CachedGlyph {
-    metrics: fontdue::Metrics,
     image: ImageId,
+    left: i32,
+    top: i32,
+    width: u32,
+    height: u32,
+    is_color: bool,
+}
+
+fn renderer_required_limits(adapter_limits: wgpu::Limits) -> wgpu::Limits {
+    // UI surfaces must be allowed to use the display resolution exposed by the
+    // adapter. `downlevel_defaults()` only guarantees 2048x2048 textures; on a
+    // Retina display a normal maximized window can exceed that width. Keeping
+    // the 2048 limit would force the entire frame through a smaller canvas and
+    // let the window compositor upscale it, which visibly blurs text.
+    wgpu::Limits::downlevel_defaults().using_resolution(adapter_limits)
+}
+
+fn constrain_surface_size(size: PhysicalSize, max_texture_dimension_2d: u32) -> PhysicalSize {
+    let limit = max_texture_dimension_2d.max(1);
+    if size.width <= limit && size.height <= limit {
+        return size;
+    }
+    let ratio =
+        (limit as f64 / size.width.max(1) as f64).min(limit as f64 / size.height.max(1) as f64);
+    PhysicalSize {
+        width: (size.width as f64 * ratio).floor().max(1.0) as u32,
+        height: (size.height as f64 * ratio).floor().max(1.0) as u32,
+    }
 }
 
 impl Renderer {
-    /// Fits a native surface within the active device's texture limit while
-    /// preserving its aspect ratio. The compositor scales that surface to the
-    /// native window, so oversized high-DPI windows remain fully visible.
+    /// Fits a native surface within the active device's real texture limit.
+    /// Scaling is only a last-resort fallback for windows larger than the GPU
+    /// can represent; ordinary high-DPI and maximized windows stay pixel exact.
     fn constrained_surface_size(&self, size: PhysicalSize) -> PhysicalSize {
-        let limit = self.device.limits().max_texture_dimension_2d.max(1);
-        if size.width <= limit && size.height <= limit {
-            return size;
-        }
-        let ratio =
-            (limit as f64 / size.width.max(1) as f64).min(limit as f64 / size.height.max(1) as f64);
-        PhysicalSize {
-            width: (size.width as f64 * ratio).floor().max(1.0) as u32,
-            height: (size.height as f64 * ratio).floor().max(1.0) as u32,
-        }
+        constrain_surface_size(size, self.device.limits().max_texture_dimension_2d)
     }
 
-    fn surface_scale_factor(
-        requested: PhysicalSize,
-        configured: PhysicalSize,
-        scale_factor: ScaleFactor,
-    ) -> ScaleFactor {
+    fn surface_scale_factor(metrics: SurfaceMetrics, configured: PhysicalSize) -> ScaleFactor {
+        let requested = metrics.physical_size;
+        let scale_factor = metrics.pixels_per_content_dip();
         if requested.width == 0 || requested.height == 0 {
             return scale_factor;
         }
@@ -3308,18 +3500,19 @@ impl Renderer {
             .get_downlevel_capabilities()
             .flags
             .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION);
+        let required_limits = renderer_required_limits(adapter.limits());
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("zui-render device"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults(),
+                required_limits,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
             })
             .await
             .map_err(|error| RenderError::Device(error.to_string()))?;
-        let resources = ResourceManager::new(&device, cached_system_fonts());
+        let resources = ResourceManager::new(&device);
         Ok(Self {
             instance,
             adapter,
@@ -3375,8 +3568,7 @@ impl Renderer {
         &mut self,
         window: WindowId,
         host: &H,
-        size: PhysicalSize,
-        scale_factor: ScaleFactor,
+        metrics: SurfaceMetrics,
     ) -> Result<(), RenderError> {
         let raw_window_handle = host
             .raw_window_handle()
@@ -3390,8 +3582,8 @@ impl Renderer {
         };
         let surface = unsafe { self.instance.create_surface_unsafe(target) }
             .map_err(|error| RenderError::Surface(error.to_string()))?;
-        let surface_size = self.constrained_surface_size(size);
-        let surface_scale_factor = Self::surface_scale_factor(size, surface_size, scale_factor);
+        let surface_size = self.constrained_surface_size(metrics.physical_size);
+        let surface_scale_factor = Self::surface_scale_factor(metrics, surface_size);
         let mut config = surface
             .get_default_config(
                 &self.adapter,
@@ -3493,8 +3685,7 @@ impl Renderer {
         &mut self,
         window: WindowId,
         host: &W,
-        size: PhysicalSize,
-        scale_factor: ScaleFactor,
+        metrics: SurfaceMetrics,
     ) -> Result<(), RenderError> {
         let target = unsafe {
             wgpu::SurfaceTargetUnsafe::from_display_and_window(host, host)
@@ -3502,8 +3693,8 @@ impl Renderer {
         };
         let surface = unsafe { self.instance.create_surface_unsafe(target) }
             .map_err(|error| RenderError::Surface(error.to_string()))?;
-        let surface_size = self.constrained_surface_size(size);
-        let surface_scale_factor = Self::surface_scale_factor(size, surface_size, scale_factor);
+        let surface_size = self.constrained_surface_size(metrics.physical_size);
+        let surface_scale_factor = Self::surface_scale_factor(metrics, surface_size);
         let mut config = surface
             .get_default_config(
                 &self.adapter,
@@ -3599,14 +3790,10 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn resize(
-        &mut self,
-        window: WindowId,
-        size: PhysicalSize,
-        scale_factor: ScaleFactor,
-    ) -> Result<(), RenderError> {
+    pub fn resize(&mut self, window: WindowId, metrics: SurfaceMetrics) -> Result<(), RenderError> {
+        let size = metrics.physical_size;
         let surface_size = self.constrained_surface_size(size);
-        let surface_scale_factor = Self::surface_scale_factor(size, surface_size, scale_factor);
+        let surface_scale_factor = Self::surface_scale_factor(metrics, surface_size);
         let state = self
             .surfaces
             .get_mut(&window)
@@ -3672,6 +3859,7 @@ impl Renderer {
         clip_transform: Transform,
         initial_opacity: f32,
     ) -> Vec<RenderBatch> {
+        self.resources.begin_batch_materialization();
         let mut batches = Vec::new();
         let mut command_transform = Transform::IDENTITY;
         let mut opacity = initial_opacity;
@@ -3775,12 +3963,14 @@ impl Renderer {
                     &mut self.resources,
                     &self.device,
                     &self.queue,
-                    text,
-                    *origin,
-                    apply_opacity(*color, opacity),
-                    *scale,
-                    scale_factor,
-                    transform,
+                    TextDraw {
+                        text,
+                        origin: *origin,
+                        color: apply_opacity(*color, opacity),
+                        scale: *scale,
+                        pixels_per_dip: scale_factor,
+                        transform,
+                    },
                 ),
                 PaintCommand::Icon {
                     path,
@@ -3822,8 +4012,13 @@ impl Renderer {
                         self.resources
                             .ensure_image_atlas_slot(&self.device, &self.queue, *image)
                     {
-                        let (vertices, indices) =
-                            image_batch(&mut batches, page, *image, transform);
+                        let (vertices, indices) = image_batch(
+                            &mut batches,
+                            page,
+                            *image,
+                            ImageSampling::Linear,
+                            transform,
+                        );
                         append_image(
                             vertices,
                             indices,
@@ -4182,16 +4377,17 @@ impl Renderer {
                     active_transform = Some(key);
                     frame_stats.bind_group_switch_count += 1;
                 }
-                if let BatchKind::Image { page, .. } = kind {
+                if let BatchKind::Image { page, sampling, .. } = kind {
                     if let Some(bind_group) = self.resources.bind_group(
                         window,
                         *page,
+                        *sampling,
                         &self.device,
                         &state.image_bind_group_layout,
                     ) {
-                        if active_image != Some(*page) {
+                        if active_image != Some((*page, *sampling)) {
                             pass.set_bind_group(1, &bind_group, &[]);
-                            active_image = Some(*page);
+                            active_image = Some((*page, *sampling));
                             frame_stats.bind_group_switch_count += 1;
                         }
                         if let (Some(indirect), Some((vertices, indices))) =
@@ -4668,7 +4864,7 @@ impl Renderer {
                             resources.push(handle);
                         }
                     }
-                    self.resources.retain_all(&resources);
+                    self.resources.retain_materialized(&resources);
                     retained_gpu_items.insert(
                         path.clone(),
                         RetainedGpuItem {

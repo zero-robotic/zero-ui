@@ -29,7 +29,7 @@ impl Spacer {
             id: WidgetId::new(),
             width: Dip::ZERO,
             height: Dip::ZERO,
-            flex: Some(factor.max(0.0)),
+            flex: (factor.is_finite() && factor > 0.0).then_some(factor),
             bounds: Rect::default(),
         }
     }

@@ -145,12 +145,25 @@ impl ApplicationHandler for Runner<'_> {
                     width: Dip(size.width as f32 / host.scale_factor.0 as f32),
                     height: Dip(size.height as f32 / host.scale_factor.0 as f32),
                 };
-                let request_redraw = (self.handler)(PlatformEvent::WindowResized {
+                (self.handler)(PlatformEvent::WindowResized {
                     window: host.id,
                     size: host.size,
                     scale_factor: host.scale_factor,
-                });
-                request_redraw
+                })
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                let host = self.host.as_mut().expect("host exists");
+                host.scale_factor = ScaleFactor(scale_factor);
+                let physical = host.window.inner_size();
+                host.size = Size {
+                    width: Dip(physical.width as f32 / scale_factor as f32),
+                    height: Dip(physical.height as f32 / scale_factor as f32),
+                };
+                (self.handler)(PlatformEvent::WindowResized {
+                    window: host.id,
+                    size: host.size,
+                    scale_factor: host.scale_factor,
+                })
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let id = self.host.as_ref().expect("host exists").id;
@@ -170,7 +183,7 @@ impl ApplicationHandler for Runner<'_> {
                     }
                 }
                 let scale_factor = self.host.as_ref().expect("host exists").scale_factor.0;
-                let request_redraw = (self.handler)(PlatformEvent::Input {
+                (self.handler)(PlatformEvent::Input {
                     window: id,
                     event: InputEvent::CursorMoved {
                         position: Point {
@@ -178,8 +191,7 @@ impl ApplicationHandler for Runner<'_> {
                             y: Dip(position.y as f32 / scale_factor as f32),
                         },
                     },
-                });
-                request_redraw
+                })
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 let state = modifiers.state();
@@ -209,14 +221,13 @@ impl ApplicationHandler for Runner<'_> {
                         );
                     }
                 }
-                let request_redraw = (self.handler)(PlatformEvent::Input {
+                (self.handler)(PlatformEvent::Input {
                     window: id,
                     event: InputEvent::MouseInput {
                         button: map_button(button),
                         state: map_state(state),
                     },
-                });
-                request_redraw
+                })
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let id = self.host.as_ref().expect("host exists").id;

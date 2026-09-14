@@ -46,6 +46,70 @@ fn gpu_transform_maps_local_dips_to_clip_space() {
 }
 
 #[test]
+fn surface_metrics_keep_device_and_ui_scales_independent() {
+    let metrics = SurfaceMetrics::new(
+        PhysicalSize {
+            width: 2400,
+            height: 1800,
+        },
+        ScaleFactor(2.0),
+        1.5,
+    );
+    assert_eq!(metrics.device_scale_factor, ScaleFactor(2.0));
+    assert_eq!(metrics.ui_scale, 1.5);
+    assert_eq!(metrics.pixels_per_content_dip(), ScaleFactor(3.0));
+}
+
+#[test]
+fn renderer_keeps_the_adapters_native_surface_resolution_limit() {
+    let mut adapter_limits = wgpu::Limits::downlevel_defaults();
+    adapter_limits.max_texture_dimension_1d = 16_384;
+    adapter_limits.max_texture_dimension_2d = 16_384;
+    adapter_limits.max_texture_dimension_3d = 2_048;
+
+    let requested = renderer_required_limits(adapter_limits);
+
+    assert_eq!(requested.max_texture_dimension_1d, 16_384);
+    assert_eq!(requested.max_texture_dimension_2d, 16_384);
+    assert_eq!(requested.max_texture_dimension_3d, 2_048);
+}
+
+#[test]
+fn maximized_high_dpi_surface_stays_at_native_pixel_size() {
+    let physical_size = PhysicalSize {
+        width: 2_922,
+        height: 1_010,
+    };
+    let configured = constrain_surface_size(physical_size, 16_384);
+    let metrics = SurfaceMetrics::new(physical_size, ScaleFactor(2.0), 1.0);
+
+    assert_eq!(configured, physical_size);
+    assert_eq!(
+        Renderer::surface_scale_factor(metrics, configured),
+        ScaleFactor(2.0)
+    );
+}
+
+#[test]
+fn surfaces_beyond_the_real_gpu_limit_keep_their_aspect_ratio() {
+    let configured = constrain_surface_size(
+        PhysicalSize {
+            width: 32_768,
+            height: 18_432,
+        },
+        16_384,
+    );
+
+    assert_eq!(
+        configured,
+        PhysicalSize {
+            width: 16_384,
+            height: 9_216,
+        }
+    );
+}
+
+#[test]
 fn render_node_keeps_commands_before_children() {
     let mut node = RenderNode::new(Rect::default());
     node.commands_mut().push(PaintCommand::Rect {
@@ -492,7 +556,7 @@ fn path_cache_key_tracks_commands_and_fill_rule_without_debug_formatting() {
 #[test]
 fn resource_handles_track_references() {
     let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-    let mut resources = ResourceManager::new(&device, &[]);
+    let mut resources = ResourceManager::new(&device);
     let handle = ResourceHandle::Image(ImageId(7));
     resources.retain(handle);
     resources.retain(handle);
@@ -509,14 +573,19 @@ fn text_measure_cache_evicts_least_recently_used_entry() {
         capacity: 2,
         ..TextMeasureCache::default()
     };
-    cache.insert(("first".into(), 1), Dip(10.0));
-    cache.insert(("second".into(), 1), Dip(20.0));
-    assert_eq!(cache.get(&("first".into(), 1)), Some(Dip(10.0)));
-    cache.insert(("third".into(), 1), Dip(30.0));
+    let measurement = |width| TextMeasurement {
+        width: Dip(width),
+        ink_top: Dip(-8.0),
+        ink_bottom: Dip(2.0),
+    };
+    cache.insert(("first".into(), 1), measurement(10.0));
+    cache.insert(("second".into(), 1), measurement(20.0));
+    assert_eq!(cache.get(&("first".into(), 1)), Some(measurement(10.0)));
+    cache.insert(("third".into(), 1), measurement(30.0));
 
     assert!(cache.get(&("second".into(), 1)).is_none());
-    assert_eq!(cache.get(&("first".into(), 1)), Some(Dip(10.0)));
-    assert_eq!(cache.get(&("third".into(), 1)), Some(Dip(30.0)));
+    assert_eq!(cache.get(&("first".into(), 1)), Some(measurement(10.0)));
+    assert_eq!(cache.get(&("third".into(), 1)), Some(measurement(30.0)));
 }
 
 #[test]
@@ -705,6 +774,7 @@ fn adjacent_images_on_one_atlas_page_share_a_material_group() {
         GpuBatch::Draw(
             BatchKind::Image {
                 page: 2,
+                sampling: ImageSampling::Linear,
                 images: Arc::new(vec![ImageId(10)]),
             },
             vertex(0),
@@ -714,6 +784,7 @@ fn adjacent_images_on_one_atlas_page_share_a_material_group() {
         GpuBatch::Draw(
             BatchKind::Image {
                 page: 2,
+                sampling: ImageSampling::Linear,
                 images: Arc::new(vec![ImageId(11)]),
             },
             vertex(80),
@@ -734,6 +805,44 @@ fn adjacent_images_on_one_atlas_page_share_a_material_group() {
 }
 
 #[test]
+fn glyph_and_image_sampling_never_share_a_material_group() {
+    let vertex = |offset| VertexArenaAllocation {
+        kind: VertexArenaKind::Image,
+        page: 0,
+        range: offset..offset + 80,
+        vertex_count: 4,
+    };
+    let index = |offset| IndexArenaAllocation {
+        page: 0,
+        range: offset..offset + 24,
+        index_count: 6,
+    };
+    let groups = group_ordered_draws(vec![
+        GpuBatch::Draw(
+            BatchKind::Image {
+                page: 2,
+                sampling: ImageSampling::Linear,
+                images: Arc::new(vec![ImageId(10)]),
+            },
+            vertex(0),
+            index(0),
+            Transform::IDENTITY,
+        ),
+        GpuBatch::Draw(
+            BatchKind::Image {
+                page: 2,
+                sampling: ImageSampling::Glyph,
+                images: Arc::new(vec![ImageId(11)]),
+            },
+            vertex(80),
+            index(24),
+            Transform::IDENTITY,
+        ),
+    ]);
+    assert_eq!(groups.len(), 2);
+}
+
+#[test]
 fn image_vertices_are_built_once_for_an_atlas_page_run() {
     let mut batches = Vec::new();
     let rect = Rect {
@@ -743,7 +852,13 @@ fn image_vertices_are_built_once_for_an_atlas_page_run() {
             height: Dip(10.0),
         },
     };
-    let (vertices, indices) = image_batch(&mut batches, 3, ImageId(1), Transform::IDENTITY);
+    let (vertices, indices) = image_batch(
+        &mut batches,
+        3,
+        ImageId(1),
+        ImageSampling::Linear,
+        Transform::IDENTITY,
+    );
     append_image(
         vertices,
         indices,
@@ -752,7 +867,13 @@ fn image_vertices_are_built_once_for_an_atlas_page_run() {
         Color::WHITE,
         [0.0, 0.0, 0.5, 0.5],
     );
-    let (vertices, indices) = image_batch(&mut batches, 3, ImageId(2), Transform::IDENTITY);
+    let (vertices, indices) = image_batch(
+        &mut batches,
+        3,
+        ImageId(2),
+        ImageSampling::Linear,
+        Transform::IDENTITY,
+    );
     append_image(
         vertices,
         indices,
@@ -1065,7 +1186,7 @@ fn retained_submission_table_keeps_gpu_batches_node_owned() {
 #[test]
 fn resource_eviction_never_discards_a_retained_image() {
     let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-    let mut resources = ResourceManager::new(&device, &[]);
+    let mut resources = ResourceManager::new(&device);
     let image = ImageId(7);
     resources.gpu_images.insert(
         image,
@@ -1079,6 +1200,7 @@ fn resource_eviction_never_discards_a_retained_image() {
                 atlas_width: 1,
                 atlas_height: 1,
             },
+            padding: 0,
         },
     );
     resources.last_used.insert(image, 1);
@@ -1088,11 +1210,71 @@ fn resource_eviction_never_discards_a_retained_image() {
 }
 
 #[test]
+fn text_materialization_keeps_every_glyph_atlas_slot_alive_until_retained() {
+    let Ok(mut renderer) = Renderer::new_blocking() else {
+        return;
+    };
+    // Force the failure mode without needing hundreds of glyphs. Before the
+    // materialization lease existed, each new upload immediately recycled an
+    // earlier glyph's slot while its vertices still referenced the old UVs.
+    renderer.resources.set_gpu_image_capacity(1);
+    let batches = renderer.build_render_batches(
+        &[PaintCommand::Text {
+            text: "TextEditor 支持换行；可继续输入更多内容。".into(),
+            origin: Point {
+                x: Dip(11.25),
+                y: Dip(30.0),
+            },
+            color: Color::WHITE,
+            scale: 3,
+        }],
+        PhysicalSize {
+            width: 2048,
+            height: 1200,
+        },
+        4.0,
+        Transform::IDENTITY,
+        1.0,
+    );
+    let images = batches
+        .iter()
+        .filter_map(|batch| match batch {
+            RenderBatch::Image { images, .. } => Some(images.as_slice()),
+            _ => None,
+        })
+        .flatten()
+        .copied()
+        .collect::<HashSet<_>>();
+
+    assert!(images.len() > 1);
+    assert!(
+        images
+            .iter()
+            .all(|image| renderer.resources.gpu_images.contains_key(image)),
+        "a glyph slot was recycled before the text batch could be retained"
+    );
+
+    let handles = images
+        .iter()
+        .copied()
+        .map(ResourceHandle::Image)
+        .collect::<Vec<_>>();
+    renderer.resources.retain_materialized(&handles);
+    assert!(
+        images
+            .iter()
+            .all(|image| renderer.resources.gpu_images.contains_key(image)),
+        "retained glyph slots must remain resident even above the soft cache capacity"
+    );
+}
+
+#[test]
 fn retained_image_batches_contribute_resource_references() {
     let image = ImageId(42);
     let handles = batch_resource_handles(&[GpuBatch::DrawGroup(
         BatchKind::Image {
             page: 0,
+            sampling: ImageSampling::Linear,
             images: Arc::new(vec![image]),
         },
         Arc::new(Vec::new()),
@@ -1134,6 +1316,168 @@ fn text_line_metrics_enclose_the_glyph_baseline_box() {
     let metrics = text_metrics(3);
     assert!(metrics.ascent.0 > 0.0);
     assert!(metrics.line_height.0 >= metrics.ascent.0 + metrics.descent.0);
+}
+
+#[test]
+fn shaped_glyph_cache_keys_track_final_physical_font_size() {
+    let mut system = text_system().lock().expect("text system poisoned");
+    let buffer = text_buffer(&mut system.fonts, "字体 Ab", 21.0);
+    let glyph = buffer
+        .layout_runs()
+        .flat_map(|run| run.glyphs)
+        .next()
+        .expect("the test run contains a glyph");
+
+    for pixels_per_dip in [1.0, 1.25, 1.5, 1.875, 2.0, 3.75] {
+        let physical = glyph.physical((13.25, 9.5), pixels_per_dip);
+        assert_eq!(
+            f32::from_bits(physical.cache_key.font_size_bits),
+            21.0 * pixels_per_dip
+        );
+    }
+}
+
+#[test]
+fn text_quads_are_one_to_one_with_physical_glyph_pixels_at_all_scales() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let mut resources = ResourceManager::new(&device);
+
+    for pixels_per_dip in [1.0, 1.25, 1.5, 1.625, 2.0, 3.75] {
+        let mut batches = Vec::new();
+        append_text(
+            &mut batches,
+            &mut resources,
+            &device,
+            &queue,
+            TextDraw {
+                text: "清晰 Text",
+                origin: Point {
+                    x: Dip(13.25),
+                    y: Dip(31.5),
+                },
+                color: Color::WHITE,
+                scale: 3,
+                pixels_per_dip,
+                transform: Transform::translate(Dip(7.0), Dip(5.0)),
+            },
+        );
+
+        let glyph_batches = batches.iter().filter_map(|batch| match batch {
+            RenderBatch::Image {
+                sampling: ImageSampling::Glyph,
+                vertices,
+                transform,
+                ..
+            } => Some((vertices, transform)),
+            _ => None,
+        });
+        let mut glyph_count = 0;
+        for (vertices, transform) in glyph_batches {
+            assert_eq!(*transform, Transform::IDENTITY);
+            for quad in vertices.chunks_exact(4) {
+                glyph_count += 1;
+                let left = quad[0].position[0] * pixels_per_dip;
+                let top = quad[0].position[1] * pixels_per_dip;
+                let width = (quad[1].position[0] - quad[0].position[0]) * pixels_per_dip;
+                let height = (quad[3].position[1] - quad[0].position[1]) * pixels_per_dip;
+                for physical_value in [left, top, width, height] {
+                    assert!((physical_value - physical_value.round()).abs() < 0.001);
+                }
+            }
+        }
+        assert!(glyph_count > 0);
+    }
+}
+
+#[test]
+fn transformed_text_rasterizes_for_the_final_uniform_scale() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let mut resources = ResourceManager::new(&device);
+    let transform = Transform::scale(2.0, 2.0);
+    let mut batches = Vec::new();
+    append_text(
+        &mut batches,
+        &mut resources,
+        &device,
+        &queue,
+        TextDraw {
+            text: "缩放 Text",
+            origin: Point {
+                x: Dip(12.0),
+                y: Dip(30.0),
+            },
+            color: Color::WHITE,
+            scale: 3,
+            pixels_per_dip: 1.5,
+            transform,
+        },
+    );
+
+    let mut glyph_count = 0;
+    for batch in batches {
+        let RenderBatch::Image {
+            sampling: ImageSampling::Glyph,
+            vertices,
+            transform: glyph_transform,
+            ..
+        } = batch
+        else {
+            continue;
+        };
+        assert_eq!(glyph_transform, transform);
+        for quad in vertices.chunks_exact(4) {
+            glyph_count += 1;
+            let physical_width = (quad[1].position[0] - quad[0].position[0]) * 1.5 * 2.0;
+            let physical_height = (quad[3].position[1] - quad[0].position[1]) * 1.5 * 2.0;
+            assert!((physical_width - physical_width.round()).abs() < 0.001);
+            assert!((physical_height - physical_height.round()).abs() < 0.001);
+        }
+    }
+    assert!(glyph_count > 0);
+}
+
+#[test]
+fn text_damage_bounds_cover_ink_above_and_below_the_baseline() {
+    let origin = Point {
+        x: Dip(12.0),
+        y: Dip(40.0),
+    };
+    let command = PaintCommand::Text {
+        text: "字体 glyph".into(),
+        origin,
+        color: Color::WHITE,
+        scale: 3,
+    };
+    let bounds = command.bounds().expect("text has paint bounds");
+    let metrics = text_run_metrics("字体 glyph", 3);
+
+    assert!(bounds.origin.y.0 <= origin.y.0 + metrics.ink_top.0);
+    assert!(bounds.size.height.0 >= metrics.ink_height().0);
+    assert!(bounds.origin.y.0 < origin.y.0);
+    assert!(bounds.origin.y.0 + bounds.size.height.0 > origin.y.0);
+}
+
+#[test]
+fn atlas_padding_is_transparent_and_uvs_exclude_it() {
+    let image = ImageResource::new(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]).unwrap();
+    let padded = padded_rgba8(&image, 1);
+    assert_eq!(padded.len(), 4 * 3 * 4);
+    assert!(padded[..20].iter().all(|channel| *channel == 0));
+    assert_eq!(&padded[20..28], image.rgba8.as_slice());
+    assert!(padded[28..].iter().all(|channel| *channel == 0));
+
+    let uv = atlas_content_uv(
+        AtlasSlot {
+            page: 0,
+            origin: wgpu::Origin3d { x: 8, y: 4, z: 0 },
+            width: 4,
+            height: 3,
+            atlas_width: 16,
+            atlas_height: 16,
+        },
+        1,
+    );
+    assert_eq!(uv, [9.0 / 16.0, 5.0 / 16.0, 11.0 / 16.0, 6.0 / 16.0]);
 }
 
 #[test]

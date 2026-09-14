@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zui_core::{Point, Size};
+    use zui_core::{Dip, Point, Size};
     use zui_platform::{InputEvent, KeyState, MouseButton};
     use zui_ui::{ComponentRoot, Constraints, EventResult, UiEvent, WidgetTree};
 

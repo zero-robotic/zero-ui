@@ -4,16 +4,12 @@
 //! and renderer surface management so applications only provide a root widget
 //! (or a declarative [`Component`]).
 
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    time::{Duration, Instant},
-};
+use std::{cell::RefCell, rc::Rc, time::Instant};
 
 use zui_backend_winit::{WinitBackend, WinitHost};
-use zui_core::{Dip, PhysicalSize, Point};
+use zui_core::{Dip, Point, Size};
 use zui_platform::{Host, InputEvent, PlatformEvent, WindowOptions};
-use zui_render::{ImageId, ImageResource, RenderError};
+use zui_render::{ImageId, ImageResource, RenderError, SurfaceMetrics};
 use zui_render_runtime::{ActiveRenderer, RendererError};
 use zui_ui::{
     Component, ComponentRoot, Constraints, EventResult, Theme, UiEvent, Widget, WidgetTree,
@@ -113,7 +109,6 @@ impl WindowRunner {
                 y: Dip::ZERO,
             },
             pending_resize: None,
-            resize_deadline: None,
         }));
 
         let window_state = Rc::clone(&state);
@@ -136,25 +131,24 @@ struct RunnerState {
     renderer: ActiveRenderer,
     tree: WidgetTree,
     background: zui_core::Color,
+    /// Last pointer position in native window DIPs. UI layout uses the same
+    /// coordinate space, independent of the physical monitor scale factor.
     pointer_position: Point,
     /// Native resize notifications can arrive much faster than the GPU can
     /// recreate render targets. Retain only the latest dimensions.
-    pending_resize: Option<(
-        zui_core::WindowId,
-        zui_core::Size,
-        PhysicalSize,
-        zui_core::ScaleFactor,
-    )>,
-    resize_deadline: Option<Instant>,
+    pending_resize: Option<(zui_core::WindowId, Size, SurfaceMetrics)>,
 }
 
 impl RunnerState {
     fn on_window(&mut self, host: &WinitHost) {
-        let physical_size = host.scale_factor().to_physical(host.size());
         self.tree.layout(Constraints::loose(host.size()));
         self.tree.request_paint(None);
         self.renderer
-            .attach_surface(host.id(), host, physical_size, host.scale_factor())
+            .attach_surface(
+                host.id(),
+                host,
+                native_surface_metrics(host.size(), host.scale_factor()),
+            )
             .expect("failed to attach render surface");
         host.request_redraw()
             .expect("failed to request initial redraw");
@@ -168,21 +162,27 @@ impl RunnerState {
                 size,
                 scale_factor,
             } => {
-                let physical = scale_factor.to_physical(size);
-                self.pending_resize = Some((window, size, physical, scale_factor));
-                // Let the platform composite the previous frame while its
-                // maximize/live-resize animation is still changing size.
-                let deadline = Instant::now() + Duration::from_millis(100);
-                self.resize_deadline = Some(deadline);
-                Some(deadline)
+                // A larger window increases the layout constraints but never
+                // changes the size of one DIP. Intrinsic controls therefore
+                // stay fixed while explicitly flexible layout children can
+                // consume the newly available space.
+                let metrics = native_surface_metrics(size, scale_factor);
+                self.pending_resize = Some((window, size, metrics));
+                // Keep only the newest native size, but present it on the next
+                // compositor-driven redraw. Multiple requests made before that
+                // redraw are coalesced by winit, allowing live resize/maximize
+                // to track the window without rebuilding once per raw event.
+                Some(Instant::now())
             }
             PlatformEvent::Input { window, event } => {
-                if let InputEvent::CursorMoved { position } = &event {
-                    self.pointer_position = *position;
-                }
                 let ui_event = match event {
                     InputEvent::CursorMoved { position } => {
-                        UiEvent::pointer(Some(window), position, event)
+                        self.pointer_position = position;
+                        UiEvent::pointer(
+                            Some(window),
+                            position,
+                            InputEvent::CursorMoved { position },
+                        )
                     }
                     InputEvent::MouseInput { .. } => {
                         UiEvent::pointer(Some(window), self.pointer_position, event)
@@ -201,17 +201,11 @@ impl RunnerState {
     }
 
     fn redraw(&mut self, window: zui_core::WindowId) -> Option<Instant> {
-        if let Some(deadline) = self.resize_deadline {
-            if Instant::now() < deadline {
-                return Some(deadline);
-            }
-            self.resize_deadline = None;
-        }
-        if let Some((resize_window, size, physical, scale_factor)) = self.pending_resize.take() {
-            if physical != PhysicalSize::default() {
+        if let Some((resize_window, size, metrics)) = self.pending_resize.take() {
+            if metrics.physical_size != zui_core::PhysicalSize::default() {
                 self.tree.layout(Constraints::loose(size));
                 self.renderer
-                    .resize(resize_window, physical, scale_factor)
+                    .resize(resize_window, metrics)
                     .expect("failed to resize render surface");
                 self.tree.request_paint(None);
             }
@@ -241,5 +235,43 @@ impl RunnerState {
             Err(error) => eprintln!("failed to render frame: {error}"),
         }
         self.tree.next_redraw()
+    }
+}
+
+fn native_surface_metrics(
+    size: Size,
+    device_scale_factor: zui_core::ScaleFactor,
+) -> SurfaceMetrics {
+    SurfaceMetrics::new(
+        device_scale_factor.to_physical(size),
+        device_scale_factor,
+        1.0,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_growth_does_not_change_pixels_per_dip() {
+        let scale = zui_core::ScaleFactor(2.0);
+        let metrics = |width, height| {
+            native_surface_metrics(
+                Size {
+                    width: Dip(width),
+                    height: Dip(height),
+                },
+                scale,
+            )
+        };
+
+        let initial = metrics(800.0, 600.0);
+        let enlarged = metrics(1600.0, 1000.0);
+
+        assert_eq!(initial.pixels_per_content_dip(), scale);
+        assert_eq!(enlarged.pixels_per_content_dip(), scale);
+        assert_eq!(initial.ui_scale, 1.0);
+        assert_eq!(enlarged.ui_scale, 1.0);
     }
 }

@@ -4,9 +4,9 @@
 //! backend happens once at startup (or after device loss); each concrete
 //! backend keeps static dispatch in its own frame hot path.
 
-use zui_core::{Color, PhysicalSize, ScaleFactor, WindowId};
+use zui_core::{Color, WindowId};
 use zui_platform::spi::RawWindowHandleProvider;
-use zui_render::{RenderError, RenderNode, RenderNodeIndex, Renderer, SceneUpdate};
+use zui_render::{RenderError, RenderNode, RenderNodeIndex, Renderer, SceneUpdate, SurfaceMetrics};
 use zui_render_cpu::CpuRenderer;
 use zui_render_software_gpu::SoftwareGpuRenderer;
 
@@ -146,12 +146,11 @@ impl ActiveRenderer {
         &mut self,
         window: WindowId,
         host: &H,
-        size: PhysicalSize,
-        scale_factor: ScaleFactor,
+        metrics: SurfaceMetrics,
     ) -> Result<(), RendererError> {
         match self {
             Self::HardwareGpu(renderer) => renderer
-                .attach_surface(window, host, size, scale_factor)
+                .attach_surface(window, host, metrics)
                 .map_err(RendererError::HardwareGpu),
             Self::SoftwareGpu(_) | Self::Cpu(_) => Err(RendererError::NoImplementedFallback),
         }
@@ -160,12 +159,11 @@ impl ActiveRenderer {
     pub fn resize(
         &mut self,
         window: WindowId,
-        size: PhysicalSize,
-        scale_factor: ScaleFactor,
+        metrics: SurfaceMetrics,
     ) -> Result<(), RendererError> {
         match self {
             Self::HardwareGpu(renderer) => renderer
-                .resize(window, size, scale_factor)
+                .resize(window, metrics)
                 .map_err(RendererError::HardwareGpu),
             Self::SoftwareGpu(_) | Self::Cpu(_) => Err(RendererError::NoImplementedFallback),
         }

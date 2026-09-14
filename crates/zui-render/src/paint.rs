@@ -123,13 +123,25 @@ impl PaintCommand {
                 origin,
                 scale,
                 ..
-            } => Some(Rect {
-                origin: *origin,
-                size: zui_core::Size {
-                    width: measure_text(text, *scale),
-                    height: Dip((*scale).max(1) as f32 * 7.0),
-                },
-            }),
+            } => {
+                let metrics = text_run_metrics(text, *scale);
+                // Hinting can move the outermost coverage by one physical
+                // pixel at a different DPI/content scale. Bounds are stored
+                // in DIPs and do not know that scale, so keep a conservative
+                // one-DIP guard on every side. Incremental repaint then
+                // always clears the complete previous glyph fringe.
+                const INK_GUARD: f32 = 1.0;
+                Some(Rect {
+                    origin: Point {
+                        x: Dip(origin.x.0 - INK_GUARD),
+                        y: Dip(origin.y.0 + metrics.ink_top.0 - INK_GUARD),
+                    },
+                    size: zui_core::Size {
+                        width: Dip(measure_text(text, *scale).0 + INK_GUARD * 2.0),
+                        height: Dip(metrics.ink_height().0 + INK_GUARD * 2.0),
+                    },
+                })
+            }
             Self::Icon { rect, .. } => Some(*rect),
             Self::PathFill { path, .. } | Self::PathStroke { path, .. } => Some(path_bounds(path)),
         }
