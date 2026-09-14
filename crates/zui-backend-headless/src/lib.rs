@@ -2,19 +2,34 @@
 
 use std::cell::Cell;
 use zui_core::{Id, ScaleFactor, Size, WindowId};
-use zui_platform::{Backend, Host, PlatformError, PlatformEvent, WindowOptions};
+use zui_platform::{
+    AppLoop, Backend, Host, LoopControl, PlatformError, PlatformEvent, WindowOptions,
+};
 
 pub struct HeadlessBackend {
     next_id: u64,
-    pending: Vec<PlatformEvent>,
+    max_iterations: usize,
 }
 
 impl Default for HeadlessBackend {
     fn default() -> Self {
         Self {
             next_id: 1,
-            pending: Vec::new(),
+            max_iterations: 1_024,
         }
+    }
+}
+
+impl HeadlessBackend {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Guards deterministic tests against applications that continuously
+    /// request immediate frames.
+    pub fn max_iterations(mut self, value: usize) -> Self {
+        self.max_iterations = value.max(1);
+        self
     }
 }
 
@@ -35,14 +50,17 @@ impl Host for HeadlessHost {
     fn id(&self) -> WindowId {
         self.id
     }
+
     fn size(&self) -> Size {
         self.size
     }
+
     fn scale_factor(&self) -> ScaleFactor {
         self.scale_factor
     }
+
     fn request_redraw(&self) -> Result<(), PlatformError> {
-        self.redraws.set(self.redraws.get() + 1);
+        self.redraws.set(self.redraws.get().saturating_add(1));
         Ok(())
     }
 }
@@ -50,24 +68,60 @@ impl Host for HeadlessHost {
 impl Backend for HeadlessBackend {
     type Host = HeadlessHost;
 
-    fn create_window(&mut self, options: WindowOptions) -> Result<Self::Host, PlatformError> {
+    fn run(
+        mut self,
+        options: WindowOptions,
+        app: &mut dyn AppLoop<Self::Host>,
+    ) -> Result<(), PlatformError> {
         let id = WindowId(Id::new(self.next_id));
         self.next_id += 1;
-        self.pending.push(PlatformEvent::WindowCreated(id));
-        Ok(HeadlessHost {
+        let host = HeadlessHost {
             id,
             size: options.size,
             scale_factor: ScaleFactor::default(),
             redraws: Cell::new(0),
-        })
-    }
-
-    fn run(mut self, handler: &mut dyn FnMut(PlatformEvent)) -> Result<(), PlatformError> {
-        for event in self.pending.drain(..) {
-            handler(event);
+        };
+        let mut exit = apply_control(&host, app.event(PlatformEvent::WindowCreated(id)))?;
+        if !exit {
+            exit = apply_control(&host, app.host_ready(&host))?;
         }
-        handler(PlatformEvent::AboutToWait);
+
+        let mut delivered = 0_u32;
+        for _ in 0..self.max_iterations {
+            if exit {
+                break;
+            }
+            if delivered < host.redraw_count() {
+                delivered += 1;
+                exit = apply_control(&host, app.event(PlatformEvent::RedrawRequested(id)))?;
+            }
+            if exit {
+                break;
+            }
+            let before_wait = host.redraw_count();
+            exit = apply_control(&host, app.event(PlatformEvent::AboutToWait))?;
+            if exit || (delivered >= host.redraw_count() && host.redraw_count() == before_wait) {
+                break;
+            }
+        }
+        if !exit && delivered < host.redraw_count() {
+            return Err(PlatformError::Backend(format!(
+                "headless event loop exceeded {} iterations",
+                self.max_iterations
+            )));
+        }
         Ok(())
+    }
+}
+
+fn apply_control(host: &HeadlessHost, control: LoopControl) -> Result<bool, PlatformError> {
+    match control {
+        LoopControl::Continue | LoopControl::WaitUntil(_) => Ok(false),
+        LoopControl::RequestRedraw => {
+            host.request_redraw()?;
+            Ok(false)
+        }
+        LoopControl::Exit => Ok(true),
     }
 }
 
@@ -75,16 +129,66 @@ impl Backend for HeadlessBackend {
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct RecordingLoop {
+        host_ready: bool,
+        events: Vec<PlatformEvent>,
+    }
+
+    impl AppLoop<HeadlessHost> for RecordingLoop {
+        fn host_ready(&mut self, host: &HeadlessHost) -> LoopControl {
+            self.host_ready = host.size() == WindowOptions::default().size;
+            LoopControl::RequestRedraw
+        }
+
+        fn event(&mut self, event: PlatformEvent) -> LoopControl {
+            self.events.push(event);
+            LoopControl::Continue
+        }
+    }
+
     #[test]
-    fn submits_one_frame_without_a_display() {
-        let mut backend = HeadlessBackend::default();
-        let host = backend.create_window(WindowOptions::default()).unwrap();
-        host.request_redraw().unwrap();
-        assert_eq!(host.redraw_count(), 1);
-        let mut events = Vec::new();
-        backend.run(&mut |event| events.push(event)).unwrap();
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, PlatformEvent::WindowCreated(_))));
+    fn drives_the_public_app_loop_lifecycle() {
+        let mut app = RecordingLoop::default();
+
+        HeadlessBackend::new()
+            .run(WindowOptions::default(), &mut app)
+            .unwrap();
+
+        assert!(app.host_ready);
+        assert!(matches!(
+            app.events.as_slice(),
+            [
+                PlatformEvent::WindowCreated(_),
+                PlatformEvent::RedrawRequested(_),
+                PlatformEvent::AboutToWait,
+            ]
+        ));
+    }
+
+    #[test]
+    fn rejects_an_unbounded_immediate_redraw_loop() {
+        struct RedrawLoop;
+
+        impl AppLoop<HeadlessHost> for RedrawLoop {
+            fn host_ready(&mut self, _host: &HeadlessHost) -> LoopControl {
+                LoopControl::RequestRedraw
+            }
+
+            fn event(&mut self, event: PlatformEvent) -> LoopControl {
+                if matches!(event, PlatformEvent::RedrawRequested(_)) {
+                    LoopControl::RequestRedraw
+                } else {
+                    LoopControl::Continue
+                }
+            }
+        }
+
+        let error = HeadlessBackend::new()
+            .max_iterations(3)
+            .run(WindowOptions::default(), &mut RedrawLoop)
+            .expect_err("an unbounded redraw loop must fail deterministically");
+
+        assert!(error.to_string().contains("exceeded 3 iterations"));
     }
 }

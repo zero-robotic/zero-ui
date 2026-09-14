@@ -2818,6 +2818,7 @@ dependencies = [
 name = "zui-app"
 version = "0.1.0"
 dependencies = [
+ "zui-backend-headless",
  "zui-backend-winit",
  "zui-core",
  "zui-platform",

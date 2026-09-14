@@ -5,10 +5,17 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["winit"]
+winit = ["dep:zui-backend-winit"]
+
 [dependencies]
-zui-backend-winit = { path = "../zui-backend-winit" }
+zui-backend-winit = { path = "../zui-backend-winit", optional = true }
 zui-core = { path = "../zui-core" }
 zui-platform = { path = "../zui-platform" }
 zui-render = { path = "../zui-render" }
 zui-render-runtime = { path = "../zui-render-runtime" }
 zui-ui = { path = "../zui-ui" }
+
+[dev-dependencies]
+zui-backend-headless = { path = "../zui-backend-headless" }

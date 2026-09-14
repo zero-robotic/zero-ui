@@ -13,8 +13,8 @@ use winit::window::{Window, WindowAttributes};
 use zui_core::{Dip, Id, Point, ScaleFactor, Size, WindowId};
 use zui_platform::spi::RawWindowHandleProvider;
 use zui_platform::{
-    Backend, Host, InputEvent, KeyCode, KeyState, Modifiers as UiModifiers, PlatformError,
-    PlatformEvent, WindowOptions,
+    AppLoop, Backend, Host, InputEvent, KeyCode, KeyState, LoopControl, Modifiers as UiModifiers,
+    PlatformError, PlatformEvent, WindowOptions,
 };
 
 pub struct WinitBackend {
@@ -69,12 +69,12 @@ impl RawWindowHandleProvider for WinitHost {
 struct Runner<'a> {
     options: Option<WindowOptions>,
     host: Option<WinitHost>,
-    on_window: &'a mut dyn FnMut(&WinitHost),
-    handler: &'a mut dyn FnMut(PlatformEvent) -> Option<Instant>,
+    app: &'a mut dyn AppLoop<WinitHost>,
     redraw_at: Option<Instant>,
     ime_composing: bool,
     ime_cursor_position: Option<PhysicalPosition<f64>>,
     modifiers: UiModifiers,
+    error: Option<PlatformError>,
 }
 
 impl ApplicationHandler for Runner<'_> {
@@ -90,8 +90,13 @@ impl ApplicationHandler for Runner<'_> {
                 options.size.height.0,
             ))
             .with_resizable(options.resizable);
-        let Ok(window) = event_loop.create_window(attrs) else {
-            return;
+        let window = match event_loop.create_window(attrs) {
+            Ok(window) => window,
+            Err(error) => {
+                self.error = Some(PlatformError::Backend(error.to_string()));
+                event_loop.exit();
+                return;
+            }
         };
         window.set_ime_allowed(true);
         let id = WindowId(Id::new(1));
@@ -107,15 +112,15 @@ impl ApplicationHandler for Runner<'_> {
             size,
             scale_factor,
         });
-        let host = self.host.as_ref().expect("host was just installed");
-        (self.handler)(PlatformEvent::WindowCreated(id));
-        (self.on_window)(host);
-        // The application callback may attach a renderer and request the
-        // first frame. Keep a backend-owned request as well: on some window
-        // systems a redraw requested while the window is being resumed can be
-        // coalesced before the callback returns, leaving the window blank
-        // until the first input event.
-        host.window.request_redraw();
+        let created = self.app.event(PlatformEvent::WindowCreated(id));
+        self.apply_control(event_loop, created);
+        if matches!(created, LoopControl::Exit) {
+            return;
+        }
+        let ready = self
+            .app
+            .host_ready(self.host.as_ref().expect("host was just installed"));
+        self.apply_control(event_loop, ready);
     }
 
     fn window_event(
@@ -127,17 +132,18 @@ impl ApplicationHandler for Runner<'_> {
         if self.host.is_none() {
             return;
         }
-        let redraw_at = match event {
+        let control = match event {
             WindowEvent::CloseRequested => {
                 let id = self.host.as_ref().expect("host exists").id;
-                (self.handler)(PlatformEvent::CloseRequested(id));
-                event_loop.exit();
-                None
+                let _ = self.app.event(PlatformEvent::CloseRequested(id));
+                LoopControl::Exit
             }
             WindowEvent::RedrawRequested => {
                 let id = self.host.as_ref().expect("host exists").id;
-                (self.handler)(PlatformEvent::RedrawRequested(id));
-                None
+                // Any previous deadline has now produced (or been superseded
+                // by) a frame. The application can return a fresh deadline.
+                self.redraw_at = None;
+                self.app.event(PlatformEvent::RedrawRequested(id))
             }
             WindowEvent::Resized(size) => {
                 let host = self.host.as_mut().expect("host exists");
@@ -145,7 +151,7 @@ impl ApplicationHandler for Runner<'_> {
                     width: Dip(size.width as f32 / host.scale_factor.0 as f32),
                     height: Dip(size.height as f32 / host.scale_factor.0 as f32),
                 };
-                (self.handler)(PlatformEvent::WindowResized {
+                self.app.event(PlatformEvent::WindowResized {
                     window: host.id,
                     size: host.size,
                     scale_factor: host.scale_factor,
@@ -159,7 +165,7 @@ impl ApplicationHandler for Runner<'_> {
                     width: Dip(physical.width as f32 / scale_factor as f32),
                     height: Dip(physical.height as f32 / scale_factor as f32),
                 };
-                (self.handler)(PlatformEvent::WindowResized {
+                self.app.event(PlatformEvent::WindowResized {
                     window: host.id,
                     size: host.size,
                     scale_factor: host.scale_factor,
@@ -183,7 +189,7 @@ impl ApplicationHandler for Runner<'_> {
                     }
                 }
                 let scale_factor = self.host.as_ref().expect("host exists").scale_factor.0;
-                (self.handler)(PlatformEvent::Input {
+                self.app.event(PlatformEvent::Input {
                     window: id,
                     event: InputEvent::CursorMoved {
                         position: Point {
@@ -201,7 +207,7 @@ impl ApplicationHandler for Runner<'_> {
                     alt: state.alt_key(),
                     logo: state.super_key(),
                 };
-                None
+                LoopControl::Continue
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let id = self.host.as_ref().expect("host exists").id;
@@ -221,7 +227,7 @@ impl ApplicationHandler for Runner<'_> {
                         );
                     }
                 }
-                (self.handler)(PlatformEvent::Input {
+                self.app.event(PlatformEvent::Input {
                     window: id,
                     event: InputEvent::MouseInput {
                         button: map_button(button),
@@ -239,18 +245,18 @@ impl ApplicationHandler for Runner<'_> {
                         Dip(position.y as f32 / scale),
                     ),
                 };
-                (self.handler)(PlatformEvent::Input {
+                self.app.event(PlatformEvent::Input {
                     window: id,
                     event: InputEvent::MouseWheel { delta_x, delta_y },
                 })
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if self.ime_composing {
-                    None
+                    LoopControl::Continue
                 } else {
                     let key = map_key(&event.logical_key);
                     let id = self.host.as_ref().expect("host exists").id;
-                    (self.handler)(PlatformEvent::Input {
+                    self.app.event(PlatformEvent::Input {
                         window: id,
                         event: InputEvent::Keyboard {
                             key,
@@ -263,32 +269,36 @@ impl ApplicationHandler for Runner<'_> {
             WindowEvent::Ime(ime) => match ime {
                 Ime::Enabled | Ime::Disabled => {
                     self.ime_composing = false;
-                    None
+                    LoopControl::Continue
                 }
                 Ime::Preedit(text, _) => {
                     self.ime_composing = !text.is_empty();
-                    None
+                    LoopControl::Continue
                 }
                 Ime::Commit(text) if !text.is_empty() => {
                     self.ime_composing = false;
                     let id = self.host.as_ref().expect("host exists").id;
-                    (self.handler)(PlatformEvent::Input {
+                    self.app.event(PlatformEvent::Input {
                         window: id,
                         event: InputEvent::Text(text),
                     })
                 }
                 Ime::Commit(_) => {
                     self.ime_composing = false;
-                    None
+                    LoopControl::Continue
                 }
             },
-            _ => None,
+            _ => LoopControl::Continue,
         };
-        self.schedule_redraw(redraw_at);
+        self.apply_control(event_loop, control);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        (self.handler)(PlatformEvent::AboutToWait);
+        let control = self.app.event(PlatformEvent::AboutToWait);
+        self.apply_control(event_loop, control);
+        if matches!(control, LoopControl::Exit) {
+            return;
+        }
         if let Some(deadline) = self.redraw_at {
             if deadline <= Instant::now() {
                 self.redraw_at = None;
@@ -305,74 +315,33 @@ impl ApplicationHandler for Runner<'_> {
 }
 
 impl Runner<'_> {
-    fn schedule_redraw(&mut self, deadline: Option<Instant>) {
-        let Some(deadline) = deadline else {
-            return;
-        };
-        if deadline <= Instant::now() {
-            if let Some(host) = self.host.as_ref() {
-                host.window.request_redraw();
+    fn apply_control(&mut self, event_loop: &ActiveEventLoop, control: LoopControl) {
+        match control {
+            LoopControl::Continue => {}
+            LoopControl::RequestRedraw => {
+                if let Some(host) = self.host.as_ref() {
+                    host.window.request_redraw();
+                }
             }
-        } else {
-            // A later deferred request supersedes an earlier one. This is
-            // essential for resize debouncing: every native resize event must
-            // extend the quiet period instead of preserving the first event's
-            // deadline.
-            self.redraw_at = Some(deadline);
+            LoopControl::WaitUntil(deadline) if deadline <= Instant::now() => {
+                if let Some(host) = self.host.as_ref() {
+                    host.window.request_redraw();
+                }
+            }
+            LoopControl::WaitUntil(deadline) => {
+                self.redraw_at = Some(deadline);
+            }
+            LoopControl::Exit => event_loop.exit(),
         }
     }
 }
 
 impl Backend for WinitBackend {
     type Host = WinitHost;
-    fn create_window(&mut self, _options: WindowOptions) -> Result<Self::Host, PlatformError> {
-        Err(PlatformError::Backend(
-            "winit creates windows during the event loop; use run".into(),
-        ))
-    }
-    fn run(self, handler: &mut dyn FnMut(PlatformEvent)) -> Result<(), PlatformError> {
-        let mut on_window = |host: &WinitHost| {
-            let _ = host.request_redraw();
-        };
-        self.run_with_options(WindowOptions::default(), &mut on_window, handler)
-    }
-}
-
-impl WinitBackend {
-    /// Run the event loop and expose the created host to the composition root.
-    /// The host is only valid for the duration of the callback and event loop.
-    pub fn run_with_options(
-        self,
-        options: WindowOptions,
-        on_window: &mut dyn FnMut(&WinitHost),
-        handler: &mut dyn FnMut(PlatformEvent),
-    ) -> Result<(), PlatformError> {
-        let mut handler_with_redraw = |event| {
-            let request_redraw = matches!(
-                event,
-                PlatformEvent::Input { .. } | PlatformEvent::WindowResized { .. }
-            );
-            handler(event);
-            request_redraw.then(Instant::now)
-        };
-        self.run_with_options_and_schedule(options, on_window, &mut handler_with_redraw)
-    }
-
-    pub fn run_with_options_and_redraw(
-        self,
-        options: WindowOptions,
-        on_window: &mut dyn FnMut(&WinitHost),
-        handler: &mut dyn FnMut(PlatformEvent) -> bool,
-    ) -> Result<(), PlatformError> {
-        let mut handler_with_schedule = |event| handler(event).then(Instant::now);
-        self.run_with_options_and_schedule(options, on_window, &mut handler_with_schedule)
-    }
-
-    pub fn run_with_options_and_schedule(
+    fn run(
         mut self,
         options: WindowOptions,
-        on_window: &mut dyn FnMut(&WinitHost),
-        handler: &mut dyn FnMut(PlatformEvent) -> Option<Instant>,
+        app: &mut dyn AppLoop<Self::Host>,
     ) -> Result<(), PlatformError> {
         let event_loop = self
             .event_loop
@@ -381,16 +350,20 @@ impl WinitBackend {
         let mut runner = Runner {
             options: Some(options),
             host: None,
-            on_window,
-            handler,
+            app,
             redraw_at: None,
             ime_composing: false,
             ime_cursor_position: None,
             modifiers: UiModifiers::default(),
+            error: None,
         };
         event_loop
             .run_app(&mut runner)
-            .map_err(|e| PlatformError::Backend(e.to_string()))
+            .map_err(|e| PlatformError::Backend(e.to_string()))?;
+        if let Some(error) = runner.error {
+            return Err(error);
+        }
+        Ok(())
     }
 }
 

@@ -1,21 +1,22 @@
-//! Application and window runner for the standard winit + ActiveRenderer stack.
+//! Platform-neutral application orchestration.
 //!
-//! The runner owns platform-to-UI event translation, layout, redraw scheduling
-//! and renderer surface management so applications only provide a root widget
-//! (or a declarative [`Component`]).
+//! [`Application::run_with`] accepts a platform backend and renderer. The
+//! default `winit` feature adds the [`Application::run`] convenience path but
+//! does not change the shared `AppLoop` lifecycle used by other backends.
 
-use std::{cell::RefCell, rc::Rc, time::Instant};
-
-use zui_backend_winit::{WinitBackend, WinitHost};
+#[cfg(feature = "winit")]
+use zui_backend_winit::WinitBackend;
 use zui_core::{Dip, Point, Size};
-use zui_platform::{Host, InputEvent, PlatformEvent, WindowOptions};
+use zui_platform::{AppLoop, Backend, Host, InputEvent, LoopControl, PlatformEvent, WindowOptions};
 use zui_render::{ImageId, ImageResource, RenderError, SurfaceMetrics};
-use zui_render_runtime::{ActiveRenderer, RendererError};
+#[cfg(feature = "winit")]
+use zui_render_runtime::ActiveRenderer;
+use zui_render_runtime::{ApplicationRenderer, RendererError};
 use zui_ui::{
     Component, ComponentRoot, Constraints, EventResult, Theme, UiEvent, Widget, WidgetTree,
 };
 
-/// Configures and launches a one-window application.
+/// Configures an application independently of its platform and renderer.
 pub struct Application {
     options: WindowOptions,
     theme: Theme,
@@ -51,36 +52,76 @@ impl Application {
         self.theme = theme;
         self
     }
+
     pub fn image(mut self, id: ImageId, image: ImageResource) -> Self {
         self.images.push((id, image));
         self
     }
 
-    pub fn run(self, root: impl Widget + 'static) -> Result<(), Box<dyn std::error::Error>> {
-        WindowRunner::new(self.options, self.theme, self.images, root).run()
+    /// Runs with explicitly selected platform and renderer implementations,
+    /// returning the renderer after finite backends (such as headless) exit.
+    pub fn run_with<B, R>(
+        self,
+        backend: B,
+        renderer: R,
+        root: impl Widget + 'static,
+    ) -> Result<R, Box<dyn std::error::Error>>
+    where
+        B: Backend,
+        R: ApplicationRenderer<B::Host>,
+    {
+        WindowRunner::new(self.options, self.theme, self.images, renderer, root).run(backend)
     }
 
+    pub fn run_component_with<B, R, C>(
+        self,
+        backend: B,
+        renderer: R,
+        component: C,
+    ) -> Result<R, Box<dyn std::error::Error>>
+    where
+        B: Backend,
+        R: ApplicationRenderer<B::Host>,
+        C: Component,
+    {
+        self.run_with(backend, renderer, ComponentRoot::new(component))
+    }
+
+    /// Runs the standard native stack selected by the default `winit` feature.
+    #[cfg(feature = "winit")]
+    pub fn run(self, root: impl Widget + 'static) -> Result<(), Box<dyn std::error::Error>> {
+        let backend = WinitBackend::new()?;
+        let renderer = ActiveRenderer::new_blocking()?;
+        self.run_with(backend, renderer, root).map(|_| ())
+    }
+
+    #[cfg(feature = "winit")]
     pub fn run_component<C: Component>(
         self,
         component: C,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.run(ComponentRoot::new(component))
+        let backend = WinitBackend::new()?;
+        let renderer = ActiveRenderer::new_blocking()?;
+        self.run_component_with(backend, renderer, component)
+            .map(|_| ())
     }
 }
 
-/// Owns a `WidgetTree`, the selected renderer and the event-loop integration.
-pub struct WindowRunner {
+/// Owns one `WidgetTree` and an injected renderer while a backend drives it.
+pub struct WindowRunner<R> {
     options: WindowOptions,
     theme: Theme,
     tree: WidgetTree,
     images: Vec<(ImageId, ImageResource)>,
+    renderer: R,
 }
 
-impl WindowRunner {
+impl<R> WindowRunner<R> {
     pub fn new(
         options: WindowOptions,
         theme: Theme,
         images: Vec<(ImageId, ImageResource)>,
+        renderer: R,
         root: impl Widget + 'static,
     ) -> Self {
         let mut tree = WidgetTree::new(root);
@@ -90,18 +131,20 @@ impl WindowRunner {
             theme,
             tree,
             images,
+            renderer,
         }
     }
 
-    pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {
-        let state = Rc::new(RefCell::new(RunnerState {
-            renderer: {
-                let mut renderer = ActiveRenderer::new_blocking()?;
-                for (id, image) in self.images {
-                    renderer.register_image(id, image);
-                }
-                renderer
-            },
+    pub fn run<B>(mut self, backend: B) -> Result<R, Box<dyn std::error::Error>>
+    where
+        B: Backend,
+        R: ApplicationRenderer<B::Host>,
+    {
+        for (id, image) in self.images {
+            self.renderer.register_image(id, image);
+        }
+        let mut state = RunnerState {
+            renderer: self.renderer,
             tree: self.tree,
             background: self.theme.background,
             pointer_position: Point {
@@ -109,26 +152,19 @@ impl WindowRunner {
                 y: Dip::ZERO,
             },
             pending_resize: None,
-        }));
-
-        let window_state = Rc::clone(&state);
-        let mut on_window = move |host: &WinitHost| {
-            window_state.borrow_mut().on_window(host);
+            error: None,
         };
-        let event_state = Rc::clone(&state);
-        let mut handler = move |event: PlatformEvent| event_state.borrow_mut().handle(event);
 
-        WinitBackend::new()?.run_with_options_and_schedule(
-            self.options,
-            &mut on_window,
-            &mut handler,
-        )?;
-        Ok(())
+        backend.run(self.options, &mut state)?;
+        if let Some(error) = state.error.take() {
+            return Err(Box::new(error));
+        }
+        Ok(state.renderer)
     }
 }
 
-struct RunnerState {
-    renderer: ActiveRenderer,
+struct RunnerState<R> {
+    renderer: R,
     tree: WidgetTree,
     background: zui_core::Color,
     /// Last pointer position in native window DIPs. UI layout uses the same
@@ -137,42 +173,64 @@ struct RunnerState {
     /// Native resize notifications can arrive much faster than the GPU can
     /// recreate render targets. Retain only the latest dimensions.
     pending_resize: Option<(zui_core::WindowId, Size, SurfaceMetrics)>,
+    error: Option<RendererError>,
 }
 
-impl RunnerState {
-    fn on_window(&mut self, host: &WinitHost) {
-        self.tree.layout(Constraints::loose(host.size()));
-        self.tree.request_paint(None);
-        self.renderer
-            .attach_surface(
-                host.id(),
-                host,
-                native_surface_metrics(host.size(), host.scale_factor()),
-            )
-            .expect("failed to attach render surface");
-        host.request_redraw()
-            .expect("failed to request initial redraw");
+impl<H, R> AppLoop<H> for RunnerState<R>
+where
+    H: Host,
+    R: ApplicationRenderer<H>,
+{
+    fn host_ready(&mut self, host: &H) -> LoopControl {
+        match self.attach_host(host) {
+            Ok(()) => LoopControl::RequestRedraw,
+            Err(error) => self.fail(error),
+        }
     }
 
-    fn handle(&mut self, event: PlatformEvent) -> Option<Instant> {
+    fn event(&mut self, event: PlatformEvent) -> LoopControl {
+        match self.handle::<H>(event) {
+            Ok(control) => control,
+            Err(error) => self.fail(error),
+        }
+    }
+}
+
+impl<R> RunnerState<R> {
+    fn fail(&mut self, error: RendererError) -> LoopControl {
+        self.error = Some(error);
+        LoopControl::Exit
+    }
+
+    fn attach_host<H>(&mut self, host: &H) -> Result<(), RendererError>
+    where
+        H: Host,
+        R: ApplicationRenderer<H>,
+    {
+        self.tree.layout(Constraints::loose(host.size()));
+        self.tree.request_paint(None);
+        self.renderer.attach_surface(
+            host.id(),
+            host,
+            native_surface_metrics(host.size(), host.scale_factor()),
+        )
+    }
+
+    fn handle<H>(&mut self, event: PlatformEvent) -> Result<LoopControl, RendererError>
+    where
+        H: Host,
+        R: ApplicationRenderer<H>,
+    {
         match event {
-            PlatformEvent::RedrawRequested(window) => self.redraw(window),
+            PlatformEvent::RedrawRequested(window) => self.redraw::<H>(window),
             PlatformEvent::WindowResized {
                 window,
                 size,
                 scale_factor,
             } => {
-                // A larger window increases the layout constraints but never
-                // changes the size of one DIP. Intrinsic controls therefore
-                // stay fixed while explicitly flexible layout children can
-                // consume the newly available space.
                 let metrics = native_surface_metrics(size, scale_factor);
                 self.pending_resize = Some((window, size, metrics));
-                // Keep only the newest native size, but present it on the next
-                // compositor-driven redraw. Multiple requests made before that
-                // redraw are coalesced by winit, allowing live resize/maximize
-                // to track the window without rebuilding once per raw event.
-                Some(Instant::now())
+                Ok(LoopControl::RequestRedraw)
             }
             PlatformEvent::Input { window, event } => {
                 let ui_event = match event {
@@ -190,23 +248,31 @@ impl RunnerState {
                     _ => UiEvent::input(event),
                 };
                 let (result, _outputs) = self.tree.event(&ui_event);
-                (result == EventResult::RequestRedraw).then(Instant::now)
+                Ok(if result == EventResult::RequestRedraw {
+                    LoopControl::RequestRedraw
+                } else {
+                    LoopControl::Continue
+                })
             }
             PlatformEvent::CloseRequested(window) => {
                 self.renderer.detach_surface(window);
-                None
+                Ok(LoopControl::Continue)
             }
-            PlatformEvent::WindowCreated(_) | PlatformEvent::AboutToWait => None,
+            PlatformEvent::WindowCreated(_) | PlatformEvent::AboutToWait => {
+                Ok(LoopControl::Continue)
+            }
         }
     }
 
-    fn redraw(&mut self, window: zui_core::WindowId) -> Option<Instant> {
+    fn redraw<H>(&mut self, window: zui_core::WindowId) -> Result<LoopControl, RendererError>
+    where
+        H: Host,
+        R: ApplicationRenderer<H>,
+    {
         if let Some((resize_window, size, metrics)) = self.pending_resize.take() {
             if metrics.physical_size != zui_core::PhysicalSize::default() {
                 self.tree.layout(Constraints::loose(size));
-                self.renderer
-                    .resize(resize_window, metrics)
-                    .expect("failed to resize render surface");
+                self.renderer.resize(resize_window, metrics)?;
                 self.tree.request_paint(None);
             }
         }
@@ -214,7 +280,7 @@ impl RunnerState {
             if self.tree.next_redraw().is_some() {
                 self.tree.request_paint(None);
             } else {
-                return None;
+                return Ok(LoopControl::Continue);
             }
         }
         let result = {
@@ -230,11 +296,11 @@ impl RunnerState {
         match result {
             Ok(()) => self.tree.mark_clean(),
             Err(RendererError::HardwareGpu(RenderError::SurfaceLost)) => {
-                eprintln!("render surface lost; waiting for resize")
+                return Ok(LoopControl::Continue);
             }
-            Err(error) => eprintln!("failed to render frame: {error}"),
+            Err(error) => return Err(error),
         }
-        self.tree.next_redraw()
+        Ok(LoopControl::from_redraw_deadline(self.tree.next_redraw()))
     }
 }
 
@@ -252,6 +318,20 @@ fn native_surface_metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zui_backend_headless::HeadlessBackend;
+    use zui_render::PaintCommand;
+    use zui_render_runtime::HeadlessRenderer;
+    use zui_ui::Text;
+
+    fn contains_text(node: &zui_render::RenderNode, expected: &str) -> bool {
+        node.commands
+            .iter()
+            .any(|command| matches!(command, PaintCommand::Text { text, .. } if text == expected))
+            || node
+                .children
+                .iter()
+                .any(|child| contains_text(child, expected))
+    }
 
     #[test]
     fn window_growth_does_not_change_pixels_per_dip() {
@@ -273,5 +353,34 @@ mod tests {
         assert_eq!(enlarged.pixels_per_content_dip(), scale);
         assert_eq!(initial.ui_scale, 1.0);
         assert_eq!(enlarged.ui_scale, 1.0);
+    }
+
+    #[test]
+    fn headless_backend_drives_widget_tree_scene_into_a_frame() {
+        let root = Text::new("headless end-to-end frame");
+        let root_id = root.id().value();
+        let options = WindowOptions {
+            size: Size {
+                width: Dip(320.0),
+                height: Dip(180.0),
+            },
+            ..WindowOptions::default()
+        };
+
+        let renderer = Application::new()
+            .options(options)
+            .run_with(HeadlessBackend::new(), HeadlessRenderer::new(), root)
+            .expect("headless application should complete");
+
+        let frame = renderer
+            .last_frame()
+            .expect("headless application should submit one frame");
+        assert_eq!(renderer.frames().len(), 1);
+        assert_eq!(frame.metrics.physical_size.width, 320);
+        assert_eq!(frame.metrics.physical_size.height, 180);
+        assert!(frame.update.full_rebuild());
+        assert!(frame.update.revision() > 0);
+        assert!(frame.index.path_for(root_id).is_some());
+        assert!(contains_text(&frame.node, "headless end-to-end frame"));
     }
 }

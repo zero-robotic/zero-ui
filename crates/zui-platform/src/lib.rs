@@ -1,5 +1,7 @@
 //! Stable, platform-neutral contracts consumed by applications and UI code.
 
+use std::time::Instant;
+
 pub use zui_core::{Dip, Id, OutputId, PhysicalSize, Point, Rect, ScaleFactor, Size, WindowId};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -122,10 +124,50 @@ pub trait Host {
     fn request_redraw(&self) -> Result<(), PlatformError>;
 }
 
+/// Scheduling decision returned by the application loop after a platform
+/// callback. Backends own the native event loop and translate this value into
+/// their own control-flow mechanism.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LoopControl {
+    #[default]
+    Continue,
+    RequestRedraw,
+    WaitUntil(Instant),
+    Exit,
+}
+
+impl LoopControl {
+    pub fn from_redraw_deadline(deadline: Option<Instant>) -> Self {
+        match deadline {
+            Some(deadline) if deadline <= Instant::now() => Self::RequestRedraw,
+            Some(deadline) => Self::WaitUntil(deadline),
+            None => Self::Continue,
+        }
+    }
+}
+
+/// Platform-neutral application callbacks driven by a [`Backend`].
+///
+/// A native host can only be created once its platform event loop is active.
+/// Every backend first emits [`PlatformEvent::WindowCreated`], then lends the
+/// host through `host_ready` for surface attachment before the first redraw.
+/// Returning [`LoopControl::Exit`] from the creation event skips `host_ready`.
+/// Headless implementations follow the same ordering as native backends.
+pub trait AppLoop<H: Host> {
+    fn host_ready(&mut self, host: &H) -> LoopControl;
+    fn event(&mut self, event: PlatformEvent) -> LoopControl;
+}
+
 pub trait Backend {
     type Host: Host;
-    fn create_window(&mut self, options: WindowOptions) -> Result<Self::Host, PlatformError>;
-    fn run(self, handler: &mut dyn FnMut(PlatformEvent)) -> Result<(), PlatformError>;
+
+    /// Creates the host inside the backend's native lifecycle and drives the
+    /// supplied application loop until it exits.
+    fn run(
+        self,
+        options: WindowOptions,
+        app: &mut dyn AppLoop<Self::Host>,
+    ) -> Result<(), PlatformError>;
 }
 
 /// Backend-only hooks. Applications must not depend on this module.
