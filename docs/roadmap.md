@@ -350,7 +350,7 @@
 - [ ] `zui-backend-winit`：单平台建窗、resize、scale、键盘/鼠标  
 - [ ] `zui-render`：attach surface、清屏一帧  
 - [ ] `zui-backend-headless`：无窗跑一帧  
-- [ ] 示例：`examples/empty_window`（组装根注入 backend）  
+- [x] 示例：`examples/empty_window`（组装根注入 backend）
 
 **完成标准（可测量）：**
 
@@ -405,7 +405,7 @@
 
 - [ ] `zui-platform` IME 事件草案（preedit / commit / 候选区职责划分）  
 - [ ] 一平台完整实现（建议 Linux 或 macOS）  
-- [ ] `examples/text_input`：中文输入、提交、取消 preedit  
+- [x] `examples/text_input`：中文输入、提交、取消 preedit
 - [ ] 其它平台：能编译；行为写入 platform-status  
 
 **完成标准（可测量）：**

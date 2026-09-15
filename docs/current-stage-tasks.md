@@ -49,9 +49,9 @@
 - [x] 创建 `docs/platform-api.md`，区分公开 API、capability 与 backend SPI；
 - [ ] 创建 `docs/platform-status.md`，记录各平台 check/build/run、HiDPI 和已知限制；
 - [ ] 创建 `docs/msrv.md` 或在 README 中明确 MSRV 策略；
-- [ ] 增加 `examples/empty_window`，只验证建窗、清屏、resize、scale 和关闭；
-- [ ] 增加 `examples/text_input`，作为键盘、焦点和后续 IME 的稳定验收入口；
-- [ ] 建立至少包含 1x/2x、连续 resize、最小化/恢复、遮挡/恢复的手工验收表；
+- [x] 增加 `examples/empty_window`，只验证建窗、清屏、resize、scale 和关闭；
+- [x] 增加 `examples/text_input`，作为键盘、焦点和后续 IME 的稳定验收入口；
+- [x] 建立 [最小运行与窗口状态验收表](runtime-acceptance.md)，覆盖 1x/2x、连续 resize、最小化/恢复、遮挡/恢复；
 - [ ] 依据真实证据更新 roadmap 勾选状态，不以“已有相似代码”代替验收。
 
 ### 验收标准

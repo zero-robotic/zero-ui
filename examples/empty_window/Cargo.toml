@@ -1,0 +1,15 @@
+[package]
+name = "empty-window"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+zui-app = { path = "../../crates/zui-app", default-features = false }
+zui-backend-winit = { path = "../../crates/zui-backend-winit" }
+zui-render-runtime = { path = "../../crates/zui-render-runtime" }
+zui-ui = { path = "../../crates/zui-ui" }
+
+[dev-dependencies]
+zui-backend-headless = { path = "../../crates/zui-backend-headless" }

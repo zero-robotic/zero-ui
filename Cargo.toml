@@ -14,6 +14,8 @@ members = [
     "examples/widgets",
     "examples/scroll_area",
     "examples/counter",
+    "examples/empty_window",
+    "examples/text_input",
 ]
 
 [workspace.package]
