@@ -2,7 +2,7 @@
 
 use zui_core::WindowId;
 
-use crate::ImageId;
+use crate::{ImageId, SurfaceTransitionError};
 
 #[derive(Debug)]
 pub enum RenderError {
@@ -10,6 +10,9 @@ pub enum RenderError {
     Device(String),
     Surface(String),
     SurfaceNotAttached(WindowId),
+    SurfaceAlreadyAttached(WindowId),
+    UnsupportedSurfaceTarget,
+    InvalidSurfaceTransition(SurfaceTransitionError),
     SurfaceOutdated,
     SurfaceLost,
     InvalidCommand(String),
@@ -23,6 +26,11 @@ impl std::fmt::Display for RenderError {
             Self::Device(message) => write!(f, "GPU device error: {message}"),
             Self::Surface(message) => write!(f, "surface error: {message}"),
             Self::SurfaceNotAttached(id) => write!(f, "surface {id:?} is not attached"),
+            Self::SurfaceAlreadyAttached(id) => write!(f, "surface {id:?} is already attached"),
+            Self::UnsupportedSurfaceTarget => {
+                f.write_str("renderer does not support this surface target")
+            }
+            Self::InvalidSurfaceTransition(error) => error.fmt(f),
             Self::SurfaceOutdated => write!(f, "surface configuration is outdated"),
             Self::SurfaceLost => write!(f, "surface was lost"),
             Self::InvalidCommand(message) => write!(f, "invalid paint command: {message}"),
@@ -32,3 +40,9 @@ impl std::fmt::Display for RenderError {
 }
 
 impl std::error::Error for RenderError {}
+
+impl From<SurfaceTransitionError> for RenderError {
+    fn from(error: SurfaceTransitionError) -> Self {
+        Self::InvalidSurfaceTransition(error)
+    }
+}

@@ -1,20 +1,18 @@
 //! Ordinary application-window backend built on winit.
 
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
-use winit::raw_window_handle::{
-    HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle,
-};
+use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::{Window, WindowAttributes};
 use zui_core::{Dip, Id, Point, ScaleFactor, Size, WindowId};
-use zui_platform::spi::RawWindowHandleProvider;
+use zui_platform::spi;
 use zui_platform::{
     AppLoop, Backend, Host, InputEvent, KeyCode, KeyState, LoopControl, Modifiers as UiModifiers,
-    PlatformError, PlatformEvent, WindowOptions,
+    PlatformError, PlatformEvent, SurfaceTarget, WindowOptions,
 };
 
 pub struct WinitBackend {
@@ -33,9 +31,16 @@ impl WinitBackend {
 
 pub struct WinitHost {
     id: WindowId,
-    window: Window,
+    window: Arc<Window>,
     size: Size,
     scale_factor: ScaleFactor,
+}
+
+fn native_surface_target<T>(source: Arc<T>) -> SurfaceTarget
+where
+    T: HasWindowHandle + HasDisplayHandle + Send + Sync + 'static,
+{
+    spi::native_surface_target(source)
 }
 
 impl Host for WinitHost {
@@ -48,21 +53,12 @@ impl Host for WinitHost {
     fn scale_factor(&self) -> ScaleFactor {
         self.scale_factor
     }
+    fn surface_target(&self) -> SurfaceTarget {
+        native_surface_target(Arc::clone(&self.window))
+    }
     fn request_redraw(&self) -> Result<(), PlatformError> {
         self.window.request_redraw();
         Ok(())
-    }
-}
-
-impl RawWindowHandleProvider for WinitHost {
-    fn raw_window_handle(&self) -> Result<RawWindowHandle, winit::raw_window_handle::HandleError> {
-        Ok(self.window.window_handle()?.as_raw())
-    }
-
-    fn raw_display_handle(
-        &self,
-    ) -> Result<RawDisplayHandle, winit::raw_window_handle::HandleError> {
-        Ok(self.window.display_handle()?.as_raw())
     }
 }
 
@@ -108,7 +104,7 @@ impl ApplicationHandler for Runner<'_> {
         };
         self.host = Some(WinitHost {
             id,
-            window,
+            window: Arc::new(window),
             size,
             scale_factor,
         });
@@ -445,5 +441,47 @@ fn map_key(key: &Key) -> KeyCode {
             .map(KeyCode::Character)
             .unwrap_or(KeyCode::Unknown),
         _ => KeyCode::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::raw_window_handle::{
+        DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WebWindowHandle,
+        WindowHandle,
+    };
+    use zui_platform::SurfaceTargetKind;
+
+    struct NativeHandleStub;
+
+    impl HasWindowHandle for NativeHandleStub {
+        fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+            // Web IDs contain no pointers, which makes this a portable test
+            // handle on every host target supported by raw-window-handle.
+            Ok(unsafe { WindowHandle::borrow_raw(WebWindowHandle::new(1).into()) })
+        }
+    }
+
+    impl HasDisplayHandle for NativeHandleStub {
+        fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
+            Ok(DisplayHandle::web())
+        }
+    }
+
+    #[test]
+    fn winit_target_runs_the_shared_surface_lifecycle_contract() {
+        let source = Arc::new(NativeHandleStub);
+        let retained_source = Arc::downgrade(&source);
+        let target = native_surface_target(Arc::clone(&source));
+        drop(source);
+
+        assert_eq!(target.kind(), SurfaceTargetKind::Native);
+        assert!(target.native_source().is_some());
+        assert!(retained_source.upgrade().is_some());
+        zui_render::test_support::assert_surface_lifecycle_contract();
+
+        drop(target);
+        assert!(retained_source.upgrade().is_none());
     }
 }

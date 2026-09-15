@@ -8,3 +8,6 @@ license.workspace = true
 [dependencies]
 zui-core.workspace = true
 zui-platform.workspace = true
+
+[dev-dependencies]
+zui-render = { workspace = true, features = ["test-support"] }

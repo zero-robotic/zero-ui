@@ -1,6 +1,8 @@
 # zero-ui 框架与开发计划
 
 > 基于产品目标整理：阶段一做跨平台桌面应用 toolkit；过渡期做 shell 组件；阶段二聚焦 **FreeBSD** 桌面。通过可替换后端与稳定公开 API，**尽量保持应用层不变、降低向 shell/会话迁移的成本**（不承诺零改动）。
+>
+> 当前阶段的整改顺序、任务清单与退出条件见 [current-stage-tasks.md](current-stage-tasks.md)。
 
 ## 一、产品定位
 

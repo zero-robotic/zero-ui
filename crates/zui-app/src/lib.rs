@@ -72,7 +72,7 @@ impl Application {
     ) -> Result<R, Box<dyn std::error::Error>>
     where
         B: Backend,
-        R: ApplicationRenderer<B::Host>,
+        R: ApplicationRenderer,
     {
         WindowRunner::new(self.options, self.theme, self.images, renderer, root).run(backend)
     }
@@ -85,7 +85,7 @@ impl Application {
     ) -> Result<R, Box<dyn std::error::Error>>
     where
         B: Backend,
-        R: ApplicationRenderer<B::Host>,
+        R: ApplicationRenderer,
         C: Component,
     {
         self.run_with(backend, renderer, ComponentRoot::new(component))
@@ -142,7 +142,7 @@ impl<R> WindowRunner<R> {
     pub fn run<B>(mut self, backend: B) -> Result<R, Box<dyn std::error::Error>>
     where
         B: Backend,
-        R: ApplicationRenderer<B::Host>,
+        R: ApplicationRenderer,
     {
         for (id, image) in self.images {
             self.renderer.register_image(id, image);
@@ -187,7 +187,7 @@ struct RunnerState<R> {
 impl<H, R> AppLoop<H> for RunnerState<R>
 where
     H: Host,
-    R: ApplicationRenderer<H>,
+    R: ApplicationRenderer,
 {
     fn host_ready(&mut self, host: &H) -> LoopControl {
         match self.attach_host(host) {
@@ -213,13 +213,13 @@ impl<R> RunnerState<R> {
     fn attach_host<H>(&mut self, host: &H) -> Result<(), RendererError>
     where
         H: Host,
-        R: ApplicationRenderer<H>,
+        R: ApplicationRenderer,
     {
         self.tree.layout(Constraints::loose(host.size()));
         self.tree.request_paint(None);
         self.renderer.attach_surface(
             host.id(),
-            host,
+            host.surface_target(),
             native_surface_metrics(host.size(), host.scale_factor()),
         )
     }
@@ -227,7 +227,7 @@ impl<R> RunnerState<R> {
     fn handle<H>(&mut self, host: &H, event: PlatformEvent) -> Result<LoopControl, RendererError>
     where
         H: Host,
-        R: ApplicationRenderer<H>,
+        R: ApplicationRenderer,
     {
         match event {
             PlatformEvent::RedrawRequested(window) => self.redraw(host, window),
@@ -284,15 +284,13 @@ impl<R> RunnerState<R> {
     ) -> Result<LoopControl, RendererError>
     where
         H: Host,
-        R: ApplicationRenderer<H>,
+        R: ApplicationRenderer,
     {
         if let Some((resize_window, size, metrics)) = self.pending_resize.take() {
-            if metrics.physical_size != zui_core::PhysicalSize::default() {
-                self.tree.layout(Constraints::loose(size));
-                self.renderer.resize(resize_window, metrics)?;
-                self.tree.request_paint(None);
-                self.pending_present = false;
-            }
+            self.tree.layout(Constraints::loose(size));
+            self.renderer.resize(resize_window, metrics)?;
+            self.tree.request_paint(None);
+            self.pending_present = false;
         }
         if !self.tree.needs_redraw() && !self.pending_present {
             if self.tree.next_redraw().is_some() {
@@ -332,12 +330,10 @@ impl<R> RunnerState<R> {
             Err(RendererError::HardwareGpu(
                 RenderError::SurfaceLost | RenderError::SurfaceOutdated,
             )) => {
-                // Recreate rather than merely resize: wgpu requires a lost
-                // surface to be recreated from the live native host.
-                self.renderer.detach_surface(window);
-                self.renderer.attach_surface(
+                // Renderer retains the backend-produced SurfaceTarget and is
+                // the sole owner of native surface recovery.
+                self.renderer.recover_surface(
                     window,
-                    host,
                     native_surface_metrics(host.size(), host.scale_factor()),
                 )?;
                 self.tree.request_paint(None);
@@ -365,7 +361,10 @@ fn native_surface_metrics(
 mod tests {
     use super::*;
     use zui_backend_headless::HeadlessBackend;
-    use zui_render::{FrameDeferReason, FrameOutcome, PaintCommand, RenderNode, RenderNodeIndex};
+    use zui_render::{
+        FrameDeferReason, FrameOutcome, PaintCommand, RenderNode, RenderNodeIndex,
+        SurfaceLifecycle, SurfacePhase,
+    };
     use zui_render_runtime::{ApplicationRenderer, HeadlessRenderer};
     use zui_ui::Text;
 
@@ -436,20 +435,25 @@ mod tests {
         updates: Vec<(bool, bool, u64)>,
         attach_count: usize,
         detach_count: usize,
+        recover_count: usize,
+        lifecycle: SurfaceLifecycle,
         lose_first_surface: bool,
         occlude_first_frame: bool,
     }
 
-    impl<H: Host> ApplicationRenderer<H> for DeferredOnceRenderer {
+    impl ApplicationRenderer for DeferredOnceRenderer {
         fn register_image(&mut self, _id: ImageId, _image: ImageResource) {}
 
         fn attach_surface(
             &mut self,
             _window: zui_core::WindowId,
-            _host: &H,
+            _target: zui_platform::SurfaceTarget,
             _metrics: SurfaceMetrics,
         ) -> Result<(), RendererError> {
             self.attach_count += 1;
+            self.lifecycle
+                .transition(SurfacePhase::Attached)
+                .map_err(|error| RendererError::Backend(error.to_string()))?;
             Ok(())
         }
 
@@ -458,11 +462,30 @@ mod tests {
             _window: zui_core::WindowId,
             _metrics: SurfaceMetrics,
         ) -> Result<(), RendererError> {
+            self.lifecycle
+                .transition(SurfacePhase::Resized)
+                .map_err(|error| RendererError::Backend(error.to_string()))?;
             Ok(())
+        }
+
+        fn recover_surface(
+            &mut self,
+            _window: zui_core::WindowId,
+            _metrics: SurfaceMetrics,
+        ) -> Result<(), RendererError> {
+            self.recover_count += 1;
+            self.lifecycle
+                .transition(SurfacePhase::Recovered)
+                .map_err(|error| RendererError::Backend(error.to_string()))
         }
 
         fn detach_surface(&mut self, _window: zui_core::WindowId) {
             self.detach_count += 1;
+            let _ = self.lifecycle.transition(SurfacePhase::Detached);
+        }
+
+        fn surface_phase(&self, _window: zui_core::WindowId) -> SurfacePhase {
+            self.lifecycle.phase()
         }
 
         fn render_scene(
@@ -478,13 +501,25 @@ mod tests {
                 .push((update.full_rebuild(), update.is_empty(), update.revision()));
             if self.attempts == 1 {
                 if self.lose_first_surface {
+                    self.lifecycle
+                        .transition(SurfacePhase::Lost)
+                        .map_err(|error| RendererError::Backend(error.to_string()))?;
                     Err(RendererError::HardwareGpu(RenderError::SurfaceLost))
                 } else if self.occlude_first_frame {
+                    self.lifecycle
+                        .transition(SurfacePhase::Deferred(FrameDeferReason::Occluded))
+                        .map_err(|error| RendererError::Backend(error.to_string()))?;
                     Ok(FrameOutcome::Deferred(FrameDeferReason::Occluded))
                 } else {
+                    self.lifecycle
+                        .transition(SurfacePhase::Deferred(FrameDeferReason::Timeout))
+                        .map_err(|error| RendererError::Backend(error.to_string()))?;
                     Ok(FrameOutcome::Deferred(FrameDeferReason::Timeout))
                 }
             } else {
+                self.lifecycle
+                    .transition(SurfacePhase::Presented)
+                    .map_err(|error| RendererError::Backend(error.to_string()))?;
                 Ok(FrameOutcome::Presented)
             }
         }
@@ -507,6 +542,7 @@ mod tests {
         assert!(!renderer.updates[0].1);
         assert!(renderer.updates[1].1);
         assert_eq!(renderer.updates[1].2, renderer.updates[0].2);
+        assert_eq!(renderer.lifecycle.phase(), SurfacePhase::Presented);
     }
 
     #[test]
@@ -523,12 +559,14 @@ mod tests {
             .expect("a lost surface should be recreated");
 
         assert_eq!(renderer.attempts, 2);
-        assert_eq!(renderer.attach_count, 2);
-        assert_eq!(renderer.detach_count, 1);
+        assert_eq!(renderer.attach_count, 1);
+        assert_eq!(renderer.detach_count, 0);
+        assert_eq!(renderer.recover_count, 1);
         assert!(renderer.updates[0].0);
         assert!(renderer.updates[1].0);
         assert!(!renderer.updates[1].1);
         assert!(renderer.updates[1].2 > renderer.updates[0].2);
+        assert_eq!(renderer.lifecycle.phase(), SurfacePhase::Presented);
     }
 
     struct VisibilityHost {
@@ -547,6 +585,10 @@ mod tests {
 
         fn scale_factor(&self) -> zui_core::ScaleFactor {
             zui_core::ScaleFactor::default()
+        }
+
+        fn surface_target(&self) -> zui_platform::SurfaceTarget {
+            zui_platform::SurfaceTarget::headless()
         }
 
         fn request_redraw(&self) -> Result<(), zui_platform::PlatformError> {
@@ -608,5 +650,6 @@ mod tests {
         assert!(renderer.updates[0].0);
         assert!(renderer.updates[1].1);
         assert_eq!(renderer.updates[1].2, renderer.updates[0].2);
+        assert_eq!(renderer.lifecycle.phase(), SurfacePhase::Presented);
     }
 }

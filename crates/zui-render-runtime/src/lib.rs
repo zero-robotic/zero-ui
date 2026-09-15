@@ -7,11 +7,10 @@
 use std::collections::HashMap;
 
 use zui_core::{Color, WindowId};
-use zui_platform::spi::RawWindowHandleProvider;
-use zui_platform::Host;
+use zui_platform::{SurfaceTarget, SurfaceTargetKind};
 use zui_render::{
     FrameOutcome, ImageId, ImageResource, RenderError, RenderNode, RenderNodeIndex, Renderer,
-    SceneUpdate, SurfaceMetrics,
+    SceneUpdate, SurfaceLifecycle, SurfaceMetrics, SurfacePhase,
 };
 use zui_render_cpu::CpuRenderer;
 use zui_render_software_gpu::SoftwareGpuRenderer;
@@ -50,16 +49,22 @@ impl std::error::Error for RendererError {}
 /// Renderer lifecycle required by `zui-app` for one platform host type.
 /// Native GPU renderers attach to a window surface; deterministic/headless
 /// renderers can attach an in-memory target while preserving the same calls.
-pub trait ApplicationRenderer<H: Host> {
+pub trait ApplicationRenderer {
     fn register_image(&mut self, id: ImageId, image: ImageResource);
     fn attach_surface(
         &mut self,
         window: WindowId,
-        host: &H,
+        target: SurfaceTarget,
         metrics: SurfaceMetrics,
     ) -> Result<(), RendererError>;
     fn resize(&mut self, window: WindowId, metrics: SurfaceMetrics) -> Result<(), RendererError>;
+    fn recover_surface(
+        &mut self,
+        window: WindowId,
+        metrics: SurfaceMetrics,
+    ) -> Result<(), RendererError>;
     fn detach_surface(&mut self, window: WindowId);
+    fn surface_phase(&self, window: WindowId) -> SurfacePhase;
     fn render_scene(
         &mut self,
         window: WindowId,
@@ -85,9 +90,15 @@ pub struct HeadlessFrame {
 
 #[derive(Default)]
 pub struct HeadlessRenderer {
-    surfaces: HashMap<WindowId, SurfaceMetrics>,
+    surfaces: HashMap<WindowId, HeadlessSurface>,
     images: HashMap<ImageId, ImageResource>,
     frames: Vec<HeadlessFrame>,
+}
+
+struct HeadlessSurface {
+    _target: SurfaceTarget,
+    metrics: SurfaceMetrics,
+    lifecycle: SurfaceLifecycle,
 }
 
 impl HeadlessRenderer {
@@ -112,7 +123,7 @@ impl HeadlessRenderer {
     }
 }
 
-impl<H: Host> ApplicationRenderer<H> for HeadlessRenderer {
+impl ApplicationRenderer for HeadlessRenderer {
     fn register_image(&mut self, id: ImageId, image: ImageResource) {
         self.images.insert(id, image);
     }
@@ -120,10 +131,31 @@ impl<H: Host> ApplicationRenderer<H> for HeadlessRenderer {
     fn attach_surface(
         &mut self,
         window: WindowId,
-        _host: &H,
+        target: SurfaceTarget,
         metrics: SurfaceMetrics,
     ) -> Result<(), RendererError> {
-        self.surfaces.insert(window, metrics);
+        if target.kind() != SurfaceTargetKind::Headless {
+            return Err(RendererError::Backend(
+                "headless renderer requires a headless surface target".into(),
+            ));
+        }
+        if self.surfaces.contains_key(&window) {
+            return Err(RendererError::Backend(format!(
+                "surface {window:?} is already attached"
+            )));
+        }
+        let mut lifecycle = SurfaceLifecycle::default();
+        lifecycle
+            .transition(SurfacePhase::Attached)
+            .map_err(|error| RendererError::Backend(error.to_string()))?;
+        self.surfaces.insert(
+            window,
+            HeadlessSurface {
+                _target: target,
+                metrics,
+                lifecycle,
+            },
+        );
         Ok(())
     }
 
@@ -132,12 +164,41 @@ impl<H: Host> ApplicationRenderer<H> for HeadlessRenderer {
             .surfaces
             .get_mut(&window)
             .ok_or_else(|| RendererError::Backend(format!("surface {window:?} is not attached")))?;
-        *surface = metrics;
+        surface.metrics = metrics;
+        surface
+            .lifecycle
+            .transition(SurfacePhase::Resized)
+            .map_err(|error| RendererError::Backend(error.to_string()))?;
         Ok(())
     }
 
+    fn recover_surface(
+        &mut self,
+        window: WindowId,
+        metrics: SurfaceMetrics,
+    ) -> Result<(), RendererError> {
+        let surface = self
+            .surfaces
+            .get_mut(&window)
+            .ok_or_else(|| RendererError::Backend(format!("surface {window:?} is not attached")))?;
+        surface.metrics = metrics;
+        surface
+            .lifecycle
+            .transition(SurfacePhase::Recovered)
+            .map_err(|error| RendererError::Backend(error.to_string()))
+    }
+
     fn detach_surface(&mut self, window: WindowId) {
-        self.surfaces.remove(&window);
+        if let Some(mut surface) = self.surfaces.remove(&window) {
+            let _ = surface.lifecycle.transition(SurfacePhase::Detached);
+        }
+    }
+
+    fn surface_phase(&self, window: WindowId) -> SurfacePhase {
+        self.surfaces
+            .get(&window)
+            .map(|surface| surface.lifecycle.phase())
+            .unwrap_or(SurfacePhase::Detached)
     }
 
     fn render_scene(
@@ -148,13 +209,28 @@ impl<H: Host> ApplicationRenderer<H> for HeadlessRenderer {
         index: &RenderNodeIndex,
         update: &SceneUpdate,
     ) -> Result<FrameOutcome, RendererError> {
-        let metrics =
-            self.surfaces.get(&window).copied().ok_or_else(|| {
-                RendererError::Backend(format!("surface {window:?} is not attached"))
-            })?;
+        let surface = self
+            .surfaces
+            .get_mut(&window)
+            .ok_or_else(|| RendererError::Backend(format!("surface {window:?} is not attached")))?;
+        if surface.metrics.physical_size.width == 0 || surface.metrics.physical_size.height == 0 {
+            surface
+                .lifecycle
+                .transition(SurfacePhase::Deferred(
+                    zui_render::FrameDeferReason::Occluded,
+                ))
+                .map_err(|error| RendererError::Backend(error.to_string()))?;
+            return Ok(FrameOutcome::Deferred(
+                zui_render::FrameDeferReason::Occluded,
+            ));
+        }
+        surface
+            .lifecycle
+            .transition(SurfacePhase::Presented)
+            .map_err(|error| RendererError::Backend(error.to_string()))?;
         self.frames.push(HeadlessFrame {
             window,
-            metrics,
+            metrics: surface.metrics,
             clear,
             node: node.clone(),
             index: index.clone(),
@@ -268,15 +344,15 @@ impl ActiveRenderer {
         }
     }
 
-    pub fn attach_surface<H: RawWindowHandleProvider>(
+    pub fn attach_surface(
         &mut self,
         window: WindowId,
-        host: &H,
+        target: SurfaceTarget,
         metrics: SurfaceMetrics,
     ) -> Result<(), RendererError> {
         match self {
             Self::HardwareGpu(renderer) => renderer
-                .attach_surface(window, host, metrics)
+                .attach_surface(window, target, metrics)
                 .map_err(RendererError::HardwareGpu),
             Self::SoftwareGpu(_) | Self::Cpu(_) => Err(RendererError::NoImplementedFallback),
         }
@@ -302,6 +378,26 @@ impl ActiveRenderer {
         }
     }
 
+    pub fn recover_surface(
+        &mut self,
+        window: WindowId,
+        metrics: SurfaceMetrics,
+    ) -> Result<(), RendererError> {
+        match self {
+            Self::HardwareGpu(renderer) => renderer
+                .recover_surface(window, metrics)
+                .map_err(RendererError::HardwareGpu),
+            Self::SoftwareGpu(_) | Self::Cpu(_) => Err(RendererError::NoImplementedFallback),
+        }
+    }
+
+    pub fn surface_phase(&self, window: WindowId) -> SurfacePhase {
+        match self {
+            Self::HardwareGpu(renderer) => renderer.surface_phase(window),
+            Self::SoftwareGpu(_) | Self::Cpu(_) => SurfacePhase::Detached,
+        }
+    }
+
     pub fn render_scene(
         &mut self,
         window: WindowId,
@@ -324,10 +420,7 @@ impl ActiveRenderer {
     }
 }
 
-impl<H> ApplicationRenderer<H> for ActiveRenderer
-where
-    H: Host + RawWindowHandleProvider,
-{
+impl ApplicationRenderer for ActiveRenderer {
     fn register_image(&mut self, id: ImageId, image: ImageResource) {
         ActiveRenderer::register_image(self, id, image);
     }
@@ -335,10 +428,10 @@ where
     fn attach_surface(
         &mut self,
         window: WindowId,
-        host: &H,
+        target: SurfaceTarget,
         metrics: SurfaceMetrics,
     ) -> Result<(), RendererError> {
-        ActiveRenderer::attach_surface(self, window, host, metrics)
+        ActiveRenderer::attach_surface(self, window, target, metrics)
     }
 
     fn resize(&mut self, window: WindowId, metrics: SurfaceMetrics) -> Result<(), RendererError> {
@@ -347,6 +440,18 @@ where
 
     fn detach_surface(&mut self, window: WindowId) {
         ActiveRenderer::detach_surface(self, window)
+    }
+
+    fn recover_surface(
+        &mut self,
+        window: WindowId,
+        metrics: SurfaceMetrics,
+    ) -> Result<(), RendererError> {
+        ActiveRenderer::recover_surface(self, window, metrics)
+    }
+
+    fn surface_phase(&self, window: WindowId) -> SurfacePhase {
+        ActiveRenderer::surface_phase(self, window)
     }
 
     fn render_scene(
@@ -358,5 +463,87 @@ where
         update: &SceneUpdate,
     ) -> Result<FrameOutcome, RendererError> {
         ActiveRenderer::render_scene(self, window, node, clear, index, update)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zui_core::{Color, Id, PhysicalSize, Rect, ScaleFactor};
+
+    fn metrics(width: u32, height: u32) -> SurfaceMetrics {
+        SurfaceMetrics::new(PhysicalSize { width, height }, ScaleFactor::default(), 1.0)
+    }
+
+    #[test]
+    fn headless_renderer_uses_the_complete_surface_state_machine() {
+        let window = WindowId(Id::new(1));
+        let mut renderer = HeadlessRenderer::new();
+        assert_eq!(renderer.surface_phase(window), SurfacePhase::Detached);
+
+        renderer
+            .attach_surface(window, SurfaceTarget::headless(), metrics(320, 180))
+            .unwrap();
+        assert_eq!(renderer.surface_phase(window), SurfacePhase::Attached);
+
+        renderer.resize(window, metrics(640, 360)).unwrap();
+        assert_eq!(renderer.surface_phase(window), SurfacePhase::Resized);
+
+        renderer.resize(window, metrics(0, 0)).unwrap();
+        assert_eq!(renderer.surface_phase(window), SurfacePhase::Resized);
+        let outcome = renderer
+            .render_scene(
+                window,
+                &RenderNode::for_widget(Rect::default()),
+                Color::default(),
+                &RenderNodeIndex::default(),
+                &SceneUpdate::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            FrameOutcome::Deferred(zui_render::FrameDeferReason::Occluded)
+        );
+
+        renderer.resize(window, metrics(640, 360)).unwrap();
+        assert_eq!(renderer.surface_phase(window), SurfacePhase::Resized);
+
+        renderer
+            .surfaces
+            .get_mut(&window)
+            .unwrap()
+            .lifecycle
+            .transition(SurfacePhase::Deferred(
+                zui_render::FrameDeferReason::Timeout,
+            ))
+            .unwrap();
+        assert_eq!(
+            renderer.surface_phase(window),
+            SurfacePhase::Deferred(zui_render::FrameDeferReason::Timeout)
+        );
+
+        renderer
+            .surfaces
+            .get_mut(&window)
+            .unwrap()
+            .lifecycle
+            .transition(SurfacePhase::Lost)
+            .unwrap();
+        renderer.recover_surface(window, metrics(640, 360)).unwrap();
+        assert_eq!(renderer.surface_phase(window), SurfacePhase::Recovered);
+
+        renderer
+            .render_scene(
+                window,
+                &RenderNode::for_widget(Rect::default()),
+                Color::default(),
+                &RenderNodeIndex::default(),
+                &SceneUpdate::default(),
+            )
+            .unwrap();
+        assert_eq!(renderer.surface_phase(window), SurfacePhase::Presented);
+
+        renderer.detach_surface(window);
+        assert_eq!(renderer.surface_phase(window), SurfacePhase::Detached);
     }
 }

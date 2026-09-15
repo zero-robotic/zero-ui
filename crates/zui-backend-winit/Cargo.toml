@@ -9,4 +9,6 @@ license.workspace = true
 zui-core.workspace = true
 zui-platform.workspace = true
 winit.workspace = true
-raw-window-handle.workspace = true
+
+[dev-dependencies]
+zui-render = { workspace = true, features = ["test-support"] }

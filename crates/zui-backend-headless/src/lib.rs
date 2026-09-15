@@ -2,8 +2,9 @@
 
 use std::cell::Cell;
 use zui_core::{Id, ScaleFactor, Size, WindowId};
+use zui_platform::spi;
 use zui_platform::{
-    AppLoop, Backend, Host, LoopControl, PlatformError, PlatformEvent, WindowOptions,
+    AppLoop, Backend, Host, LoopControl, PlatformError, PlatformEvent, SurfaceTarget, WindowOptions,
 };
 
 pub struct HeadlessBackend {
@@ -57,6 +58,10 @@ impl Host for HeadlessHost {
 
     fn scale_factor(&self) -> ScaleFactor {
         self.scale_factor
+    }
+
+    fn surface_target(&self) -> SurfaceTarget {
+        spi::headless_surface_target()
     }
 
     fn request_redraw(&self) -> Result<(), PlatformError> {
@@ -130,6 +135,7 @@ fn apply_control(host: &HeadlessHost, control: LoopControl) -> Result<bool, Plat
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zui_platform::SurfaceTargetKind;
 
     #[derive(Default)]
     struct RecordingLoop {
@@ -192,5 +198,20 @@ mod tests {
             .expect_err("an unbounded redraw loop must fail deterministically");
 
         assert!(error.to_string().contains("exceeded 3 iterations"));
+    }
+
+    #[test]
+    fn headless_target_runs_the_shared_surface_lifecycle_contract() {
+        let host = HeadlessHost {
+            id: WindowId(Id::new(1)),
+            size: WindowOptions::default().size,
+            scale_factor: ScaleFactor::default(),
+            redraws: Cell::new(0),
+        };
+
+        let target = host.surface_target();
+        assert_eq!(target.kind(), SurfaceTargetKind::Headless);
+        assert!(target.native_source().is_none());
+        zui_render::test_support::assert_surface_lifecycle_contract();
     }
 }

@@ -19,7 +19,7 @@ use lyon_tessellation::{
 };
 use wgpu::util::DeviceExt;
 use zui_core::{Color, Dip, PhysicalSize, Point, Rect, ScaleFactor, Size, WindowId};
-use zui_platform::spi::RawWindowHandleProvider;
+use zui_platform::SurfaceTarget;
 
 pub use wgpu;
 
@@ -392,6 +392,124 @@ pub enum FrameDeferReason {
 pub enum FrameOutcome {
     Presented,
     Deferred(FrameDeferReason),
+}
+
+/// Authoritative lifecycle phase of one renderer-owned presentation surface.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SurfacePhase {
+    #[default]
+    Detached,
+    Attached,
+    Resized,
+    Deferred(FrameDeferReason),
+    Lost,
+    Recovered,
+    Presented,
+}
+
+/// Invalid surface lifecycle transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SurfaceTransitionError {
+    pub from: SurfacePhase,
+    pub to: SurfacePhase,
+}
+
+impl std::fmt::Display for SurfaceTransitionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "invalid surface lifecycle transition from {:?} to {:?}",
+            self.from, self.to
+        )
+    }
+}
+
+impl std::error::Error for SurfaceTransitionError {}
+
+/// Shared state machine used by native and headless renderer implementations.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SurfaceLifecycle {
+    phase: SurfacePhase,
+}
+
+impl SurfaceLifecycle {
+    pub fn phase(self) -> SurfacePhase {
+        self.phase
+    }
+
+    pub fn transition(&mut self, to: SurfacePhase) -> Result<(), SurfaceTransitionError> {
+        let from = self.phase;
+        let allowed = matches!(
+            (from, to),
+            (SurfacePhase::Detached, SurfacePhase::Attached)
+                | (SurfacePhase::Attached, SurfacePhase::Resized)
+                | (SurfacePhase::Attached, SurfacePhase::Presented)
+                | (SurfacePhase::Attached, SurfacePhase::Deferred(_))
+                | (SurfacePhase::Attached, SurfacePhase::Lost)
+                | (SurfacePhase::Resized, SurfacePhase::Resized)
+                | (SurfacePhase::Resized, SurfacePhase::Presented)
+                | (SurfacePhase::Resized, SurfacePhase::Deferred(_))
+                | (SurfacePhase::Resized, SurfacePhase::Lost)
+                | (SurfacePhase::Deferred(_), SurfacePhase::Resized)
+                | (SurfacePhase::Deferred(_), SurfacePhase::Presented)
+                | (SurfacePhase::Deferred(_), SurfacePhase::Deferred(_))
+                | (SurfacePhase::Deferred(_), SurfacePhase::Lost)
+                | (SurfacePhase::Lost, SurfacePhase::Recovered)
+                | (SurfacePhase::Recovered, SurfacePhase::Resized)
+                | (SurfacePhase::Recovered, SurfacePhase::Presented)
+                | (SurfacePhase::Recovered, SurfacePhase::Deferred(_))
+                | (SurfacePhase::Recovered, SurfacePhase::Lost)
+                | (SurfacePhase::Presented, SurfacePhase::Resized)
+                | (SurfacePhase::Presented, SurfacePhase::Presented)
+                | (SurfacePhase::Presented, SurfacePhase::Deferred(_))
+                | (SurfacePhase::Presented, SurfacePhase::Lost)
+                | (_, SurfacePhase::Detached)
+        );
+        if !allowed {
+            return Err(SurfaceTransitionError { from, to });
+        }
+        self.phase = to;
+        Ok(())
+    }
+}
+
+/// Shared backend contract assertions. This module is feature-gated so the
+/// winit and headless backend crates execute the exact same lifecycle suite
+/// without adding test helpers to normal application builds.
+#[cfg(feature = "test-support")]
+pub mod test_support {
+    use super::{FrameDeferReason, SurfaceLifecycle, SurfacePhase};
+
+    pub fn assert_surface_lifecycle_contract() {
+        let mut lifecycle = SurfaceLifecycle::default();
+        assert_eq!(lifecycle.phase(), SurfacePhase::Detached);
+
+        lifecycle.transition(SurfacePhase::Attached).unwrap();
+        assert_eq!(lifecycle.phase(), SurfacePhase::Attached);
+
+        lifecycle.transition(SurfacePhase::Resized).unwrap();
+        assert_eq!(lifecycle.phase(), SurfacePhase::Resized);
+
+        lifecycle
+            .transition(SurfacePhase::Deferred(FrameDeferReason::Timeout))
+            .unwrap();
+        assert_eq!(
+            lifecycle.phase(),
+            SurfacePhase::Deferred(FrameDeferReason::Timeout)
+        );
+
+        lifecycle.transition(SurfacePhase::Lost).unwrap();
+        assert_eq!(lifecycle.phase(), SurfacePhase::Lost);
+
+        lifecycle.transition(SurfacePhase::Recovered).unwrap();
+        assert_eq!(lifecycle.phase(), SurfacePhase::Recovered);
+
+        lifecycle.transition(SurfacePhase::Presented).unwrap();
+        assert_eq!(lifecycle.phase(), SurfacePhase::Presented);
+
+        lifecycle.transition(SurfacePhase::Detached).unwrap();
+        assert_eq!(lifecycle.phase(), SurfacePhase::Detached);
+    }
 }
 
 /// Complete scale contract for a native rendering surface.
@@ -1971,6 +2089,10 @@ impl RenderNodeBuilder {
 }
 
 struct SurfaceState {
+    /// Keeps the backend-owned native handle source alive for presentation and
+    /// lets the renderer recreate a lost wgpu surface without involving app.
+    target: SurfaceTarget,
+    lifecycle: SurfaceLifecycle,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     size: PhysicalSize,
@@ -3591,27 +3713,22 @@ impl Renderer {
             .map(|state| state.last_frame_stats)
     }
 
-    /// Attach a platform host's native handles to a render surface.
-    ///
-    /// The host must outlive the returned surface and the renderer. Backend
-    /// implementations are responsible for keeping that lifetime valid.
-    pub fn attach_surface<H: RawWindowHandleProvider>(
+    /// Attaches a backend-produced target to a renderer-owned surface.
+    pub fn attach_surface(
         &mut self,
         window: WindowId,
-        host: &H,
+        target: SurfaceTarget,
         metrics: SurfaceMetrics,
     ) -> Result<(), RenderError> {
-        let raw_window_handle = host
-            .raw_window_handle()
-            .map_err(|error| RenderError::Surface(error.to_string()))?;
-        let raw_display_handle = host
-            .raw_display_handle()
-            .map_err(|error| RenderError::Surface(error.to_string()))?;
-        let target = wgpu::SurfaceTargetUnsafe::RawHandle {
-            raw_display_handle: Some(raw_display_handle),
-            raw_window_handle,
-        };
-        let surface = unsafe { self.instance.create_surface_unsafe(target) }
+        if self.surfaces.contains_key(&window) {
+            return Err(RenderError::SurfaceAlreadyAttached(window));
+        }
+        let source = target
+            .native_source()
+            .ok_or(RenderError::UnsupportedSurfaceTarget)?;
+        let surface = self
+            .instance
+            .create_surface(source)
             .map_err(|error| RenderError::Surface(error.to_string()))?;
         let surface_size = self.constrained_surface_size(metrics.physical_size);
         let surface_scale_factor = Self::surface_scale_factor(metrics, surface_size);
@@ -3663,121 +3780,13 @@ impl Renderer {
         });
         let blit_pipeline = create_blit_pipeline(&self.device, config.format);
         let blit_bind_group = create_blit_bind_group(&self.device, &blit_pipeline, &canvas_view);
+        let mut lifecycle = SurfaceLifecycle::default();
+        lifecycle.transition(SurfacePhase::Attached)?;
         self.surfaces.insert(
             window,
             SurfaceState {
-                surface,
-                config,
-                size: surface_size,
-                pipeline,
-                rounded_pipeline,
-                stencil_rounded_pipeline,
-                line_pipeline,
-                image_pipeline,
-                image_bind_group_layout,
-                stencil_pipeline,
-                stencil_mask_pipeline,
-                transform_bind_group_layout: transform_layout,
-                transform_bindings: HashMap::new(),
-                transform_binding_clock: 0,
-                max_transform_bindings: 1024,
-                canvas,
-                canvas_view,
-                stencil,
-                stencil_view,
-                stencil_reset,
-                damage_clear_pipeline,
-                damage_clear_color,
-                damage_clear_bind_group,
-                blit_pipeline,
-                blit_bind_group,
-                direct_copy_present,
-                scale_factor: surface_scale_factor,
-                has_contents: false,
-                needs_full_present: true,
-                retained_items: None,
-                retained_gpu_items: None,
-                retained_submission_batches: None,
-                vertex_arenas: VertexArenas::new(&self.device),
-                index_arena: IndexArena::new(&self.device),
-                indirect_arena: IndirectArena::new(&self.device),
-                composition_tiles: CompositionTiles::new(surface_size),
-                spatial_index: None,
-                tile_submission_index: None,
-                accepted_scene_revision: None,
-                last_frame_stats: FrameStats::default(),
-            },
-        );
-        Ok(())
-    }
-
-    /// Attach a native window directly. This is the preferred path for the
-    /// initial winit backend and avoids leaking wgpu handles into platform API.
-    pub fn attach_native_surface<W: wgpu::rwh::HasDisplayHandle + wgpu::rwh::HasWindowHandle>(
-        &mut self,
-        window: WindowId,
-        host: &W,
-        metrics: SurfaceMetrics,
-    ) -> Result<(), RenderError> {
-        let target = unsafe {
-            wgpu::SurfaceTargetUnsafe::from_display_and_window(host, host)
-                .map_err(|error| RenderError::Surface(error.to_string()))?
-        };
-        let surface = unsafe { self.instance.create_surface_unsafe(target) }
-            .map_err(|error| RenderError::Surface(error.to_string()))?;
-        let surface_size = self.constrained_surface_size(metrics.physical_size);
-        let surface_scale_factor = Self::surface_scale_factor(metrics, surface_size);
-        let mut config = surface
-            .get_default_config(
-                &self.adapter,
-                surface_size.width.max(1),
-                surface_size.height.max(1),
-            )
-            .ok_or_else(|| RenderError::Surface("adapter cannot present to this surface".into()))?;
-        let direct_copy_present = surface
-            .get_capabilities(&self.adapter)
-            .usages
-            .contains(wgpu::TextureUsages::COPY_DST);
-        if direct_copy_present {
-            config.usage |= wgpu::TextureUsages::COPY_DST;
-        }
-        surface.configure(&self.device, &config);
-        let transform_layout = create_transform_bind_group_layout(&self.device);
-        let pipeline = create_rect_pipeline(&self.device, config.format, &transform_layout);
-        let rounded_pipeline =
-            create_rounded_rect_pipeline(&self.device, config.format, &transform_layout);
-        let stencil_rounded_pipeline =
-            create_stencil_rounded_pipeline(&self.device, config.format, &transform_layout);
-        let line_pipeline = create_line_pipeline(&self.device, config.format, &transform_layout);
-        let image_pipeline = create_image_pipeline(&self.device, config.format, &transform_layout);
-        let image_bind_group_layout = image_pipeline.get_bind_group_layout(1);
-        let stencil_pipeline = create_stencil_pipeline(&self.device, config.format);
-        let stencil_mask_pipeline =
-            create_stencil_mask_pipeline(&self.device, config.format, &transform_layout);
-        let (canvas, canvas_view) = create_canvas(&self.device, surface_size, config.format);
-        let (stencil, stencil_view) = create_stencil(&self.device, surface_size);
-        let stencil_reset = create_stencil_reset_buffer(&self.device);
-        let damage_clear_pipeline = create_damage_clear_pipeline(&self.device, config.format);
-        let damage_clear_color =
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("zui-render damage clear color"),
-                    contents: bytemuck::cast_slice(&[[0.0_f32; 4]]),
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                });
-        let damage_clear_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("zui-render damage clear bind group"),
-            layout: &damage_clear_pipeline.get_bind_group_layout(0),
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: damage_clear_color.as_entire_binding(),
-            }],
-        });
-        let blit_pipeline = create_blit_pipeline(&self.device, config.format);
-        let blit_bind_group = create_blit_bind_group(&self.device, &blit_pipeline, &canvas_view);
-        self.surfaces.insert(
-            window,
-            SurfaceState {
+                target,
+                lifecycle,
                 surface,
                 config,
                 size: surface_size,
@@ -3831,6 +3840,7 @@ impl Renderer {
             .surfaces
             .get_mut(&window)
             .ok_or(RenderError::SurfaceNotAttached(window))?;
+        state.lifecycle.transition(SurfacePhase::Resized)?;
         if size.width == 0 || size.height == 0 {
             state.size = size;
             return Ok(());
@@ -3873,8 +3883,62 @@ impl Renderer {
         Ok(())
     }
 
+    /// Recreates a renderer-owned native surface after the acquisition path
+    /// reported it lost or outdated. The original backend target is retained
+    /// by the renderer; app code only supplies current metrics.
+    pub fn recover_surface(
+        &mut self,
+        window: WindowId,
+        metrics: SurfaceMetrics,
+    ) -> Result<(), RenderError> {
+        let old = self
+            .surfaces
+            .remove(&window)
+            .ok_or(RenderError::SurfaceNotAttached(window))?;
+        if old.lifecycle.phase() != SurfacePhase::Lost {
+            let error = SurfaceTransitionError {
+                from: old.lifecycle.phase(),
+                to: SurfacePhase::Recovered,
+            };
+            self.surfaces.insert(window, old);
+            return Err(error.into());
+        }
+
+        let target = old.target.clone();
+        if let Err(error) = self.attach_surface(window, target, metrics) {
+            self.surfaces.insert(window, old);
+            return Err(error);
+        }
+
+        let released_resources = old
+            .retained_gpu_items
+            .into_iter()
+            .flat_map(|items| items.into_values())
+            .flat_map(|item| item.resources)
+            .collect::<Vec<_>>();
+        self.resources.release_all(&released_resources);
+        let state = self
+            .surfaces
+            .get_mut(&window)
+            .expect("attach_surface installed the recovered surface");
+        state.lifecycle = old.lifecycle;
+        state.lifecycle.transition(SurfacePhase::Recovered)?;
+        Ok(())
+    }
+
+    pub fn surface_phase(&self, window: WindowId) -> SurfacePhase {
+        self.surfaces
+            .get(&window)
+            .map(|state| state.lifecycle.phase())
+            .unwrap_or(SurfacePhase::Detached)
+    }
+
     pub fn detach_surface(&mut self, window: WindowId) {
-        if let Some(state) = self.surfaces.remove(&window) {
+        if let Some(mut state) = self.surfaces.remove(&window) {
+            state
+                .lifecycle
+                .transition(SurfacePhase::Detached)
+                .expect("every attached surface may be detached");
             let resources = state
                 .retained_gpu_items
                 .into_iter()
@@ -4108,6 +4172,13 @@ impl Renderer {
             .surfaces
             .get_mut(&window)
             .ok_or(RenderError::SurfaceNotAttached(window))?;
+        if state.size.width == 0 || state.size.height == 0 {
+            state.needs_full_present = true;
+            state
+                .lifecycle
+                .transition(SurfacePhase::Deferred(FrameDeferReason::Occluded))?;
+            return Ok(FrameOutcome::Deferred(FrameDeferReason::Occluded));
+        }
         // An empty damage list means full invalidation at the UI layer. On a
         // newly attached (or resized) surface, make that explicit so the
         // first frame cannot take a partial replay/composite path.
@@ -4128,14 +4199,26 @@ impl Renderer {
         let (frame, suboptimal) = match state.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => (frame, false),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (frame, true),
-            wgpu::CurrentSurfaceTexture::Lost => return Err(RenderError::SurfaceLost),
-            wgpu::CurrentSurfaceTexture::Outdated => return Err(RenderError::SurfaceOutdated),
+            wgpu::CurrentSurfaceTexture::Lost => {
+                state.lifecycle.transition(SurfacePhase::Lost)?;
+                return Err(RenderError::SurfaceLost);
+            }
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                state.lifecycle.transition(SurfacePhase::Lost)?;
+                return Err(RenderError::SurfaceOutdated);
+            }
             wgpu::CurrentSurfaceTexture::Timeout => {
                 state.needs_full_present = true;
+                state
+                    .lifecycle
+                    .transition(SurfacePhase::Deferred(FrameDeferReason::Timeout))?;
                 return Ok(FrameOutcome::Deferred(FrameDeferReason::Timeout));
             }
             wgpu::CurrentSurfaceTexture::Occluded => {
                 state.needs_full_present = true;
+                state
+                    .lifecycle
+                    .transition(SurfacePhase::Deferred(FrameDeferReason::Occluded))?;
                 return Ok(FrameOutcome::Deferred(FrameDeferReason::Occluded));
             }
             wgpu::CurrentSurfaceTexture::Validation => {
@@ -4684,6 +4767,7 @@ impl Renderer {
         if suboptimal {
             state.surface.configure(&self.device, &state.config);
         }
+        state.lifecycle.transition(SurfacePhase::Presented)?;
         Ok(FrameOutcome::Presented)
     }
 

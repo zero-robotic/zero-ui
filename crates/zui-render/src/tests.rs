@@ -1482,6 +1482,24 @@ fn text_damage_bounds_cover_ink_above_and_below_the_baseline() {
 }
 
 #[test]
+fn surface_lifecycle_rejects_recovery_without_a_lost_surface() {
+    let mut lifecycle = SurfaceLifecycle::default();
+    let detached_error = lifecycle
+        .transition(SurfacePhase::Recovered)
+        .expect_err("a detached surface cannot be recovered");
+    assert_eq!(detached_error.from, SurfacePhase::Detached);
+    assert_eq!(detached_error.to, SurfacePhase::Recovered);
+
+    lifecycle.transition(SurfacePhase::Attached).unwrap();
+    lifecycle.transition(SurfacePhase::Presented).unwrap();
+    let presented_error = lifecycle
+        .transition(SurfacePhase::Recovered)
+        .expect_err("a presented surface cannot be recovered");
+    assert_eq!(presented_error.from, SurfacePhase::Presented);
+    assert_eq!(presented_error.to, SurfacePhase::Recovered);
+}
+
+#[test]
 fn atlas_padding_is_transparent_and_uvs_exclude_it() {
     let image = ImageResource::new(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]).unwrap();
     let padded = padded_rgba8(&image, 1);
