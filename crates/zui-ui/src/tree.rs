@@ -247,6 +247,10 @@ impl WidgetTree {
         &self.runtime
     }
 
+    pub fn semantics(&self) -> crate::SemanticsNode {
+        self.root.semantics()
+    }
+
     /// Widget identities whose RenderNode subtrees changed since the last
     /// completed frame. The renderer resolves these through `render_index`.
     pub fn dirty_widget_ids(&self) -> Vec<u64> {

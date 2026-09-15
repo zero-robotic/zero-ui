@@ -1,4 +1,5 @@
 use crate::WidgetId;
+use zui_core::Rect;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SemanticRole {
@@ -15,6 +16,7 @@ pub struct SemanticsNode {
     pub role: SemanticRole,
     pub label: String,
     pub enabled: bool,
+    pub bounds: Rect,
     pub children: Vec<SemanticsNode>,
 }
 
@@ -25,7 +27,13 @@ impl SemanticsNode {
             role,
             label: label.into(),
             enabled: true,
+            bounds: Rect::default(),
             children: Vec::new(),
         }
+    }
+
+    pub fn bounds(mut self, bounds: Rect) -> Self {
+        self.bounds = bounds;
+        self
     }
 }

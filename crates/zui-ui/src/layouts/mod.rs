@@ -116,6 +116,16 @@ impl Widget for Layout {
         }
         node
     }
+    fn semantics(&self) -> crate::SemanticsNode {
+        let mut node =
+            crate::SemanticsNode::new(self.id, crate::SemanticRole::Group, "").bounds(self.bounds);
+        node.children = self
+            .children
+            .iter()
+            .map(|child| child.semantics())
+            .collect();
+        node
+    }
     fn build_render_node_incremental(&self, context: &mut RenderBuildContext<'_>) -> RenderNode {
         if !context.subtree_is_dirty(self.id) {
             if let Some(previous) = context.previous() {

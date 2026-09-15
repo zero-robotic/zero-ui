@@ -110,6 +110,10 @@ impl Widget for Button {
         node.add_child(self.label.build_render_node(theme));
         node
     }
+    fn semantics(&self) -> crate::SemanticsNode {
+        crate::SemanticsNode::new(self.id, crate::SemanticRole::Button, self.label())
+            .bounds(self.bounds)
+    }
     fn build_render_node_incremental(&self, context: &mut RenderBuildContext<'_>) -> RenderNode {
         if !context.subtree_is_dirty(self.id) {
             if let Some(previous) = context.previous() {

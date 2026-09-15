@@ -15,6 +15,7 @@ use zui_render::{
 use crate::{
     event::{EventContext, EventResult, UiEvent},
     layout::Constraints,
+    semantics::{SemanticRole, SemanticsNode},
     theme::Theme,
 };
 
@@ -391,6 +392,9 @@ pub trait Widget {
     }
     fn set_theme(&mut self, _theme: &Theme) {}
     fn build_render_node(&self, theme: &Theme) -> RenderNode;
+    fn semantics(&self) -> SemanticsNode {
+        SemanticsNode::new(self.id(), SemanticRole::Generic, "").bounds(self.bounds())
+    }
     /// Leaf widgets normally need no custom incremental policy: a clean
     /// subtree shares its previous RenderNode, while a dirty subtree rebuilds
     /// from its regular retained-node definition. Container widgets override

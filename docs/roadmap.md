@@ -212,7 +212,8 @@
 | 能力 | 阶段归属 | 落点 | 说明 |
 |------|----------|------|------|
 | App loop / Window / 基础 Input / Paths / Output·scale | **阶段一必需** | platform `core` | M0 起 |
-| Clipboard / Dialog / 多窗 | 阶段一（M2） | platform `capability` | |
+| 多窗 | 阶段一（M2） | platform `core` | 由 `AppContext` 受控创建、查询和销毁 |
+| Clipboard / Dialog | 阶段一（M2） | platform `capability` | |
 | IME | 阶段一（M1.5） | platform `experimental`→`capability` | |
 | 控件内主题 token（色/字号/间距） | **阶段一必需** | **`zero-ui`**，非 OS 服务 | 不进 platform 契约 |
 | 系统主题/外观偏好订阅 | 未来扩展 | platform `capability`（可选） | 有明确需求再加 |

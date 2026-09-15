@@ -394,6 +394,10 @@ impl Widget for Text {
         })));
         node
     }
+    fn semantics(&self) -> crate::SemanticsNode {
+        crate::SemanticsNode::new(self.id, crate::SemanticRole::Text, self.text.clone())
+            .bounds(self.bounds)
+    }
 }
 
 #[cfg(test)]

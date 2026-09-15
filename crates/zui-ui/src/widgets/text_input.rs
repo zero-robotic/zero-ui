@@ -6,13 +6,20 @@ use crate::{
 };
 use std::time::{Duration, Instant};
 use zui_core::{Dip, Point, Rect, Size};
-use zui_platform::{InputEvent, KeyCode, KeyState};
+use zui_platform::{ImeEvent, InputEvent, KeyCode, KeyState};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Preedit {
+    text: String,
+    selection: Option<(usize, usize)>,
+}
 
 pub struct TextInput {
     id: WidgetId,
     text: String,
     cursor: usize,
     selection_anchor: Option<usize>,
+    preedit: Option<Preedit>,
     bounds: Rect,
     focused: bool,
     pointer_selecting: bool,
@@ -27,6 +34,7 @@ impl TextInput {
             text: String::new(),
             cursor: 0,
             selection_anchor: None,
+            preedit: None,
             bounds: Rect::default(),
             focused: false,
             pointer_selecting: false,
@@ -44,6 +52,13 @@ impl TextInput {
 
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// Current input-method composition, which is not committed to `text`.
+    pub fn preedit(&self) -> Option<(&str, Option<(usize, usize)>)> {
+        self.preedit
+            .as_ref()
+            .map(|preedit| (preedit.text.as_str(), preedit.selection))
     }
 
     pub fn set_focused(&mut self, focused: bool) {
@@ -87,7 +102,17 @@ impl TextInput {
 
     fn build_render_commands(&self, ctx: &mut crate::PaintContext<'_>, focused: bool) {
         let style = &ctx.theme.text_input;
-        let text_metrics = zui_render::text_run_metrics(&self.text, style.font_size);
+        let display_text = if let Some(preedit) = &self.preedit {
+            format!(
+                "{}{}{}",
+                &self.text[..self.cursor],
+                preedit.text,
+                &self.text[self.cursor..]
+            )
+        } else {
+            self.text.clone()
+        };
+        let text_metrics = zui_render::text_run_metrics(&display_text, style.font_size);
         let ink_height = text_metrics.ink_height();
         let baseline = self.bounds.origin.y.0
             + (self.bounds.size.height.0 - ink_height.0).max(0.0) / 2.0
@@ -123,10 +148,20 @@ impl TextInput {
                 style.selection_background,
             );
         }
-        ctx.draw_text(&self.text, text_origin, style.foreground, style.font_size);
+        ctx.draw_text(
+            &display_text,
+            text_origin,
+            style.foreground,
+            style.font_size,
+        );
         if focused && ctx.now.duration_since(self.focus_started).as_millis() / 500 % 2 == 0 {
+            let caret = self.cursor
+                + self
+                    .preedit
+                    .as_ref()
+                    .map_or(0, |preedit| preedit.text.len());
             let caret_x = text_origin.x.0
-                + zui_render::measure_text(&self.text[..self.cursor], style.font_size).0;
+                + zui_render::measure_text(&display_text[..caret], style.font_size).0;
             ctx.fill_rect(
                 Rect {
                     origin: Point {
@@ -284,8 +319,30 @@ impl Widget for TextInput {
         let mut changed = false;
         match &event.input {
             InputEvent::Text(text) if !text.is_empty() => {
+                self.preedit = None;
                 self.insert_text(text);
                 changed = true;
+            }
+            InputEvent::Ime(ImeEvent::Preedit { text, selection }) => {
+                self.preedit = (!text.is_empty()).then(|| Preedit {
+                    text: text.clone(),
+                    selection: *selection,
+                });
+                self.reset_blink();
+            }
+            InputEvent::Ime(ImeEvent::Commit(text)) => {
+                self.preedit = None;
+                if !text.is_empty() {
+                    self.insert_text(text);
+                    changed = true;
+                }
+            }
+            InputEvent::Ime(ImeEvent::Cancelled | ImeEvent::Disabled) => {
+                self.preedit = None;
+                self.reset_blink();
+            }
+            InputEvent::Ime(ImeEvent::Enabled) => {
+                self.reset_blink();
             }
             InputEvent::Keyboard {
                 key: KeyCode::Character('a' | 'A'),
@@ -375,6 +432,10 @@ impl Widget for TextInput {
             self.build_render_commands(ctx, self.focused)
         })
     }
+    fn semantics(&self) -> crate::SemanticsNode {
+        crate::SemanticsNode::new(self.id, crate::SemanticRole::TextInput, self.text.clone())
+            .bounds(self.bounds)
+    }
 
     fn build_render_node_incremental(
         &self,
@@ -392,5 +453,48 @@ impl Widget for TextInput {
             context.theme(),
             |ctx| self.build_render_commands(ctx, focused),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_ime_events_preserve_preedit_and_only_commit_final_text() {
+        let mut input = TextInput::new();
+        input.set_focused(true);
+        let mut context = EventContext::new();
+
+        input.event(
+            &UiEvent::input(InputEvent::Ime(ImeEvent::Preedit {
+                text: "拼".into(),
+                selection: Some((0, 3)),
+            })),
+            &mut context,
+        );
+        assert_eq!(input.text(), "");
+        assert_eq!(input.preedit(), Some(("拼", Some((0, 3)))));
+
+        input.event(
+            &UiEvent::input(InputEvent::Ime(ImeEvent::Cancelled)),
+            &mut context,
+        );
+        assert_eq!(input.preedit(), None);
+        assert_eq!(input.text(), "");
+
+        input.event(
+            &UiEvent::input(InputEvent::Ime(ImeEvent::Preedit {
+                text: "输入".into(),
+                selection: None,
+            })),
+            &mut context,
+        );
+        input.event(
+            &UiEvent::input(InputEvent::Ime(ImeEvent::Commit("输入".into()))),
+            &mut context,
+        );
+        assert_eq!(input.preedit(), None);
+        assert_eq!(input.text(), "输入");
     }
 }

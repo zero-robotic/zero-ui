@@ -333,6 +333,12 @@ impl Widget for Container {
         self.decorate(&mut node, theme);
         node
     }
+    fn semantics(&self) -> crate::SemanticsNode {
+        let mut node =
+            crate::SemanticsNode::new(self.id, crate::SemanticRole::Group, "").bounds(self.bounds);
+        node.children.push(self.child.semantics());
+        node
+    }
     fn build_render_node_incremental(&self, context: &mut RenderBuildContext<'_>) -> RenderNode {
         if !context.subtree_is_dirty(self.id) {
             if let Some(previous) = context.previous() {

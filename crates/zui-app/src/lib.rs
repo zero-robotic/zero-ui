@@ -4,12 +4,18 @@
 //! default `winit` feature adds the [`Application::run`] convenience path but
 //! does not change the shared `AppLoop` lifecycle used by other backends.
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    time::{Duration, Instant},
+};
 
 #[cfg(feature = "winit")]
 use zui_backend_winit::WinitBackend;
 use zui_core::{Dip, Point, Size};
-use zui_platform::{AppLoop, Backend, Host, InputEvent, LoopControl, PlatformEvent, WindowOptions};
+use zui_platform::{
+    AppContext, AppLoop, Backend, InputEvent, LoopControl, PlatformError, PlatformEvent,
+    WindowOptions,
+};
 use zui_render::{
     FrameDeferReason, FrameOutcome, ImageId, ImageResource, RenderError, SurfaceMetrics,
 };
@@ -155,8 +161,10 @@ impl<R> WindowRunner<R> {
                 x: Dip::ZERO,
                 y: Dip::ZERO,
             },
-            pending_resize: None,
-            pending_present: false,
+            pointer_positions: HashMap::new(),
+            pending_resizes: HashMap::new(),
+            pending_present: HashSet::new(),
+            attached_windows: HashSet::new(),
             error: None,
         };
 
@@ -175,29 +183,20 @@ struct RunnerState<R> {
     /// Last pointer position in native window DIPs. UI layout uses the same
     /// coordinate space, independent of the physical monitor scale factor.
     pointer_position: Point,
+    pointer_positions: HashMap<zui_core::WindowId, Point>,
     /// Native resize notifications can arrive much faster than the GPU can
     /// recreate render targets. Retain only the latest dimensions.
-    pending_resize: Option<(zui_core::WindowId, Size, SurfaceMetrics)>,
+    pending_resizes: HashMap<zui_core::WindowId, (Size, SurfaceMetrics)>,
     /// The renderer accepted the latest scene but could not present it because
     /// the native drawable was temporarily unavailable.
-    pending_present: bool,
+    pending_present: HashSet<zui_core::WindowId>,
+    attached_windows: HashSet<zui_core::WindowId>,
     error: Option<RendererError>,
 }
 
-impl<H, R> AppLoop<H> for RunnerState<R>
-where
-    H: Host,
-    R: ApplicationRenderer,
-{
-    fn host_ready(&mut self, host: &H) -> LoopControl {
-        match self.attach_host(host) {
-            Ok(()) => LoopControl::RequestRedraw,
-            Err(error) => self.fail(error),
-        }
-    }
-
-    fn event(&mut self, host: &H, event: PlatformEvent) -> LoopControl {
-        match self.handle(host, event) {
+impl<R: ApplicationRenderer> AppLoop for RunnerState<R> {
+    fn event(&mut self, context: &mut dyn AppContext, event: PlatformEvent) -> LoopControl {
+        match self.handle(context, event) {
             Ok(control) => control,
             Err(error) => self.fail(error),
         }
@@ -210,40 +209,68 @@ impl<R> RunnerState<R> {
         LoopControl::Exit
     }
 
-    fn attach_host<H>(&mut self, host: &H) -> Result<(), RendererError>
+    fn attach_host(
+        &mut self,
+        context: &mut dyn AppContext,
+        window: zui_core::WindowId,
+    ) -> Result<(), RendererError>
     where
-        H: Host,
         R: ApplicationRenderer,
     {
-        self.tree.layout(Constraints::loose(host.size()));
+        let host = context.host(window).ok_or_else(|| {
+            RendererError::Backend(PlatformError::UnknownWindow(window).to_string())
+        })?;
+        let size = host.size();
+        let scale = host.scale_factor();
+        let target = host.surface_target();
+        self.tree.layout(Constraints::loose(size));
         self.tree.request_paint(None);
-        self.renderer.attach_surface(
-            host.id(),
-            host.surface_target(),
-            native_surface_metrics(host.size(), host.scale_factor()),
-        )
+        self.renderer
+            .attach_surface(window, target, native_surface_metrics(size, scale))?;
+        self.attached_windows.insert(window);
+        self.pending_present.insert(window);
+        Ok(())
     }
 
-    fn handle<H>(&mut self, host: &H, event: PlatformEvent) -> Result<LoopControl, RendererError>
+    fn handle(
+        &mut self,
+        context: &mut dyn AppContext,
+        event: PlatformEvent,
+    ) -> Result<LoopControl, RendererError>
     where
-        H: Host,
         R: ApplicationRenderer,
     {
         match event {
-            PlatformEvent::RedrawRequested(window) => self.redraw(host, window),
-            PlatformEvent::WindowResized {
+            PlatformEvent::WindowCreated(window) => {
+                self.attach_host(context, window)?;
+                Ok(LoopControl::RequestRedraw(window))
+            }
+            PlatformEvent::RedrawRequested(window) => self.redraw(context, window),
+            PlatformEvent::WindowResized { window, size } => {
+                let scale_factor = context
+                    .host(window)
+                    .ok_or_else(|| {
+                        RendererError::Backend(PlatformError::UnknownWindow(window).to_string())
+                    })?
+                    .scale_factor();
+                let metrics = native_surface_metrics(size, scale_factor);
+                self.pending_resizes.insert(window, (size, metrics));
+                Ok(LoopControl::RequestRedraw(window))
+            }
+            PlatformEvent::ScaleFactorChanged {
                 window,
                 size,
                 scale_factor,
             } => {
                 let metrics = native_surface_metrics(size, scale_factor);
-                self.pending_resize = Some((window, size, metrics));
-                Ok(LoopControl::RequestRedraw)
+                self.pending_resizes.insert(window, (size, metrics));
+                Ok(LoopControl::RequestRedraw(window))
             }
             PlatformEvent::Input { window, event } => {
                 let ui_event = match event {
                     InputEvent::CursorMoved { position } => {
                         self.pointer_position = position;
+                        self.pointer_positions.insert(window, position);
                         UiEvent::pointer(
                             Some(window),
                             position,
@@ -251,53 +278,106 @@ impl<R> RunnerState<R> {
                         )
                     }
                     InputEvent::MouseInput { .. } => {
-                        UiEvent::pointer(Some(window), self.pointer_position, event)
+                        let position = self
+                            .pointer_positions
+                            .get(&window)
+                            .copied()
+                            .unwrap_or(self.pointer_position);
+                        UiEvent::pointer(Some(window), position, event)
                     }
                     _ => UiEvent::input(event),
                 };
-                let (result, _outputs) = self.tree.event(&ui_event);
+                let (result, actions) = self.tree.event(&ui_event);
+                if actions
+                    .iter()
+                    .any(|action| action.kind == zui_ui::ActionKind::FocusRequested)
+                {
+                    if let Some(ime) = context.capabilities().ime() {
+                        ime.set_enabled(window, true)
+                            .map_err(|error| RendererError::Backend(error.to_string()))?;
+                        let position = self
+                            .pointer_positions
+                            .get(&window)
+                            .copied()
+                            .unwrap_or_default();
+                        ime.set_cursor_area(
+                            window,
+                            zui_core::Rect {
+                                origin: position,
+                                size: Size {
+                                    width: Dip(1.0),
+                                    height: Dip(26.0),
+                                },
+                            },
+                        )
+                        .map_err(|error| RendererError::Backend(error.to_string()))?;
+                    }
+                }
                 Ok(if result == EventResult::RequestRedraw {
-                    LoopControl::RequestRedraw
+                    LoopControl::RequestRedraw(window)
                 } else {
                     LoopControl::Continue
                 })
             }
             PlatformEvent::CloseRequested(window) => {
-                self.renderer.detach_surface(window);
-                self.pending_present = false;
+                if self.attached_windows.remove(&window) {
+                    self.renderer.detach_surface(window);
+                }
+                self.pending_present.remove(&window);
+                Ok(LoopControl::Continue)
+            }
+            PlatformEvent::WindowDestroyed(window) => {
+                if self.attached_windows.remove(&window) {
+                    self.renderer.detach_surface(window);
+                }
+                self.pending_present.remove(&window);
+                self.pending_resizes.remove(&window);
+                self.pointer_positions.remove(&window);
                 Ok(LoopControl::Continue)
             }
             PlatformEvent::WindowOccluded {
-                occluded: false, ..
-            } if self.pending_present || self.tree.needs_redraw() => Ok(LoopControl::RequestRedraw),
-            PlatformEvent::WindowOccluded { .. } => Ok(LoopControl::Continue),
-            PlatformEvent::WindowCreated(_) | PlatformEvent::AboutToWait => {
-                Ok(LoopControl::Continue)
+                window,
+                occluded: false,
+            } if self.pending_present.contains(&window) || self.tree.needs_redraw() => {
+                Ok(LoopControl::RequestRedraw(window))
             }
+            PlatformEvent::WindowOccluded { .. } => Ok(LoopControl::Continue),
+            PlatformEvent::OutputsChanged(_)
+            | PlatformEvent::DragDrop(_)
+            | PlatformEvent::DialogCompleted(_)
+            | PlatformEvent::AboutToWait => Ok(LoopControl::Continue),
         }
     }
 
-    fn redraw<H>(
+    fn redraw(
         &mut self,
-        host: &H,
+        context: &mut dyn AppContext,
         window: zui_core::WindowId,
     ) -> Result<LoopControl, RendererError>
     where
-        H: Host,
         R: ApplicationRenderer,
     {
-        if let Some((resize_window, size, metrics)) = self.pending_resize.take() {
+        if let Some((size, metrics)) = self.pending_resizes.remove(&window) {
             self.tree.layout(Constraints::loose(size));
-            self.renderer.resize(resize_window, metrics)?;
+            self.renderer.resize(window, metrics)?;
             self.tree.request_paint(None);
-            self.pending_present = false;
+            self.pending_present.remove(&window);
         }
-        if !self.tree.needs_redraw() && !self.pending_present {
+        if !self.tree.needs_redraw() && !self.pending_present.contains(&window) {
             if self.tree.next_redraw().is_some() {
                 self.tree.request_paint(None);
             } else {
                 return Ok(LoopControl::Continue);
             }
+        }
+        let semantics = accessibility_node(self.tree.semantics());
+        if let Some(accessibility) = context.capabilities().accessibility() {
+            accessibility
+                .submit_tree(zui_platform::AccessibilityTree {
+                    window,
+                    root: semantics,
+                })
+                .map_err(|error| RendererError::Backend(error.to_string()))?;
         }
         let result = {
             let scene = self.tree.scene_submission();
@@ -312,18 +392,19 @@ impl<R> RunnerState<R> {
         match result {
             Ok(FrameOutcome::Presented) => {
                 self.tree.mark_clean();
-                self.pending_present = false;
+                self.pending_present.remove(&window);
             }
             Ok(FrameOutcome::Deferred(reason)) => {
                 // The renderer retained this exact scene revision, so the UI
                 // can clear its build dirtiness while keeping presentation
                 // pending. A retry submits the cached scene with no update.
                 self.tree.mark_clean();
-                self.pending_present = true;
+                self.pending_present.insert(window);
                 return Ok(match reason {
-                    FrameDeferReason::Timeout => {
-                        LoopControl::WaitUntil(Instant::now() + Duration::from_millis(16))
-                    }
+                    FrameDeferReason::Timeout => LoopControl::WaitUntil {
+                        window,
+                        deadline: Instant::now() + Duration::from_millis(16),
+                    },
                     FrameDeferReason::Occluded => LoopControl::Continue,
                 });
             }
@@ -332,17 +413,41 @@ impl<R> RunnerState<R> {
             )) => {
                 // Renderer retains the backend-produced SurfaceTarget and is
                 // the sole owner of native surface recovery.
+                let host = context.host(window).ok_or_else(|| {
+                    RendererError::Backend(PlatformError::UnknownWindow(window).to_string())
+                })?;
                 self.renderer.recover_surface(
                     window,
                     native_surface_metrics(host.size(), host.scale_factor()),
                 )?;
                 self.tree.request_paint(None);
-                self.pending_present = false;
-                return Ok(LoopControl::RequestRedraw);
+                self.pending_present.remove(&window);
+                return Ok(LoopControl::RequestRedraw(window));
             }
             Err(error) => return Err(error),
         }
-        Ok(LoopControl::from_redraw_deadline(self.tree.next_redraw()))
+        Ok(LoopControl::from_redraw_deadline(
+            window,
+            self.tree.next_redraw(),
+        ))
+    }
+}
+
+fn accessibility_node(node: zui_ui::SemanticsNode) -> zui_platform::AccessibilityNode {
+    let role = match node.role {
+        zui_ui::SemanticRole::Generic => zui_platform::AccessibilityRole::Generic,
+        zui_ui::SemanticRole::Text => zui_platform::AccessibilityRole::Text,
+        zui_ui::SemanticRole::Button => zui_platform::AccessibilityRole::Button,
+        zui_ui::SemanticRole::TextInput => zui_platform::AccessibilityRole::TextInput,
+        zui_ui::SemanticRole::Group => zui_platform::AccessibilityRole::Group,
+    };
+    zui_platform::AccessibilityNode {
+        id: zui_platform::AccessibilityNodeId(node.id.value()),
+        role,
+        label: node.label,
+        enabled: node.enabled,
+        bounds: node.bounds,
+        children: node.children.into_iter().map(accessibility_node).collect(),
     }
 }
 
@@ -360,7 +465,9 @@ fn native_surface_metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
     use zui_backend_headless::HeadlessBackend;
+    use zui_platform::{Capabilities, Host, Paths, UiTaskPoster};
     use zui_render::{
         FrameDeferReason, FrameOutcome, PaintCommand, RenderNode, RenderNodeIndex,
         SurfaceLifecycle, SurfacePhase,
@@ -436,6 +543,7 @@ mod tests {
         attach_count: usize,
         detach_count: usize,
         recover_count: usize,
+        resize_metrics: Vec<SurfaceMetrics>,
         lifecycle: SurfaceLifecycle,
         lose_first_surface: bool,
         occlude_first_frame: bool,
@@ -460,8 +568,9 @@ mod tests {
         fn resize(
             &mut self,
             _window: zui_core::WindowId,
-            _metrics: SurfaceMetrics,
+            metrics: SurfaceMetrics,
         ) -> Result<(), RendererError> {
+            self.resize_metrics.push(metrics);
             self.lifecycle
                 .transition(SurfacePhase::Resized)
                 .map_err(|error| RendererError::Backend(error.to_string()))?;
@@ -569,6 +678,65 @@ mod tests {
         assert_eq!(renderer.lifecycle.phase(), SurfacePhase::Presented);
     }
 
+    #[test]
+    fn scale_change_relayouts_and_resizes_the_surface_in_physical_pixels() {
+        let window = zui_core::WindowId(zui_core::Id::new(1));
+        let logical_size = Size {
+            width: Dip(500.0),
+            height: Dip(300.0),
+        };
+        let renderer = Application::new()
+            .run_with(
+                HeadlessBackend::new().event(PlatformEvent::ScaleFactorChanged {
+                    window,
+                    size: logical_size,
+                    scale_factor: zui_core::ScaleFactor(2.0),
+                }),
+                DeferredOnceRenderer::default(),
+                Text::new("scaled"),
+            )
+            .expect("scale change should produce a valid resized frame");
+
+        assert_eq!(renderer.resize_metrics.len(), 1);
+        assert_eq!(renderer.resize_metrics[0].physical_size.width, 1_000);
+        assert_eq!(renderer.resize_metrics[0].physical_size.height, 600);
+        assert_eq!(
+            renderer.resize_metrics[0].device_scale_factor,
+            zui_core::ScaleFactor(2.0)
+        );
+    }
+
+    struct AccessibilityProbe(Arc<Mutex<Vec<zui_platform::AccessibilityTree>>>);
+
+    impl zui_platform::Accessibility for AccessibilityProbe {
+        fn submit_tree(
+            &mut self,
+            tree: zui_platform::AccessibilityTree,
+        ) -> Result<(), PlatformError> {
+            self.0.lock().unwrap().push(tree);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn application_submits_ui_semantics_through_the_typed_capability() {
+        let submitted = Arc::new(Mutex::new(Vec::new()));
+        let capabilities =
+            Capabilities::new().with_accessibility(AccessibilityProbe(Arc::clone(&submitted)));
+        Application::new()
+            .run_with(
+                HeadlessBackend::new().capabilities(capabilities),
+                HeadlessRenderer::new(),
+                Text::new("accessible text"),
+            )
+            .expect("accessibility submission must not disturb rendering");
+
+        let trees = submitted.lock().unwrap();
+        assert!(!trees.is_empty());
+        assert_eq!(trees[0].root.role, zui_platform::AccessibilityRole::Text);
+        assert_eq!(trees[0].root.label, "accessible text");
+    }
+
     struct VisibilityHost {
         id: zui_core::WindowId,
         size: Size,
@@ -598,37 +766,99 @@ mod tests {
 
     struct OcclusionCycleBackend;
 
-    impl Backend for OcclusionCycleBackend {
-        type Host = VisibilityHost;
+    struct VisibilityContext {
+        host: Option<VisibilityHost>,
+        capabilities: Capabilities,
+        paths: Paths,
+    }
 
+    impl AppContext for VisibilityContext {
+        fn host(&self, window: zui_core::WindowId) -> Option<&dyn Host> {
+            self.host
+                .as_ref()
+                .filter(|host| host.id == window)
+                .map(|host| host as &dyn Host)
+        }
+        fn window_ids(&self) -> Vec<zui_core::WindowId> {
+            self.host
+                .as_ref()
+                .map(|host| vec![host.id])
+                .unwrap_or_default()
+        }
+        fn create_window(
+            &mut self,
+            _options: WindowOptions,
+        ) -> Result<zui_core::WindowId, PlatformError> {
+            Err(PlatformError::Backend(
+                "test context does not create another window".into(),
+            ))
+        }
+        fn destroy_window(&mut self, window: zui_core::WindowId) -> Result<(), PlatformError> {
+            if self.host.as_ref().is_some_and(|host| host.id == window) {
+                self.host = None;
+                Ok(())
+            } else {
+                Err(PlatformError::UnknownWindow(window))
+            }
+        }
+        fn paths(&self) -> Result<&Paths, PlatformError> {
+            Ok(&self.paths)
+        }
+        fn outputs(&self) -> &[zui_platform::Output] {
+            &[]
+        }
+        fn capabilities(&mut self) -> &mut Capabilities {
+            &mut self.capabilities
+        }
+        fn ui_task_poster(&self) -> UiTaskPoster {
+            UiTaskPoster::new(|task| {
+                task.run();
+                Ok(())
+            })
+        }
+    }
+
+    impl Backend for OcclusionCycleBackend {
         fn run(
             self,
             options: WindowOptions,
-            app: &mut dyn AppLoop<Self::Host>,
+            app: &mut dyn AppLoop,
         ) -> Result<(), zui_platform::PlatformError> {
             let host = VisibilityHost {
                 id: zui_core::WindowId(zui_core::Id::new(77)),
                 size: options.size,
             };
-            let created = app.event(&host, PlatformEvent::WindowCreated(host.id));
-            assert!(!matches!(created, LoopControl::Exit));
-            assert_eq!(app.host_ready(&host), LoopControl::RequestRedraw);
+            let id = host.id;
+            let mut context = VisibilityContext {
+                host: Some(host),
+                capabilities: Capabilities::new(),
+                paths: Paths {
+                    config_dir: "/test/config".into(),
+                    data_dir: "/test/data".into(),
+                    cache_dir: "/test/cache".into(),
+                    runtime_dir: None,
+                },
+            };
+            assert_eq!(
+                app.event(&mut context, PlatformEvent::WindowCreated(id)),
+                LoopControl::RequestRedraw(id)
+            );
 
             assert_eq!(
-                app.event(&host, PlatformEvent::RedrawRequested(host.id)),
+                app.event(&mut context, PlatformEvent::RedrawRequested(id)),
                 LoopControl::Continue
             );
             assert_eq!(
                 app.event(
-                    &host,
+                    &mut context,
                     PlatformEvent::WindowOccluded {
-                        window: host.id,
+                        window: id,
                         occluded: false,
                     },
                 ),
-                LoopControl::RequestRedraw
+                LoopControl::RequestRedraw(id)
             );
-            let _ = app.event(&host, PlatformEvent::RedrawRequested(host.id));
+            let _ = app.event(&mut context, PlatformEvent::RedrawRequested(id));
             Ok(())
         }
     }

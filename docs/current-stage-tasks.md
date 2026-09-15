@@ -1,11 +1,11 @@
 # zero-ui 当前阶段整改任务
 
-> 状态基线：2026-09-15，`43c7b8c`
+> 状态基线：2026-09-15，P1 整改基于 `83bf2e3` 开始
 > 关联规划：[roadmap.md](roadmap.md)
 
 ## 1. 阶段结论
 
-当前代码已经具备 winit/headless 后端、基础控件、组件入口、GPU 渲染和增量场景更新，并且 workspace 测试可通过。但项目尚未完成 roadmap 中 M0a/M0b 的工程闭环，platform 公开能力也不足以支撑多窗口、跨平台验证及后续 FreeBSD shell。surface 所有权边界的整改状态记录在第 4 节。
+当前代码已经具备 winit/headless 后端、基础控件、组件入口、GPU 渲染、增量场景更新和 platform core v0。P1 已补齐受控多窗口、Paths、Output/scale、类型化 capability、IME、无障碍树入口与 UI 线程任务；剩余主缺口是 roadmap 中 M0a/M0b 的跨平台 CI、示例和手工验收闭环。surface 所有权边界的整改状态记录在第 4 节。
 
 当前阶段不以增加控件数量或继续优化 GPU 热路径为主，整改顺序固定为：
 
@@ -46,7 +46,7 @@
 - [ ] 增加 FreeBSD `cargo check`，并明确 build/run 是否支持；
 - [ ] 创建 `CHANGELOG.md`，记录当前 `0.1.x` 已有用户可见能力和破坏性变更策略；
 - [x] 创建 `docs/architecture.md`，固化依赖方向、组装根和 platform/render 所有权；
-- [ ] 创建 `docs/platform-api.md`，区分公开 API、capability 与 backend SPI；
+- [x] 创建 `docs/platform-api.md`，区分公开 API、capability 与 backend SPI；
 - [ ] 创建 `docs/platform-status.md`，记录各平台 check/build/run、HiDPI 和已知限制；
 - [ ] 创建 `docs/msrv.md` 或在 README 中明确 MSRV 策略；
 - [ ] 增加 `examples/empty_window`，只验证建窗、清屏、resize、scale 和关闭；
@@ -118,35 +118,42 @@ zui-render
 
 ## 5. P1：补齐 `zui-platform` core v0 与 capability 扩展点
 
-### 当前问题
+### 完成结果
 
-当前 `zui-platform` 主要提供单个 `Host`、`Backend::run(WindowOptions, AppLoop)` 和基础事件。它尚未覆盖 roadmap 指定的 Paths、Output/scale，也缺少多窗口生命周期和统一 capability 模型。winit 已接收 IME preedit，但公开 API 只转发最终文本，无法实现 M1.5 的 composition 状态和候选区职责。
+`AppLoop<H>` 的单 Host 借用已替换为对象安全的 `AppLoop + AppContext`。backend 在上下文中管理 Host 集合，所有窗口调度都显式携带 `WindowId`；headless 与 winit 实现同一生命周期。公开 API 按 core、capability、experimental 分层，完整契约见 [platform-api.md](platform-api.md)。
 
 ### 任务
 
-- [ ] 冻结并文档化 `core v0`：AppLoop、退出/调度、Host/Window、基础输入；
-- [ ] 引入受控的应用上下文或窗口管理接口，支持运行期创建、查询和销毁多个窗口；
-- [ ] 将窗口 resize 与 scale change 建模为明确事件，避免依赖调用方推断；
-- [ ] 增加 `Paths`：config、data、cache、runtime 的平台无关接口；
-- [ ] 增加 `Output` 快照和变更事件，至少包含标识、逻辑区域和 scale；
-- [ ] 定义 capability 的查询/注入方式，不要求所有 backend 实现所有能力；
-- [ ] 增加 Clipboard、Dialog、DragDrop 的 capability trait 草案；
-- [ ] 增加 experimental IME 契约：enabled、preedit、commit、cancel、cursor area；
-- [ ] 增加 experimental accessibility 语义树提交入口；
-- [ ] 增加后台任务安全投递到 UI 线程的最小接口；
-- [ ] 为 core/capability 标注成熟度，并记录破坏性变更策略；
-- [ ] 先在 headless 实现契约测试，再接入 winit。
+- [x] 冻结并文档化 `core v0`：AppLoop、退出/调度、Host/Window、基础输入；
+- [x] 引入受控的应用上下文或窗口管理接口，支持运行期创建、查询和销毁多个窗口；
+- [x] 将窗口 resize 与 scale change 建模为明确事件，避免依赖调用方推断；
+- [x] 增加 `Paths`：config、data、cache、runtime 的平台无关接口；
+- [x] 增加 `Output` 快照和变更事件，至少包含标识、逻辑区域和 scale；
+- [x] 定义 capability 的查询/注入方式，不要求所有 backend 实现所有能力；
+- [x] 增加 Clipboard、Dialog、DragDrop 的 capability trait 草案；
+- [x] 增加 experimental IME 契约：enabled、preedit、commit、cancel、cursor area；
+- [x] 增加 experimental accessibility 语义树提交入口；
+- [x] 增加后台任务安全投递到 UI 线程的最小接口；
+- [x] 为 core/capability 标注成熟度，并记录破坏性变更策略；
+- [x] 先在 headless 实现契约测试，再接入 winit。
 
 ### 验收标准
 
-- [ ] example 业务代码不依赖 winit、OS crate 或 `zui-platform::spi`；
-- [ ] backend 切换只涉及 Cargo feature 和组装根；
-- [ ] headless 能创建、驱动并销毁至少两个 Host；
-- [ ] Output/scale 变化能够到达 app，并触发正确的 layout 与 surface resize；
-- [ ] Paths 在支持平台返回符合约定的目录，失败使用结构化错误；
-- [ ] TextInput 能通过公开 IME API 观察 preedit、commit 和 cancel；
-- [ ] 未实现 capability 能被可靠检测，不以 panic 或静默失败代替；
-- [ ] `docs/platform-api.md` 与实现保持一致。
+- [x] example 业务代码不依赖 winit、OS crate 或 `zui-platform::spi`；
+- [x] backend 切换只涉及 Cargo feature 和组装根；
+- [x] headless 能创建、驱动并销毁至少两个 Host；
+- [x] Output/scale 变化能够到达 app，并触发正确的 layout 与 surface resize；
+- [x] Paths 在支持平台返回符合约定的目录，失败使用结构化错误；
+- [x] TextInput 能通过公开 IME API 观察 preedit、commit 和 cancel；
+- [x] 未实现 capability 能被可靠检测，不以 panic 或静默失败代替；
+- [x] `docs/platform-api.md` 与实现保持一致。
+
+### 自动化证据
+
+- `zui-backend-headless`：双 Host 生命周期、resize/scale/Output、Paths、unsupported capability、UI task 和无界重绘保护；
+- `zui-app`：scale → layout/surface resize、语义树 capability 提交、surface deferred/recover；
+- `zui-ui`：`TextInput` 的 preedit、commit、cancel 状态机；
+- `zui-backend-winit`：原生 target 生命周期、平台路径和结构化路径失败；winit 主代码映射多窗口、monitor、IME 与文件拖放事件。
 
 ## 6. 执行顺序与合并门槛
 
@@ -164,12 +171,12 @@ ADR 先行，再修改依赖边界和 surface 生命周期。每次合并必须�
 
 ### 每个 PR 的统一门槛
 
-- [ ] 不引入新的跨层反向依赖；
-- [ ] 新公开类型标明 core、capability 或 experimental；
-- [ ] 正确性修改有自动化测试或明确的手工验收步骤；
-- [ ] `cargo fmt --all -- --check` 通过；
-- [ ] `cargo test --workspace` 通过；
-- [ ] 更新相关架构、平台状态或 changelog 文档。
+- [x] 不引入新的跨层反向依赖；
+- [x] 新公开类型标明 core、capability 或 experimental；
+- [x] 正确性修改有自动化测试或明确的手工验收步骤；
+- [x] `cargo fmt --all -- --check` 通过；
+- [x] `cargo test --workspace` 通过；
+- [x] 更新相关架构、平台状态或 changelog 文档。
 
 ## 7. 当前阶段退出条件
 
@@ -178,7 +185,7 @@ ADR 先行，再修改依赖边界和 surface 生命周期。每次合并必须�
 - [ ] M0a/M0b 的可测量完成标准已有 CI 和文档证据；
 - [ ] FreeBSD `cargo check` 持续通过；
 - [ ] surface 状态机和所有权边界稳定，SPI 无跨层泄漏；
-- [ ] winit/headless 生命周期契约测试通过；
-- [ ] platform core v0 覆盖 Window、Input、Paths、Output/scale；
+- [x] winit/headless 生命周期契约测试通过；
+- [x] platform core v0 覆盖 Window、Input、Paths、Output/scale；
 - [ ] HiDPI、连续 resize、最小化/恢复不再存在已知阻断问题；
 - [ ] roadmap、platform-status 与 CHANGELOG 已同步更新。

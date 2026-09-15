@@ -122,7 +122,7 @@ Presented ◀──────── Deferred
 ### resize/scale
 
 1. backend 更新 Host 的逻辑尺寸和 device scale；
-2. backend 发出 `WindowResized`；
+2. 逻辑尺寸变化发出 `WindowResized`，device scale 变化单独发出 `ScaleFactorChanged`；
 3. app 更新 layout，并调用 `renderer.resize`；
 4. renderer 丢弃与旧物理尺寸相关的 cache，phase 进入 `Resized`；
 5. 下一次 present 使用完整帧。
@@ -155,9 +155,11 @@ Detached → Attached → Resized → Deferred
 除此之外：
 
 - winit 测试验证生产 target 工厂产生 `Native` target，且不需要打开 GUI 窗口；
-- headless 测试验证 `HeadlessHost` 产生 `Headless` target；
+- headless 测试验证 `HeadlessHost` 产生 `Headless` target，并覆盖双 Host 创建/驱动/销毁、Paths、Output/scale、capability 缺失和 UI 线程任务；
 - render-runtime 测试通过真实 `HeadlessRenderer` API 验证 attach、resize、零尺寸 deferred、recover、present 和 detach；
-- app 测试验证 deferred scene revision 复用，以及 lost 后调用 recover 而不是 detach+attach。
+- app 测试验证 scale 变化触发 layout/surface resize、语义树提交、deferred scene revision 复用，以及 lost 后调用 recover 而不是 detach+attach。
+
+平台 core v0、capability/experimental 分层、多窗口事件顺序与兼容性规则详见 [platform-api.md](platform-api.md)。
 
 相关验证命令：
 

@@ -5,7 +5,7 @@ use crate::{
     Text, TextWrap, Widget, WidgetId,
 };
 use zui_core::{Rect, Size};
-use zui_platform::{InputEvent, KeyCode, KeyState};
+use zui_platform::{ImeEvent, InputEvent, KeyCode, KeyState};
 /// Multi-line document editor foundation; selection/IME/undo extend this retained document model.
 pub struct TextEditor {
     id: WidgetId,
@@ -52,6 +52,7 @@ impl Widget for TextEditor {
     fn event(&mut self, e: &UiEvent, c: &mut EventContext) -> EventResult {
         match &e.input {
             InputEvent::Text(value) => self.document.push_str(value),
+            InputEvent::Ime(ImeEvent::Commit(value)) => self.document.push_str(value),
             InputEvent::Keyboard {
                 key: KeyCode::Enter,
                 state: KeyState::Pressed,
