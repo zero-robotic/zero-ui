@@ -17,7 +17,8 @@ use zui_platform::{
     WindowOptions,
 };
 use zui_render::{
-    FrameDeferReason, FrameOutcome, ImageId, ImageResource, RenderError, SurfaceMetrics,
+    FrameDeferReason, FrameOutcome, ImageId, ImageResource, RenderError, RendererOptions,
+    SurfaceMetrics,
 };
 #[cfg(feature = "winit")]
 use zui_render_runtime::ActiveRenderer;
@@ -31,6 +32,7 @@ pub struct Application {
     options: WindowOptions,
     theme: Theme,
     images: Vec<(ImageId, ImageResource)>,
+    renderer_options: RendererOptions,
 }
 
 impl Default for Application {
@@ -45,6 +47,7 @@ impl Application {
             options: WindowOptions::default(),
             theme: Theme::default(),
             images: Vec::new(),
+            renderer_options: RendererOptions::default(),
         }
     }
 
@@ -65,6 +68,13 @@ impl Application {
 
     pub fn image(mut self, id: ImageId, image: ImageResource) -> Self {
         self.images.push((id, image));
+        self
+    }
+
+    /// Configures native renderer quality without leaking GPU objects into
+    /// the application or widget layers.
+    pub fn renderer_options(mut self, options: RendererOptions) -> Self {
+        self.renderer_options = options;
         self
     }
 
@@ -101,7 +111,7 @@ impl Application {
     #[cfg(feature = "winit")]
     pub fn run(self, root: impl Widget + 'static) -> Result<(), Box<dyn std::error::Error>> {
         let backend = WinitBackend::new()?;
-        let renderer = ActiveRenderer::new_blocking()?;
+        let renderer = ActiveRenderer::new_blocking_with_options(self.renderer_options)?;
         self.run_with(backend, renderer, root).map(|_| ())
     }
 
@@ -111,7 +121,7 @@ impl Application {
         component: C,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let backend = WinitBackend::new()?;
-        let renderer = ActiveRenderer::new_blocking()?;
+        let renderer = ActiveRenderer::new_blocking_with_options(self.renderer_options)?;
         self.run_component_with(backend, renderer, component)
             .map(|_| ())
     }
@@ -881,5 +891,17 @@ mod tests {
         assert!(renderer.updates[1].1);
         assert_eq!(renderer.updates[1].2, renderer.updates[0].2);
         assert_eq!(renderer.lifecycle.phase(), SurfacePhase::Presented);
+    }
+
+    #[test]
+    fn application_retains_native_text_rasterization_options() {
+        let options = RendererOptions {
+            text_rasterization: zui_render::TextRasterizationOptions {
+                gamma: 0.7,
+                contrast: 1.25,
+            },
+        };
+        let application = Application::new().renderer_options(options);
+        assert_eq!(application.renderer_options, options);
     }
 }

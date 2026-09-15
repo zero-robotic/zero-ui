@@ -29,9 +29,37 @@ pub(crate) fn create_canvas(
     (texture, view)
 }
 
+pub(crate) fn create_multisample_canvas(
+    device: &wgpu::Device,
+    size: PhysicalSize,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> Option<(wgpu::Texture, wgpu::TextureView)> {
+    if sample_count <= 1 {
+        return None;
+    }
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("zui-render multisample canvas"),
+        size: wgpu::Extent3d {
+            width: size.width.max(1),
+            height: size.height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    Some((texture, view))
+}
+
 pub(crate) fn create_stencil(
     device: &wgpu::Device,
     size: PhysicalSize,
+    sample_count: u32,
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("zui-render clip stencil"),
@@ -41,7 +69,7 @@ pub(crate) fn create_stencil(
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
-        sample_count: 1,
+        sample_count,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Depth24PlusStencil8,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -49,6 +77,13 @@ pub(crate) fn create_stencil(
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
+}
+
+fn multisample_state(count: u32) -> wgpu::MultisampleState {
+    wgpu::MultisampleState {
+        count,
+        ..Default::default()
+    }
 }
 
 pub(crate) fn create_stencil_reset_buffer(device: &wgpu::Device) -> wgpu::Buffer {
@@ -246,8 +281,9 @@ pub(crate) fn create_blit_bind_group(
 pub(crate) fn create_stencil_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
+    sample_count: u32,
 ) -> wgpu::RenderPipeline {
-    create_stencil_pipeline_with_state(device, format, stencil_reset_state(), None)
+    create_stencil_pipeline_with_state(device, format, stencil_reset_state(), None, sample_count)
 }
 
 #[repr(C)]
@@ -350,8 +386,15 @@ pub(crate) fn create_stencil_mask_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
     transform_layout: &wgpu::BindGroupLayout,
+    sample_count: u32,
 ) -> wgpu::RenderPipeline {
-    create_stencil_pipeline_with_state(device, format, stencil_mask_state(), Some(transform_layout))
+    create_stencil_pipeline_with_state(
+        device,
+        format,
+        stencil_mask_state(),
+        Some(transform_layout),
+        sample_count,
+    )
 }
 
 fn create_stencil_pipeline_with_state(
@@ -359,6 +402,7 @@ fn create_stencil_pipeline_with_state(
     format: wgpu::TextureFormat,
     stencil_state: wgpu::DepthStencilState,
     transform_layout: Option<&wgpu::BindGroupLayout>,
+    sample_count: u32,
 ) -> wgpu::RenderPipeline {
     let transformed = transform_layout.is_some();
     let layout = transform_layout.map(|layout| {
@@ -419,7 +463,7 @@ fn create_stencil_pipeline_with_state(
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: Some(stencil_state),
-        multisample: wgpu::MultisampleState::default(),
+        multisample: multisample_state(sample_count),
         multiview_mask: None,
         cache: None,
     })
@@ -429,6 +473,7 @@ pub(crate) fn create_rect_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
     transform_layout: &wgpu::BindGroupLayout,
+    sample_count: u32,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("zui-render rectangle shader"),
@@ -483,7 +528,7 @@ pub(crate) fn create_rect_pipeline(
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: Some(stencil_draw_state()),
-        multisample: wgpu::MultisampleState::default(),
+        multisample: multisample_state(sample_count),
         multiview_mask: None,
         cache: None,
     })
@@ -496,6 +541,7 @@ pub(crate) fn create_rect_pipeline(
 pub(crate) fn create_damage_clear_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
+    sample_count: u32,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("zui-render damage clear shader"),
@@ -559,7 +605,7 @@ pub(crate) fn create_damage_clear_pipeline(
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: Some(stencil_draw_state()),
-        multisample: wgpu::MultisampleState::default(),
+        multisample: multisample_state(sample_count),
         multiview_mask: None,
         cache: None,
     })
@@ -569,6 +615,7 @@ pub(crate) fn create_image_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
     transform_layout: &wgpu::BindGroupLayout,
+    sample_count: u32,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("zui-render image shader"),
@@ -583,7 +630,8 @@ pub(crate) fn create_image_pipeline(
                 @builtin(position) position: vec4<f32>,
                 @location(0) uv: vec2<f32>,
                 @location(1) opacity: f32,
-                @location(2) color: vec4<f32>,
+                @location(2) coverage: vec2<f32>,
+                @location(3) color: vec4<f32>,
             };
 
             @vertex
@@ -591,12 +639,14 @@ pub(crate) fn create_image_pipeline(
                 @location(0) position: vec2<f32>,
                 @location(1) uv: vec2<f32>,
                 @location(2) opacity: f32,
-                @location(3) color: vec4<f32>,
+                @location(3) coverage: vec2<f32>,
+                @location(4) color: vec4<f32>,
             ) -> VertexOutput {
                 var output: VertexOutput;
                 output.position = transform.matrix * vec4<f32>(position, 0.0, 1.0);
                 output.uv = uv;
                 output.opacity = opacity;
+                output.coverage = coverage;
                 output.color = color;
                 return output;
             }
@@ -604,7 +654,16 @@ pub(crate) fn create_image_pipeline(
             @fragment
             fn fs(input: VertexOutput) -> @location(0) vec4<f32> {
                 let color = textureSample(image, image_sampler, input.uv);
-                return vec4<f32>(color.rgb * input.color.rgb, color.a * input.color.a * input.opacity);
+                let contrasted = clamp(
+                    (color.a - 0.5) * input.coverage.y + 0.5,
+                    0.0,
+                    1.0,
+                );
+                let coverage = pow(contrasted, input.coverage.x);
+                return vec4<f32>(
+                    color.rgb * input.color.rgb,
+                    coverage * input.color.a * input.opacity,
+                );
             }
         "#
             .into(),
@@ -646,7 +705,13 @@ pub(crate) fn create_image_pipeline(
             buffers: &[wgpu::VertexBufferLayout {
                 array_stride: std::mem::size_of::<ImageVertex>() as u64,
                 step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32, 3 => Float32x4],
+                attributes: &wgpu::vertex_attr_array![
+                    0 => Float32x2,
+                    1 => Float32x2,
+                    2 => Float32,
+                    3 => Float32x2,
+                    4 => Float32x4,
+                ],
             }],
         },
         fragment: Some(wgpu::FragmentState {
@@ -661,7 +726,7 @@ pub(crate) fn create_image_pipeline(
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: Some(stencil_draw_state()),
-        multisample: wgpu::MultisampleState::default(),
+        multisample: multisample_state(sample_count),
         multiview_mask: None,
         cache: None,
     })
@@ -671,6 +736,7 @@ pub(crate) fn create_rounded_rect_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
     transform_layout: &wgpu::BindGroupLayout,
+    sample_count: u32,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("zui-render rounded rectangle SDF shader"),
@@ -712,7 +778,9 @@ pub(crate) fn create_rounded_rect_pipeline(
                 let distance = length(max(q, vec2<f32>(0.0, 0.0)))
                     + min(max(q.x, q.y), 0.0)
                     - input.radius;
-                let antialias = max(fwidth(distance), 0.0001);
+                // fwidth spans approximately one physical pixel. Half on
+                // either side keeps the complete coverage ramp to one pixel.
+                let antialias = max(fwidth(distance) * 0.5, 0.0001);
                 let alpha = 1.0 - smoothstep(-antialias, antialias, distance);
                 return vec4<f32>(input.color.rgb, input.color.a * alpha);
             }
@@ -756,7 +824,7 @@ pub(crate) fn create_rounded_rect_pipeline(
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: Some(stencil_draw_state()),
-        multisample: wgpu::MultisampleState::default(),
+        multisample: multisample_state(sample_count),
         multiview_mask: None,
         cache: None,
     })
@@ -766,6 +834,7 @@ pub(crate) fn create_stencil_rounded_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
     transform_layout: &wgpu::BindGroupLayout,
+    sample_count: u32,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("zui-render rounded stencil mask shader"),
@@ -837,7 +906,7 @@ pub(crate) fn create_stencil_rounded_pipeline(
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: Some(stencil_mask_state()),
-        multisample: wgpu::MultisampleState::default(),
+        multisample: multisample_state(sample_count),
         multiview_mask: None,
         cache: None,
     })
@@ -847,6 +916,7 @@ pub(crate) fn create_line_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
     transform_layout: &wgpu::BindGroupLayout,
+    sample_count: u32,
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("zui-render antialiased line shader"),
@@ -893,7 +963,7 @@ pub(crate) fn create_line_pipeline(
                 );
                 let nearest = input.start + segment * projection;
                 let line_distance = distance(input.point, nearest) - input.width * 0.5;
-                let antialias = max(fwidth(line_distance), 0.0001);
+                let antialias = max(fwidth(line_distance) * 0.5, 0.0001);
                 let alpha = 1.0 - smoothstep(-antialias, antialias, line_distance);
                 return vec4<f32>(input.color.rgb, input.color.a * alpha);
             }
@@ -938,7 +1008,7 @@ pub(crate) fn create_line_pipeline(
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: Some(stencil_draw_state()),
-        multisample: wgpu::MultisampleState::default(),
+        multisample: multisample_state(sample_count),
         multiview_mask: None,
         cache: None,
     })

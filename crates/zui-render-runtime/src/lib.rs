@@ -10,7 +10,7 @@ use zui_core::{Color, WindowId};
 use zui_platform::{SurfaceTarget, SurfaceTargetKind};
 use zui_render::{
     FrameOutcome, ImageId, ImageResource, RenderError, RenderNode, RenderNodeIndex, Renderer,
-    SceneUpdate, SurfaceLifecycle, SurfaceMetrics, SurfacePhase,
+    RendererOptions, SceneUpdate, SurfaceLifecycle, SurfaceMetrics, SurfacePhase,
 };
 use zui_render_cpu::CpuRenderer;
 use zui_render_software_gpu::SoftwareGpuRenderer;
@@ -323,7 +323,11 @@ impl ActiveRenderer {
     /// Selects the first available backend. The latter two branches are
     /// intentionally unreachable until their packages gain implementations.
     pub fn new_blocking() -> Result<Self, RendererError> {
-        match Renderer::new_blocking() {
+        Self::new_blocking_with_options(RendererOptions::default())
+    }
+
+    pub fn new_blocking_with_options(options: RendererOptions) -> Result<Self, RendererError> {
+        match Renderer::new_blocking_with_options(options) {
             Ok(renderer) => Ok(Self::HardwareGpu(renderer)),
             Err(error) => {
                 let _ = SoftwareGpuRenderer::new();

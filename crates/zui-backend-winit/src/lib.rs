@@ -497,7 +497,7 @@ impl Runner<'_> {
                 }
                 self.dispatch_input(event_loop, window, ImeEvent::Disabled);
             }
-            WinitImeEvent::Preedit(text, selection) if text.is_empty() => {
+            WinitImeEvent::Preedit(text, _selection) if text.is_empty() => {
                 if self.ime_composing.insert(window, false).unwrap_or(false) {
                     self.dispatch_input(event_loop, window, ImeEvent::Cancelled);
                 }

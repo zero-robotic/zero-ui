@@ -246,6 +246,11 @@ pub(crate) fn append_text(
                     },
                 },
                 if glyph.is_color { draw.color.a } else { 1.0 },
+                if glyph.is_color {
+                    [1.0, 1.0]
+                } else {
+                    resources.glyph_coverage()
+                },
                 glyph_color,
                 uv,
             );
@@ -414,6 +419,7 @@ pub(crate) fn append_image(
     indices: &mut Vec<u32>,
     rect: Rect,
     opacity: f32,
+    coverage: [f32; 2],
     color: Color,
     uv: [f32; 4],
 ) {
@@ -427,24 +433,28 @@ pub(crate) fn append_image(
             position: [left, top],
             uv: [uv[0], uv[1]],
             opacity,
+            coverage,
             color: [color.r, color.g, color.b, color.a],
         },
         ImageVertex {
             position: [right, top],
             uv: [uv[2], uv[1]],
             opacity,
+            coverage,
             color: [color.r, color.g, color.b, color.a],
         },
         ImageVertex {
             position: [right, bottom],
             uv: [uv[2], uv[3]],
             opacity,
+            coverage,
             color: [color.r, color.g, color.b, color.a],
         },
         ImageVertex {
             position: [left, bottom],
             uv: [uv[0], uv[3]],
             opacity,
+            coverage,
             color: [color.r, color.g, color.b, color.a],
         },
     ]);

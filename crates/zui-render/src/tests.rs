@@ -7,20 +7,78 @@ fn noop_device_can_create_gpu_objects() {
     let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     let _encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let transform_layout = create_transform_bind_group_layout(&device);
-    let _pipeline =
-        create_rounded_rect_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm, &transform_layout);
-    let _stencil_pipeline = create_stencil_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
+    let sample_count = 4;
+    let _pipeline = create_rounded_rect_pipeline(
+        &device,
+        wgpu::TextureFormat::Rgba8Unorm,
+        &transform_layout,
+        sample_count,
+    );
+    let _stencil_pipeline =
+        create_stencil_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm, sample_count);
     let _rounded_stencil_pipeline = create_stencil_rounded_pipeline(
         &device,
         wgpu::TextureFormat::Rgba8Unorm,
         &transform_layout,
+        sample_count,
     );
-    let _line_pipeline =
-        create_line_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm, &transform_layout);
+    let _line_pipeline = create_line_pipeline(
+        &device,
+        wgpu::TextureFormat::Rgba8Unorm,
+        &transform_layout,
+        sample_count,
+    );
     let _damage_clear_pipeline =
-        create_damage_clear_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm);
-    let _image_pipeline =
-        create_image_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm, &transform_layout);
+        create_damage_clear_pipeline(&device, wgpu::TextureFormat::Rgba8Unorm, sample_count);
+    let _image_pipeline = create_image_pipeline(
+        &device,
+        wgpu::TextureFormat::Rgba8Unorm,
+        &transform_layout,
+        sample_count,
+    );
+    let size = PhysicalSize {
+        width: 32,
+        height: 32,
+    };
+    assert!(create_multisample_canvas(
+        &device,
+        size,
+        wgpu::TextureFormat::Rgba8Unorm,
+        sample_count,
+    )
+    .is_some());
+    let _stencil = create_stencil(&device, size, sample_count);
+}
+
+#[test]
+fn geometry_msaa_requires_color_resolve_and_stencil_support() {
+    let x4 = wgpu::TextureFormatFeatureFlags::MULTISAMPLE_X4;
+    let color = x4 | wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE;
+    assert_eq!(geometry_sample_count_for_features(color, x4), 4);
+    assert_eq!(geometry_sample_count_for_features(x4, x4), 1);
+    assert_eq!(
+        geometry_sample_count_for_features(color, wgpu::TextureFormatFeatureFlags::empty()),
+        1
+    );
+}
+
+#[test]
+fn text_rasterization_options_reject_invalid_shader_parameters() {
+    let normalized = TextRasterizationOptions {
+        gamma: f32::NAN,
+        contrast: -1.0,
+    }
+    .normalized();
+    assert_eq!(normalized.gamma, 1.0);
+    assert_eq!(normalized.contrast, 1.0);
+
+    let bounded = TextRasterizationOptions {
+        gamma: 0.01,
+        contrast: 10.0,
+    }
+    .normalized();
+    assert_eq!(bounded.gamma, 0.25);
+    assert_eq!(bounded.contrast, 4.0);
 }
 
 #[test]
@@ -864,6 +922,7 @@ fn image_vertices_are_built_once_for_an_atlas_page_run() {
         indices,
         rect,
         1.0,
+        [1.0, 1.0],
         Color::WHITE,
         [0.0, 0.0, 0.5, 0.5],
     );
@@ -879,6 +938,7 @@ fn image_vertices_are_built_once_for_an_atlas_page_run() {
         indices,
         rect,
         1.0,
+        [1.0, 1.0],
         Color::WHITE,
         [0.5, 0.0, 1.0, 0.5],
     );
@@ -1352,7 +1412,7 @@ fn shaped_glyph_cache_keys_track_final_physical_font_size() {
         .next()
         .expect("the test run contains a glyph");
 
-    for pixels_per_dip in [1.0, 1.25, 1.5, 1.875, 2.0, 3.75] {
+    for pixels_per_dip in [1.0, 1.25, 1.35, 1.5, 1.875, 2.0, 3.75] {
         let physical = glyph.physical((13.25, 9.5), pixels_per_dip);
         assert_eq!(
             f32::from_bits(physical.cache_key.font_size_bits),
@@ -1366,7 +1426,7 @@ fn text_quads_are_one_to_one_with_physical_glyph_pixels_at_all_scales() {
     let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     let mut resources = ResourceManager::new(&device);
 
-    for pixels_per_dip in [1.0, 1.25, 1.5, 1.625, 2.0, 3.75] {
+    for pixels_per_dip in [1.0, 1.25, 1.35, 1.5, 1.625, 2.0, 3.75] {
         let mut batches = Vec::new();
         append_text(
             &mut batches,
@@ -1411,6 +1471,52 @@ fn text_quads_are_one_to_one_with_physical_glyph_pixels_at_all_scales() {
         }
         assert!(glyph_count > 0);
     }
+}
+
+#[test]
+fn grayscale_glyph_batches_carry_configured_coverage_tuning() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let options = TextRasterizationOptions {
+        gamma: 0.75,
+        contrast: 1.2,
+    };
+    let mut resources = ResourceManager::new_with_text_options(&device, options);
+    let mut batches = Vec::new();
+    append_text(
+        &mut batches,
+        &mut resources,
+        &device,
+        &queue,
+        TextDraw {
+            text: "Fractional 字体",
+            origin: Point {
+                x: Dip(13.25),
+                y: Dip(31.5),
+            },
+            color: Color::WHITE,
+            scale: 3,
+            pixels_per_dip: 1.35,
+            transform: Transform::IDENTITY,
+        },
+    );
+
+    let coverages = batches.iter().flat_map(|batch| match batch {
+        RenderBatch::Image {
+            sampling: ImageSampling::Glyph,
+            vertices,
+            ..
+        } => vertices
+            .iter()
+            .map(|vertex| vertex.coverage)
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    });
+    let mut count = 0;
+    for coverage in coverages {
+        assert_eq!(coverage, [options.gamma, options.contrast]);
+        count += 1;
+    }
+    assert!(count > 0);
 }
 
 #[test]

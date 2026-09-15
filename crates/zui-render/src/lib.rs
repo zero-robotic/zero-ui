@@ -323,6 +323,7 @@ pub struct ResourceManager {
     /// and the retained item has acquired its resource references.
     materializing_images: HashSet<ImageId>,
     next_internal_image_id: u64,
+    text_rasterization: TextRasterizationOptions,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -524,6 +525,56 @@ pub struct SurfaceMetrics {
     pub ui_scale: f32,
 }
 
+/// Grayscale glyph coverage tuning applied after physical-pixel
+/// rasterization. `gamma` below one strengthens partially covered pixels;
+/// `contrast` above one narrows the transition around half coverage.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextRasterizationOptions {
+    pub gamma: f32,
+    pub contrast: f32,
+}
+
+impl Default for TextRasterizationOptions {
+    fn default() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            return Self {
+                gamma: 0.82,
+                contrast: 1.08,
+            };
+        }
+        #[cfg(not(target_os = "linux"))]
+        Self {
+            gamma: 1.0,
+            contrast: 1.0,
+        }
+    }
+}
+
+impl TextRasterizationOptions {
+    fn normalized(self) -> Self {
+        Self {
+            gamma: if self.gamma.is_finite() && self.gamma > 0.0 {
+                self.gamma.clamp(0.25, 4.0)
+            } else {
+                1.0
+            },
+            contrast: if self.contrast.is_finite() && self.contrast > 0.0 {
+                self.contrast.clamp(0.25, 4.0)
+            } else {
+                1.0
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RendererOptions {
+    /// Coverage tuning for grayscale glyph atlases. Color glyphs and ordinary
+    /// images always keep identity coverage.
+    pub text_rasterization: TextRasterizationOptions,
+}
+
 impl SurfaceMetrics {
     pub fn new(
         physical_size: PhysicalSize,
@@ -547,7 +598,15 @@ impl SurfaceMetrics {
 }
 
 impl ResourceManager {
+    #[cfg(test)]
     fn new(device: &wgpu::Device) -> Self {
+        Self::new_with_text_options(device, TextRasterizationOptions::default())
+    }
+
+    fn new_with_text_options(
+        device: &wgpu::Device,
+        text_rasterization: TextRasterizationOptions,
+    ) -> Self {
         Self {
             cpu: ResourceCache::default(),
             gpu_images: HashMap::new(),
@@ -580,7 +639,15 @@ impl ResourceManager {
             auxiliary_last_used: HashMap::new(),
             materializing_images: HashSet::new(),
             next_internal_image_id: u64::MAX,
+            text_rasterization: text_rasterization.normalized(),
         }
+    }
+
+    fn glyph_coverage(&self) -> [f32; 2] {
+        [
+            self.text_rasterization.gamma,
+            self.text_rasterization.contrast,
+        ]
     }
 
     fn begin_batch_materialization(&mut self) {
@@ -2112,8 +2179,11 @@ struct SurfaceState {
     transform_bindings: HashMap<[u32; 6], TransformBinding>,
     transform_binding_clock: u64,
     max_transform_bindings: usize,
+    sample_count: u32,
     canvas: wgpu::Texture,
     canvas_view: wgpu::TextureView,
+    multisample_canvas: Option<wgpu::Texture>,
+    multisample_canvas_view: Option<wgpu::TextureView>,
     stencil: wgpu::Texture,
     stencil_view: wgpu::TextureView,
     stencil_reset: wgpu::Buffer,
@@ -2959,6 +3029,7 @@ struct ImageVertex {
     position: [f32; 2],
     uv: [f32; 2],
     opacity: f32,
+    coverage: [f32; 2],
     color: [f32; 4],
 }
 
@@ -3624,6 +3695,31 @@ fn constrain_surface_size(size: PhysicalSize, max_texture_dimension_2d: u32) -> 
     }
 }
 
+const PREFERRED_GEOMETRY_SAMPLE_COUNT: u32 = 4;
+
+fn geometry_sample_count(adapter: &wgpu::Adapter, format: wgpu::TextureFormat) -> u32 {
+    let color_features = adapter.get_texture_format_features(format).flags;
+    let stencil_features = adapter
+        .get_texture_format_features(wgpu::TextureFormat::Depth24PlusStencil8)
+        .flags;
+    geometry_sample_count_for_features(color_features, stencil_features)
+}
+
+fn geometry_sample_count_for_features(
+    color_features: wgpu::TextureFormatFeatureFlags,
+    stencil_features: wgpu::TextureFormatFeatureFlags,
+) -> u32 {
+    let color_required = wgpu::TextureFormatFeatureFlags::MULTISAMPLE_X4
+        | wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE;
+    if color_features.contains(color_required)
+        && stencil_features.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_X4)
+    {
+        PREFERRED_GEOMETRY_SAMPLE_COUNT
+    } else {
+        1
+    }
+}
+
 impl Renderer {
     /// Fits a native surface within the active device's real texture limit.
     /// Scaling is only a last-resort fallback for windows larger than the GPU
@@ -3644,6 +3740,10 @@ impl Renderer {
     }
 
     pub async fn new() -> Result<Self, RenderError> {
+        Self::new_with_options(RendererOptions::default()).await
+    }
+
+    pub async fn new_with_options(options: RendererOptions) -> Result<Self, RenderError> {
         let instance = wgpu::Instance::default();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
@@ -3665,7 +3765,7 @@ impl Renderer {
             })
             .await
             .map_err(|error| RenderError::Device(error.to_string()))?;
-        let resources = ResourceManager::new(&device);
+        let resources = ResourceManager::new_with_text_options(&device, options.text_rasterization);
         Ok(Self {
             instance,
             adapter,
@@ -3679,6 +3779,10 @@ impl Renderer {
 
     pub fn new_blocking() -> Result<Self, RenderError> {
         pollster::block_on(Self::new())
+    }
+
+    pub fn new_blocking_with_options(options: RendererOptions) -> Result<Self, RenderError> {
+        pollster::block_on(Self::new_with_options(options))
     }
 
     pub fn register_image(&mut self, id: ImageId, image: ImageResource) {
@@ -3747,22 +3851,48 @@ impl Renderer {
             config.usage |= wgpu::TextureUsages::COPY_DST;
         }
         surface.configure(&self.device, &config);
+        let sample_count = geometry_sample_count(&self.adapter, config.format);
         let transform_layout = create_transform_bind_group_layout(&self.device);
-        let pipeline = create_rect_pipeline(&self.device, config.format, &transform_layout);
-        let rounded_pipeline =
-            create_rounded_rect_pipeline(&self.device, config.format, &transform_layout);
-        let stencil_rounded_pipeline =
-            create_stencil_rounded_pipeline(&self.device, config.format, &transform_layout);
-        let line_pipeline = create_line_pipeline(&self.device, config.format, &transform_layout);
-        let image_pipeline = create_image_pipeline(&self.device, config.format, &transform_layout);
+        let pipeline =
+            create_rect_pipeline(&self.device, config.format, &transform_layout, sample_count);
+        let rounded_pipeline = create_rounded_rect_pipeline(
+            &self.device,
+            config.format,
+            &transform_layout,
+            sample_count,
+        );
+        let stencil_rounded_pipeline = create_stencil_rounded_pipeline(
+            &self.device,
+            config.format,
+            &transform_layout,
+            sample_count,
+        );
+        let line_pipeline =
+            create_line_pipeline(&self.device, config.format, &transform_layout, sample_count);
+        let image_pipeline =
+            create_image_pipeline(&self.device, config.format, &transform_layout, sample_count);
         let image_bind_group_layout = image_pipeline.get_bind_group_layout(1);
-        let stencil_pipeline = create_stencil_pipeline(&self.device, config.format);
-        let stencil_mask_pipeline =
-            create_stencil_mask_pipeline(&self.device, config.format, &transform_layout);
+        let stencil_pipeline = create_stencil_pipeline(&self.device, config.format, sample_count);
+        let stencil_mask_pipeline = create_stencil_mask_pipeline(
+            &self.device,
+            config.format,
+            &transform_layout,
+            sample_count,
+        );
         let (canvas, canvas_view) = create_canvas(&self.device, surface_size, config.format);
-        let (stencil, stencil_view) = create_stencil(&self.device, surface_size);
+        let (multisample_canvas, multisample_canvas_view) = match create_multisample_canvas(
+            &self.device,
+            surface_size,
+            config.format,
+            sample_count,
+        ) {
+            Some((texture, view)) => (Some(texture), Some(view)),
+            None => (None, None),
+        };
+        let (stencil, stencil_view) = create_stencil(&self.device, surface_size, sample_count);
         let stencil_reset = create_stencil_reset_buffer(&self.device);
-        let damage_clear_pipeline = create_damage_clear_pipeline(&self.device, config.format);
+        let damage_clear_pipeline =
+            create_damage_clear_pipeline(&self.device, config.format, sample_count);
         let damage_clear_color =
             self.device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -3802,8 +3932,11 @@ impl Renderer {
                 transform_bindings: HashMap::new(),
                 transform_binding_clock: 0,
                 max_transform_bindings: 1024,
+                sample_count,
                 canvas,
                 canvas_view,
+                multisample_canvas,
+                multisample_canvas_view,
                 stencil,
                 stencil_view,
                 stencil_reset,
@@ -3853,7 +3986,18 @@ impl Renderer {
         let (canvas, canvas_view) = create_canvas(&self.device, surface_size, state.config.format);
         state.canvas = canvas;
         state.canvas_view = canvas_view;
-        let (stencil, stencil_view) = create_stencil(&self.device, surface_size);
+        let multisample_canvas = create_multisample_canvas(
+            &self.device,
+            surface_size,
+            state.config.format,
+            state.sample_count,
+        );
+        (state.multisample_canvas, state.multisample_canvas_view) = match multisample_canvas {
+            Some((texture, view)) => (Some(texture), Some(view)),
+            None => (None, None),
+        };
+        let (stencil, stencil_view) =
+            create_stencil(&self.device, surface_size, state.sample_count);
         state.stencil = stencil;
         state.stencil_view = stencil_view;
         state.blit_bind_group =
@@ -4122,6 +4266,7 @@ impl Renderer {
                             indices,
                             *rect,
                             *image_opacity * opacity,
+                            [1.0, 1.0],
                             Color::WHITE,
                             uv,
                         )
@@ -4280,12 +4425,16 @@ impl Renderer {
                 }
             }
             frame_stats.replay_entry_count = 0;
+            let (render_view, resolve_target) = match &state.multisample_canvas_view {
+                Some(multisample_view) => (multisample_view, Some(&state.canvas_view)),
+                None => (&state.canvas_view, None),
+            };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("zui-render clear pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &state.canvas_view,
+                    view: render_view,
                     depth_slice: None,
-                    resolve_target: None,
+                    resolve_target,
                     ops: wgpu::Operations {
                         load: if !full_frame && !damage_regions.is_empty() && state.has_contents {
                             wgpu::LoadOp::Load
