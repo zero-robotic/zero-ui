@@ -12,6 +12,7 @@ cpu = ["zui-app/cpu"]
 gpu = ["zui-app/gpu"]
 
 [dependencies]
+zui-core.workspace = true
 zui-app.workspace = true
 zui-api.workspace = true
 zui-types.workspace = true
@@ -25,6 +26,3 @@ zui-clipboard.workspace = true
 
 [lints]
 workspace = true
-
-[dev-dependencies]
-zui-core.workspace = true

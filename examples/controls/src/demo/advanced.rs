@@ -12,6 +12,7 @@ pub struct State {
     query: String,
     chosen: BTreeSet<ListItemId>,
     open: bool,
+    pub anchor: Option<Rect>,
     tabs: Vec<TabOption>,
     tab: Option<TabId>,
     nodes: Vec<TreeItem>,
@@ -30,6 +31,7 @@ impl Default for State {
             query: String::new(),
             chosen: BTreeSet::new(),
             open: false,
+            anchor: None,
             tabs: (1..=3)
                 .map(|id| TabOption::new(TabId(id), format!("页面 {id}")))
                 .collect(),
@@ -111,6 +113,7 @@ impl State {
             Message::Combo(ComboBoxEvent::SelectionChanged(ids)) => {
                 self.status = format!("已选择 {} 台设备", ids.len());
                 self.chosen = ids;
+                self.open = false;
             }
             Message::Combo(ComboBoxEvent::Selected(id)) => {
                 self.chosen = BTreeSet::from([id]);
@@ -192,11 +195,14 @@ impl State {
         v.allow_custom = true;
         v
     }
+    pub fn close_anchored(&mut self) {
+        self.open = false;
+        self.anchor = None;
+    }
     pub fn overlay(&self, t: &Theme, f: &[String]) -> Option<View> {
-        self.open.then(|| {
-            self.combo(t, f)
-                .popup(Rect::new(24.0, 80.0, 300.0, 0.0), 300.0, ActionId(401))
-        })
+        let anchor = self.anchor?;
+        self.open
+            .then(|| self.combo(t, f).popup(anchor, 300.0, ActionId(401)))
     }
     pub fn view(&self, t: &Theme, f: &[String]) -> View {
         let mut tabs = TabsView::themed(t, self.tabs.clone(), f.to_vec(), self.tab, ActionId(402));
@@ -246,7 +252,7 @@ impl State {
         });
         GroupBoxView::themed(t, "增强交互", f.to_vec()).build(
             column([
-                self.combo(t, f).build(),
+                self.combo(t, f).build().keyed("device-combo"),
                 tabs,
                 tree.build().unwrap().styled(zui_api::layout::LayoutStyle {
                     height: Dimension::Length(200.0),
@@ -294,10 +300,15 @@ mod tests {
     #[test]
     fn enhanced_gallery_applies_control_requests_and_layouts_popup() {
         let mut state = State::default();
+        state.anchor = Some(Rect::new(24.0, 80.0, 300.0, 40.0));
+        state.apply(Message::Combo(ComboBoxEvent::Open));
+        assert!(state.open);
         state.apply(Message::Combo(ComboBoxEvent::SelectionChanged(
             BTreeSet::from([ListItemId(1), ListItemId(3)]),
         )));
         assert_eq!(state.chosen.len(), 2);
+        assert!(!state.open);
+        assert!(state.overlay(&Theme::dark(), &[]).is_none());
         state.apply(Message::Reorder(TabReorderRequested {
             id: TabId(1),
             to_index: 2,
@@ -319,6 +330,7 @@ mod tests {
         );
         state.apply(Message::GridSelected(TableRowId(9999)));
         assert_eq!(state.grid_selected, Some(TableRowId(9999)));
+        state.anchor = Some(Rect::new(24.0, 80.0, 300.0, 40.0));
         state.apply(Message::Combo(ComboBoxEvent::Open));
         state.apply(Message::Combo(ComboBoxEvent::QueryChanged("1".into())));
         let mut text = zui_text::ParleyText::default();

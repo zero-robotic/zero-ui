@@ -423,3 +423,26 @@ fn focus_reveal_waits_for_layout_and_invalid_explicit_requests_do_not_call_widge
     );
     assert_eq!(calls.borrow().len(), 1);
 }
+
+#[test]
+fn presented_bounds_include_parent_origin_and_scroll_and_require_layout() {
+    let (mut tree, child, _) = setup();
+    assert_eq!(
+        tree.presented_bounds(child).unwrap(),
+        Rect::new(20.0, 30.0, 40.0, 80.0)
+    );
+    tree.update_widget::<Probe>(tree.root(), Invalidation::Paint, |p| {
+        p.viewport.translation.y = -40.0
+    })
+    .unwrap();
+    assert_eq!(
+        tree.presented_bounds(child).unwrap(),
+        Rect::new(20.0, 20.0, 40.0, 80.0)
+    );
+    assert!(matches!(
+        tree.presented_bounds(NodeId(u64::MAX)),
+        Err(TreeError::MissingNode(_))
+    ));
+    tree.invalidate(Invalidation::Layout);
+    assert_eq!(tree.presented_bounds(child), Err(TreeError::LayoutRequired));
+}

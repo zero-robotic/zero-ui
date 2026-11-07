@@ -52,3 +52,9 @@ cargo run -p zui-window-check --all-features --locked -- cpu --widgets --smoke-m
 计时、基准复现、优化范围和实测数据见 [刷新性能报告](performance/refresh/README.md)。
 
 CPU 窗口使用 `RetainedCpuRenderer` 保存一帧像素和场景；命令及尺寸/缩放/背景完全不变时复用像素，仍向窗口提交画面。变化帧完整重绘；本轮开销和收益见 [CPU 整帧复用报告](performance/retained-cpu/README.md)。
+
+## 使用实际控件边界定位弹层
+
+需要从动作来源读取几何时，实现 `ViewApplication::map_action_with_tree(action, tree)`；默认实现继续调用 `map_action`，既有应用无需迁移。该回调只获得只读 Tree，不允许绕过 Host 修改树。`Tree::presented_bounds(action.source)` 返回已经提交、包含祖先偏移及滚动变换的场景坐标边框盒；布局尚未提交时返回错误，结果不会按祖先裁剪区域截断。
+
+Popup 的 Anchor 使用其覆盖层容器局部坐标，不能直接使用控件的父级布局坐标，也不能写死屏幕位置。示例中的普通 Select 和增强 ComboBox 在 Open 动作映射时捕获实际按钮边界，并转换为根覆盖层坐标。窗口 Resized/ScaleChanged 时关闭这些锚定弹层，下次打开重新读取边界；本方案不表示弹层会持续跟踪任意业务布局变化。

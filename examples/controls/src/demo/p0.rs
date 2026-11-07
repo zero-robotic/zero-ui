@@ -10,6 +10,7 @@ use zui_widgets::*;
 #[derive(Clone, Default)]
 pub(super) struct State {
     open: Open,
+    pub select_anchor: Option<Rect>,
     pub status: String,
     secret: String,
     read_only: bool,
@@ -38,6 +39,13 @@ pub(super) enum Message {
     Dismiss(DismissReason),
 }
 impl State {
+    pub fn close_anchored(&mut self) {
+        if matches!(self.open, Open::Select) {
+            self.open = Open::None;
+        }
+        self.select_anchor = None;
+    }
+
     pub fn map(&self, e: &ActionEvent) -> Option<Message> {
         match e.action.id {
             ActionId(107) => match e.action.payload::<TextInputEvent>() {
@@ -203,7 +211,10 @@ impl State {
             ActionId(103),
         ));
         let tools = row([
-            fixed(self.select(theme, f, level).build(), 180.0),
+            fixed(
+                self.select(theme, f, level).build().keyed("preset-select"),
+                180.0,
+            ),
             fixed(menu_bar, 180.0),
             fixed(dialog_button, 160.0),
             fixed(View::new(number), 160.0),
@@ -281,11 +292,10 @@ impl State {
     pub fn overlay(&self, theme: &Theme, f: &[String], level: f64) -> Option<View> {
         let view = match &self.open {
             Open::None => return None,
-            Open::Select => self.select(theme, f, level).popup(
-                Rect::new(24.0, 24.0, 180.0, 44.0),
-                180.0,
-                ActionId(105),
-            ),
+            Open::Select => {
+                self.select(theme, f, level)
+                    .popup(self.select_anchor?, 180.0, ActionId(105))
+            }
             Open::Dialog => {
                 let message = "确认后所有数值控件和进度展示恢复为 50%。取消或 Escape 保持原值。";
                 MessageBoxView::themed(

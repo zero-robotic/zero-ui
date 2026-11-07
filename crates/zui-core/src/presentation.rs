@@ -11,6 +11,17 @@ pub(crate) struct PresentedNode {
 pub(crate) type Presentation = BTreeMap<NodeId, PresentedNode>;
 
 impl Tree {
+    /// Presented border box in scene coordinates, including ancestor scrolling.
+    /// This is not clipped to the viewport. Geometry must have been committed.
+    pub fn presented_bounds(&self, id: NodeId) -> Result<Rect, TreeError> {
+        let layout = self.layout_box(id)?;
+        let presentation = self.presentation()?;
+        Ok(Rect {
+            origin: presentation[&id].origin,
+            size: layout.bounds.size,
+        })
+    }
+
     /// One immutable snapshot per operation, shared by every coordinate consumer.
     pub(crate) fn presentation(&self) -> Result<Presentation, TreeError> {
         let mut result = BTreeMap::new();

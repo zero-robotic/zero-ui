@@ -658,6 +658,16 @@ impl Widget for ListBox {
     fn paint(&self, context: PaintContext, painter: &mut Painter<'_>) {
         let (leading, trailing) = self.icon_slots();
         let s = self.properties.style;
+        // Cover gaps and unused space as well as rows, including empty results.
+        // Dropdown lists can be painted over other content.
+        painter.fill_rect(
+            context.content_bounds,
+            if self.properties.disabled {
+                s.disabled.background
+            } else {
+                s.normal.background
+            },
+        );
         painter.with_clip(Path::rectangle(context.content_bounds), |painter| {
             for ((item, text), row) in self
                 .properties

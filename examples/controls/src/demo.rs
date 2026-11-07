@@ -60,6 +60,8 @@ struct Demo {
     switch_at: Option<Duration>,
 }
 enum Message {
+    OpenSelect(zui_types::Rect),
+    OpenCombo(zui_types::Rect),
     ToggleTheme,
     SetDetails(CheckState),
     SetMode(RadioOptionId),
@@ -136,8 +138,41 @@ impl ViewApplication for Demo {
                 .or_else(|| self.extras.map_action(event).map(Message::Extra)),
         }
     }
+    fn map_action_with_tree(&self, event: &ActionEvent, tree: &zui_core::Tree) -> Option<Message> {
+        let select = event.action.id == ActionId(100)
+            && event.action.payload::<zui_widgets::SelectEvent>()
+                == Some(&zui_widgets::SelectEvent::Open);
+        let combo = event.action.id == ActionId(400)
+            && event.action.payload::<zui_widgets::ComboBoxEvent>()
+                == Some(&zui_widgets::ComboBoxEvent::Open);
+        if select || combo {
+            let mut anchor = tree.presented_bounds(event.source).ok()?;
+            let root = tree.presented_bounds(tree.root()).ok()?;
+            anchor.origin.x -= root.origin.x;
+            anchor.origin.y -= root.origin.y;
+            return Some(if select {
+                Message::OpenSelect(anchor)
+            } else {
+                Message::OpenCombo(anchor)
+            });
+        }
+        self.map_action(event)
+    }
     fn message(&mut self, message: Message) -> ViewAction {
         match message {
+            Message::OpenSelect(anchor) => {
+                self.p0.select_anchor = Some(anchor);
+                self.p0.apply(
+                    p0::Message::Select(zui_widgets::SelectEvent::Open),
+                    &mut self.level,
+                    &mut self.light,
+                );
+            }
+            Message::OpenCombo(anchor) => {
+                self.advanced.anchor = Some(anchor);
+                self.advanced
+                    .apply(advanced::Message::Combo(zui_widgets::ComboBoxEvent::Open));
+            }
             Message::ToggleTheme => self.light = !self.light,
             Message::SetDetails(state) => self.details = state,
             Message::SetMode(mode) => self.mode = mode,
@@ -190,6 +225,11 @@ impl ViewApplication for Demo {
                     },
                     rebuild: false,
                 }
+            }
+            WindowEvent::Resized | WindowEvent::ScaleChanged => {
+                self.p0.close_anchored();
+                self.advanced.close_anchored();
+                ViewAction::rebuild()
             }
             WindowEvent::CloseRequested => ViewAction::exit(),
             WindowEvent::Wake if self.deadline.is_some_and(|time| elapsed >= time) => {
@@ -651,5 +691,109 @@ mod p0_host_tests {
         send(&mut host, key(Key::Escape, None, Modifiers::default()));
         send(&mut host, shortcut());
         assert_eq!(host.model().level, 25.0);
+    }
+}
+
+#[cfg(test)]
+mod anchor_tests {
+    use super::*;
+    use zui_app::Application;
+    use zui_types::{NodeId, Point};
+    fn find(tree: &zui_core::Tree, key: &str) -> NodeId {
+        let mut pending = vec![tree.root()];
+        while let Some(id) = pending.pop() {
+            if tree.key(id).unwrap() == Some(&zui_api::view::Key::from(key)) {
+                return id;
+            }
+            pending.extend_from_slice(tree.children(id).unwrap());
+        }
+        panic!("missing {key}");
+    }
+    #[test]
+    fn dropdowns_anchor_to_actual_buttons_after_layout_and_scroll() {
+        for (width, scale) in [(1100, 1.0), (1280, 2.0)] {
+            let mut text = zui_text::ParleyText::default();
+            let families = text
+                .register_font(Arc::from(
+                    include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
+                ))
+                .unwrap();
+            let mut host = WidgetHost::new(
+                Demo::new(families, None),
+                zui_layout::TaffyLayout::default(),
+                text,
+                Default::default(),
+            )
+            .unwrap();
+            let metrics = WindowMetrics {
+                extent: zui_types::Extent::new(width, (1000.0 * scale) as u32),
+                scale,
+                occluded: false,
+            };
+            let mut scene = zui_paint::Scene::new();
+            host.draw(&mut scene, metrics, Duration::ZERO).unwrap();
+            for (button_key, overlay_key) in [
+                ("preset-select", "popup"),
+                ("device-combo", "advanced-overlay"),
+            ] {
+                let id = find(host.tree(), button_key);
+                if button_key == "device-combo" {
+                    let before = host.tree().presented_bounds(id).unwrap();
+                    host.update(
+                        WindowEvent::Input(InputEvent::PointerMoved(Point::new(
+                            before.origin.x + 5.0,
+                            before.origin.y + 5.0,
+                        ))),
+                        metrics,
+                        Duration::ZERO,
+                    )
+                    .unwrap();
+                    host.update(
+                        WindowEvent::Input(InputEvent::Scroll(zui_platform::ScrollDelta::Pixels {
+                            x: 0.0,
+                            y: -10.0,
+                        })),
+                        metrics,
+                        Duration::ZERO,
+                    )
+                    .unwrap();
+                    host.draw(&mut scene, metrics, Duration::ZERO).unwrap();
+                    assert!(host.tree().presented_bounds(id).unwrap().origin.y < before.origin.y);
+                }
+                let button = host.tree().presented_bounds(id).unwrap();
+                let point = Point::new(button.origin.x + 5.0, button.origin.y + 5.0);
+                for pressed in [true, false] {
+                    host.update(
+                        WindowEvent::Input(InputEvent::PointerButton {
+                            button: zui_platform::PointerButton::Primary,
+                            pressed,
+                            position: Some(point),
+                        }),
+                        metrics,
+                        Duration::ZERO,
+                    )
+                    .unwrap();
+                }
+                host.draw(&mut scene, metrics, Duration::ZERO).unwrap();
+                let overlay = find(host.tree(), overlay_key);
+                let content = host.tree().children(overlay).unwrap()[0];
+                let popup = host.tree().presented_bounds(content).unwrap();
+                assert!(
+                    (popup.origin.x - button.origin.x).abs() < 0.01,
+                    "{button_key}: {button:?} vs {popup:?}"
+                );
+                assert!(
+                    (popup.origin.y - button.origin.y - button.size.height).abs() < 0.01,
+                    "{button_key}: {button:?} vs {popup:?}"
+                );
+                assert!((popup.size.width - button.size.width).abs() < 0.01);
+                let action = host
+                    .update(WindowEvent::Resized, metrics, Duration::ZERO)
+                    .unwrap();
+                assert!(action.redraw);
+                host.draw(&mut scene, metrics, Duration::ZERO).unwrap();
+                assert!(!host.tree().contains(overlay));
+            }
+        }
     }
 }

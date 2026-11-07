@@ -56,6 +56,11 @@ pub trait ViewApplication {
     fn map_action(&self, _action: &ActionEvent) -> Option<Self::Message> {
         None
     }
+    /// Read committed source geometry when mapping actions (e.g. overlay anchors).
+    /// The tree stays read-only; controls and core never know the application.
+    fn map_action_with_tree(&self, action: &ActionEvent, _tree: &Tree) -> Option<Self::Message> {
+        self.map_action(action)
+    }
     fn message(&mut self, _message: Self::Message) -> ViewAction {
         ViewAction::default()
     }
@@ -354,7 +359,7 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> Application for Widget
                     handled = result.handled;
                     action.redraw |= result.invalidation != Invalidation::None;
                     for event in result.actions {
-                        if let Some(message) = self.model.map_action(&event) {
+                        if let Some(message) = self.model.map_action_with_tree(&event, &self.tree) {
                             let response = self.model.message(message);
                             self.apply(response, &mut action);
                         }
