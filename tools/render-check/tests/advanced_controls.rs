@@ -756,3 +756,87 @@ fn tabs_share_one_divider_without_independent_cell_borders() {
         }
     }
 }
+
+#[cfg(feature = "cpu")]
+#[test]
+fn tree_drop_target_is_visible_only_during_a_valid_drag() {
+    use zui_paint::{Frame, OffscreenRenderer};
+    use zui_types::Extent;
+    let (mut text, f) = text();
+    let mut view = TreeView::themed(
+        &Theme::dark(),
+        vec![
+            TreeItem::new(TreeItemId(1), "Source"),
+            TreeItem::new(TreeItemId(2), "Target"),
+        ],
+        f,
+        None,
+        ActionId(3),
+    );
+    view.draggable = true;
+    let marker = Color::rgb(255, 0, 255);
+    view.list.style.focus_ring = marker;
+    let mut tree = Tree::from_view(view.build().unwrap(), Default::default()).unwrap();
+    layout(&mut tree, &mut text);
+    let marked = |tree: &mut Tree| {
+        let pixels = zui_render_cpu::CpuRenderer::default()
+            .render(
+                &tree.scene().unwrap(),
+                Frame {
+                    extent: Extent::new(640, 480),
+                    scale: 1.0,
+                    background: Color::BLACK,
+                },
+            )
+            .unwrap();
+        let i = 55 * pixels.stride() + 2 * 4;
+        pixels.pixels()[i..i + 4] == [marker.r, marker.g, marker.b, marker.a]
+    };
+    let press = |tree: &mut Tree| {
+        tree.dispatch_input(InputEvent::PointerButton {
+            button: PointerButton::Primary,
+            pressed: true,
+            position: Some(Point::new(40.0, 15.0)),
+        })
+        .unwrap();
+    };
+    assert!(!marked(&mut tree));
+    press(&mut tree);
+    assert!(!marked(&mut tree));
+    tree.dispatch_input(InputEvent::PointerMoved(Point::new(40.0, 55.0)))
+        .unwrap();
+    assert!(marked(&mut tree));
+    tree.dispatch_input(InputEvent::PointerMoved(Point::new(700.0, 55.0)))
+        .unwrap();
+    assert!(!marked(&mut tree));
+    tree.dispatch_input(InputEvent::PointerMoved(Point::new(40.0, 55.0)))
+        .unwrap();
+    assert!(marked(&mut tree));
+    key(&mut tree, Key::Escape, false);
+    assert!(!marked(&mut tree));
+    press(&mut tree);
+    tree.dispatch_input(InputEvent::PointerMoved(Point::new(40.0, 55.0)))
+        .unwrap();
+    assert!(marked(&mut tree));
+    let released = tree
+        .dispatch_input(InputEvent::PointerButton {
+            button: PointerButton::Primary,
+            pressed: false,
+            position: Some(Point::new(40.0, 55.0)),
+        })
+        .unwrap();
+    assert!(
+        released
+            .actions
+            .iter()
+            .any(|a| a.action.payload::<TreeDropRequested>().is_some())
+    );
+    assert!(!marked(&mut tree));
+    view.items[1].disabled = true;
+    tree.reconcile(view.build().unwrap()).unwrap();
+    layout(&mut tree, &mut text);
+    press(&mut tree);
+    tree.dispatch_input(InputEvent::PointerMoved(Point::new(40.0, 55.0)))
+        .unwrap();
+    assert!(!marked(&mut tree));
+}

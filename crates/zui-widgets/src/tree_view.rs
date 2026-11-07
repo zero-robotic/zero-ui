@@ -13,9 +13,9 @@ use zui_api::{
     view::{View, ViewSpec},
     widget::*,
 };
-use zui_paint::Painter;
+use zui_paint::{Painter, Path};
 use zui_theme::Theme;
-use zui_types::Size;
+use zui_types::{Rect, Size};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TreeItemId(pub u64);
 #[derive(Clone, Debug, PartialEq)]
@@ -229,6 +229,7 @@ struct TreeWidget {
     list: ListBox,
     armed: Option<TreeItemId>,
     drag: Option<(TreeItemId, zui_types::Point, bool)>,
+    drop_target: Option<TreeItemId>,
     label_press: Option<(TreeItemId, zui_types::Point)>,
     last_click: Option<(TreeItemId, zui_types::Point, Option<Duration>)>,
 }
@@ -240,24 +241,33 @@ impl ViewSpec for TreeSpec {
             list: self.list.build(),
             armed: None,
             drag: None,
+            drop_target: None,
             label_press: None,
             last_click: None,
         }
     }
     fn update(&self, w: &mut TreeWidget) -> Invalidation {
+        let previous_drop_target = w.drop_target;
         if self.rows != w.properties.rows
+            || self.draggable != w.properties.draggable
+            || self.selection != w.properties.selection
             || self.list.disabled
             || self.list.action != w.properties.list.action
             || self.double_click_interval != w.properties.double_click_interval
         {
             w.armed = None;
             w.drag = None;
+            w.drop_target = None;
             w.label_press = None;
             w.last_click = None;
         }
         let result = self.list.update(&mut w.list);
         w.properties = self.clone();
-        result
+        if previous_drop_target != w.drop_target {
+            result.max(Invalidation::Paint)
+        } else {
+            result
+        }
     }
 }
 impl Widget for TreeWidget {
@@ -290,9 +300,39 @@ impl Widget for TreeWidget {
         self.list.prepare(c)
     }
     fn paint(&self, c: PaintContext, p: &mut Painter<'_>) {
-        self.list.paint(c, p)
+        self.list.paint(c, p);
+        if let Some(rect) = self
+            .drop_target
+            .and_then(|id| self.list.item_rect(ListItemId(id.0), c.content_bounds))
+        {
+            if rect.size.width > 4.0 && rect.size.height > 4.0 {
+                let color = self.properties.list.style.focus_ring;
+                p.with_clip(Path::rectangle(c.content_bounds), |p| {
+                    p.stroke(
+                        Path::rectangle(Rect::new(
+                            rect.origin.x + 1.0,
+                            rect.origin.y + 1.0,
+                            rect.size.width - 2.0,
+                            rect.size.height - 2.0,
+                        )),
+                        color,
+                        2.0,
+                    );
+                    p.fill(
+                        Path::rectangle(Rect::new(
+                            rect.origin.x + 1.0,
+                            rect.origin.y + 1.0,
+                            3.0,
+                            rect.size.height - 2.0,
+                        )),
+                        color,
+                    );
+                });
+            }
+        }
     }
     fn event(&mut self, c: EventContext, e: &WidgetEvent) -> EventResponse {
+        let previous_drop_target = self.drop_target;
         if matches!(
             e,
             WidgetEvent::Input(InputEvent::Key(_) | InputEvent::Scroll(_))
@@ -311,10 +351,12 @@ impl Widget for TreeWidget {
             )
         {
             self.drag = None;
+            self.drop_target = None;
             self.armed = None;
             self.label_press = None;
             self.last_click = None;
             let mut response = self.list.event(c, &WidgetEvent::PointerCaptureLost);
+            response.invalidation = Invalidation::Paint;
             response.capture = CaptureRequest::Release;
             response.handled = true;
             return response;
@@ -494,37 +536,13 @@ impl Widget for TreeWidget {
                         let mut r = self.list.event(c, &WidgetEvent::PointerCaptureLost);
                         r.capture = CaptureRequest::Release;
                         r.handled = true;
-                        if let Some(target) = hit
-                            .filter(|&i| !self.properties.rows[i].disabled)
-                            .map(|i| self.properties.rows[i].id)
-                        {
-                            let sources: Vec<_> = self
-                                .properties
-                                .selection
-                                .as_ref()
-                                .filter(|ids| ids.contains(&source))
-                                .map_or_else(
-                                    || alloc::vec![source],
-                                    |ids| ids.iter().copied().collect(),
-                                );
-                            // A node cannot be moved into itself or any visible descendant.
-                            let mut ancestor = Some(target);
-                            let mut cycle = false;
-                            while let Some(id) = ancestor {
-                                cycle |= sources.contains(&id);
-                                ancestor = self
-                                    .properties
-                                    .rows
-                                    .iter()
-                                    .find(|r| r.id == id)
-                                    .and_then(|r| r.parent);
-                            }
-                            if !cycle {
-                                r.actions.push(WidgetAction::new(
-                                    self.properties.list.action,
-                                    TreeDropRequested { sources, target },
-                                ));
-                            }
+                        self.drop_target = None;
+                        r.invalidation = Invalidation::Paint;
+                        if let Some((sources, target)) = self.drop_request(source, hit) {
+                            r.actions.push(WidgetAction::new(
+                                self.properties.list.action,
+                                TreeDropRequested { sources, target },
+                            ));
                         }
                         return r;
                     }
@@ -535,6 +553,12 @@ impl Widget for TreeWidget {
                 _ => {}
             }
         }
+        self.drop_target = self.drag.and_then(|(source, _, moved)| {
+            moved
+                .then(|| self.drop_request(source, hit))
+                .flatten()
+                .map(|(_, target)| target)
+        });
         let mut expansion = None;
         if self.enabled() && c.phase == EventPhase::Target {
             match e {
@@ -561,6 +585,7 @@ impl Widget for TreeWidget {
         ) {
             self.armed = None;
             self.drag = None;
+            self.drop_target = None;
             // Normal release also relinquishes capture after a completed click.
             if self.label_press.is_some() || matches!(e, WidgetEvent::FocusChanged(false)) {
                 self.last_click = None;
@@ -568,6 +593,9 @@ impl Widget for TreeWidget {
             self.label_press = None;
         }
         let mut response = self.list.event(c, e);
+        if previous_drop_target != self.drop_target {
+            response.invalidation = response.invalidation.max(Invalidation::Paint);
+        }
         for action in &mut response.actions {
             if let Some(change) = action.payload::<ListMultiSelectionChanged>() {
                 let logical_rows = self
@@ -629,6 +657,35 @@ impl Widget for TreeWidget {
 }
 
 impl TreeWidget {
+    fn drop_request(
+        &self,
+        source: TreeItemId,
+        hit: Option<usize>,
+    ) -> Option<(Vec<TreeItemId>, TreeItemId)> {
+        let target = self.properties.rows.get(hit?)?;
+        if target.disabled {
+            return None;
+        }
+        let sources: Vec<_> = self
+            .properties
+            .selection
+            .as_ref()
+            .filter(|ids| ids.contains(&source))
+            .map_or_else(|| alloc::vec![source], |ids| ids.iter().copied().collect());
+        let mut ancestor = Some(target.id);
+        while let Some(id) = ancestor {
+            if sources.contains(&id) {
+                return None;
+            }
+            ancestor = self
+                .properties
+                .rows
+                .iter()
+                .find(|r| r.id == id)
+                .and_then(|r| r.parent);
+        }
+        Some((sources, target.id))
+    }
     fn actions(&self, event: TreeEvent) -> Vec<WidgetAction> {
         let mut actions = alloc::vec![WidgetAction::new(self.properties.list.action, event)];
         if let TreeEvent::Expansion { id, expanded: true } = event
