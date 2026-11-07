@@ -1,0 +1,28 @@
+[package]
+name = "zui-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = ["cpu"]
+cpu = ["dep:zui-render-cpu", "zui-backend-winit/software"]
+gpu = ["dep:zui-render-gpu", "dep:pollster"]
+
+[dependencies]
+zui-types.workspace = true
+zui-api.workspace = true
+zui-core.workspace = true
+zui-paint.workspace = true
+zui-platform.workspace = true
+zui-backend-winit.workspace = true
+zui-render-cpu = { workspace = true, optional = true }
+zui-render-gpu = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+raw-window-handle.workspace = true

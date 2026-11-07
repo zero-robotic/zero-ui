@@ -1,0 +1,15 @@
+[package]
+name = "zui-charts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+zui-api.workspace = true
+zui-types.workspace = true
+zui-paint.workspace = true
+zui-theme.workspace = true
+
+[lints]
+workspace = true

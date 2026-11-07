@@ -1,0 +1,35 @@
+[package]
+name = "zui-render-check"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = ["cpu"]
+cpu = ["dep:zui-render-cpu"]
+gpu = ["dep:zui-render-gpu", "dep:pollster"]
+
+[dependencies]
+zui-dashboard.workspace = true
+zui-charts.workspace = true
+zui-types.workspace = true
+zui-paint.workspace = true
+zui-api.workspace = true
+zui-layout.workspace = true
+zui-core.workspace = true
+zui-text.workspace = true
+zui-widgets.workspace = true
+zui-theme.workspace = true
+zui-render-cpu = { workspace = true, optional = true }
+zui-render-gpu = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
+png.workspace = true
+
+[dev-dependencies]
+zui-image.workspace = true
+zui-custom-widget-example = { path = "../../examples/custom-widget" }
+
+[lints]
+workspace = true

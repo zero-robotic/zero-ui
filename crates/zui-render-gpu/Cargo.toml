@@ -1,0 +1,16 @@
+[package]
+name = "zui-render-gpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+zui-types.workspace = true
+zui-paint.workspace = true
+zui-vello.workspace = true
+vello_gpu.workspace = true
+wgpu.workspace = true
+
+[lints]
+workspace = true

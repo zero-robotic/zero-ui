@@ -1,0 +1,55 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "examples/*", "tools/render-check", "tools/window-check"]
+default-members = ["tools/render-check"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+zui-image = { path = "crates/zui-image" }
+zui-dashboard = { path = "crates/zui-dashboard" }
+zui-charts = { path = "crates/zui-charts" }
+zui-virtual = { path = "crates/zui-virtual" }
+zui-clipboard = { path = "crates/zui-clipboard" }
+arboard = { version = "=3.6.1", default-features = false }
+zui-edit = { path = "crates/zui-edit" }
+unicode-segmentation = { version = "=1.13.3", default-features = false }
+zui-types = { path = "crates/zui-types" }
+zui-paint = { path = "crates/zui-paint" }
+zui-render-cpu = { path = "crates/zui-render-cpu" }
+zui-render-gpu = { path = "crates/zui-render-gpu" }
+zui-vello = { path = "crates/zui-vello" }
+zui-platform = { path = "crates/zui-platform" }
+zui-backend-winit = { path = "crates/zui-backend-winit", default-features = false }
+zui-app = { path = "crates/zui-app", default-features = false }
+zui-api = { path = "crates/zui-api" }
+zui-core = { path = "crates/zui-core" }
+zui-text = { path = "crates/zui-text" }
+zui-widgets = { path = "crates/zui-widgets" }
+zui-theme = { path = "crates/zui-theme" }
+zui-input = { path = "crates/zui-input" }
+parley = { version = "=0.12.0", default-features = false, features = ["std", "complex-scripts"] }
+glifo = { version = "=0.4.0", default-features = false, features = ["std"] }
+skrifa = "=0.44.0"
+zui-layout = { path = "crates/zui-layout" }
+taffy = { version = "=0.15.0", default-features = false, features = ["std", "flexbox", "grid", "content_size"] }
+winit = "=0.30.13"
+softbuffer = "=0.4.8"
+raw-window-handle = "0.6"
+vello_common = { version = "=0.3.0", default-features = false, features = ["std"] }
+wgpu = { version = "=30.0.1" }
+pollster = "0.4"
+png = "0.18"
+vello_cpu = { version = "=0.3.0", default-features = false, features = ["std", "u8_pipeline", "text"] }
+vello_gpu = { version = "=0.3.0", default-features = false, features = ["wgpu", "wgpu_default", "text"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"

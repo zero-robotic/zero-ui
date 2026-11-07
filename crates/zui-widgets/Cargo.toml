@@ -1,0 +1,18 @@
+[package]
+name = "zui-widgets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+zui-types.workspace = true
+zui-api.workspace = true
+zui-paint.workspace = true
+zui-theme.workspace = true
+zui-edit.workspace = true
+zui-virtual.workspace = true
+unicode-segmentation.workspace = true
+
+[lints]
+workspace = true

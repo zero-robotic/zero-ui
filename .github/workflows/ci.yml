@@ -1,0 +1,24 @@
+name: Rust
+on: [push, pull_request]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fetch --locked
+      - run: cargo fmt --all --check
+      - run: python3 tools/check-dependencies.py
+      - run: cargo check -p zui-types -p zui-paint
+      - run: cargo check -p zui-render-check --no-default-features --features cpu --locked
+      - run: cargo check -p zui-render-check --no-default-features --features gpu --locked
+      - run: cargo clippy -p zui-window-check --no-default-features --features cpu --locked -- -D warnings
+      - run: cargo clippy -p zui-window-check --no-default-features --features gpu --locked -- -D warnings
+      - run: cargo test --workspace --all-features --locked
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+# Real GPU regression is explicit and must run on a GPU-equipped machine:
+# cargo test -p zui-render-check --all-features -- --ignored --nocapture

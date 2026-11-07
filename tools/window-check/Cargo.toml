@@ -1,0 +1,34 @@
+[package]
+name = "zui-window-check"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = ["cpu"]
+cpu = ["zui-app/cpu"]
+gpu = ["zui-app/gpu"]
+
+[dependencies]
+zui-image = { workspace = true, features = ["worker"] }
+png.workspace = true
+zui-charts.workspace = true
+zui-dashboard.workspace = true
+zui-clipboard.workspace = true
+zui-types.workspace = true
+zui-paint.workspace = true
+zui-platform.workspace = true
+zui-app.workspace = true
+zui-api.workspace = true
+zui-layout.workspace = true
+zui-text.workspace = true
+zui-theme.workspace = true
+zui-widgets.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+zui-core.workspace = true

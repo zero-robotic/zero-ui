@@ -1,0 +1,14 @@
+[package]
+name = "zui-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+zui-input.workspace = true
+zui-types.workspace = true
+zui-paint.workspace = true
+
+[lints]
+workspace = true
