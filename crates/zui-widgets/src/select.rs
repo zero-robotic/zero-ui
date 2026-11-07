@@ -106,5 +106,3 @@ impl Widget for SelectListWidget {
         r
     }
 }
-/// This first dropdown is selection-only; editable/searchable variants are separate policies.
-pub type ComboBoxView = SelectView;

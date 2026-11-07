@@ -6,7 +6,7 @@ use crate::{
 use alloc::{collections::BTreeSet, string::String, vec::Vec};
 use zui_api::{
     action::{ActionId, WidgetAction},
-    event::{EventContext, EventResponse, WidgetEvent},
+    event::*,
     layout::{LayoutError, LayoutKind, LayoutStyle},
     text::TextStyle,
     view::{Key, View, ViewSpec},
@@ -14,7 +14,7 @@ use zui_api::{
 };
 use zui_paint::Painter;
 use zui_theme::Theme;
-use zui_types::Size;
+use zui_types::{Point, Rect, Size};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TabId(pub u64);
@@ -39,6 +39,21 @@ pub struct TabChanged {
     pub selected: TabId,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TabCloseRequested {
+    pub id: TabId,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TabReorderRequested {
+    pub id: TabId,
+    pub to_index: usize,
+}
+/// The application creates/moves windows. Position is relative to the tab header.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabDetachRequested {
+    pub id: TabId,
+    pub position: Point,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TabsError {
     DuplicateId(TabId),
     UnknownSelection(TabId),
@@ -57,6 +72,9 @@ impl core::error::Error for TabsError {}
 /// The factory runs once for the selected page, or never for `None`/invalid IDs.
 pub struct TabsView {
     pub tabs: Vec<TabOption>,
+    pub closable: BTreeSet<TabId>,
+    pub reorderable: bool,
+    pub detachable: bool,
     pub selected: Option<TabId>,
     /// Disables header interaction, not the selected page's controls.
     pub disabled: bool,
@@ -79,6 +97,9 @@ impl TabsView {
         let header = SegmentedControlView::themed(theme, Vec::new(), families, None, action);
         Self {
             tabs,
+            closable: BTreeSet::new(),
+            reorderable: false,
+            detachable: false,
             selected,
             disabled: false,
             action,
@@ -105,22 +126,31 @@ impl TabsView {
         {
             return Err(TabsError::UnknownSelection(id));
         }
-        let header = TabBarView(SegmentedControlView {
-            options: self
-                .tabs
-                .into_iter()
-                .map(|tab| SegmentOption {
-                    id: SegmentId(tab.id.0),
-                    label: tab.label,
-                    disabled: tab.disabled,
-                })
-                .collect(),
-            selected: self.selected.map(|id| SegmentId(id.0)),
-            disabled: self.disabled,
-            action: self.action,
-            text_style: self.text_style,
-            style: self.header_style,
-        });
+        let mut header_style = self.header_style;
+        if !self.closable.is_empty() {
+            header_style.padding_x = header_style.padding_x.max(22.0);
+        }
+        let header = TabBarView {
+            closable: self.closable,
+            reorderable: self.reorderable,
+            detachable: self.detachable,
+            segments: SegmentedControlView {
+                options: self
+                    .tabs
+                    .into_iter()
+                    .map(|tab| SegmentOption {
+                        id: SegmentId(tab.id.0),
+                        label: tab.label,
+                        disabled: tab.disabled,
+                    })
+                    .collect(),
+                selected: self.selected.map(|id| SegmentId(id.0)),
+                disabled: self.disabled,
+                action: self.action,
+                text_style: self.text_style,
+                style: header_style,
+            },
+        };
         let mut header_layout = self.header_layout;
         header_layout.kind = LayoutKind::Leaf;
         let mut children = Vec::with_capacity(2);
@@ -140,35 +170,234 @@ impl TabsView {
 }
 
 // Adapter stays in the controls layer: the runtime transports opaque actions.
-struct TabBarView(SegmentedControlView);
-struct TabBar(SegmentedControl);
+#[derive(Clone)]
+struct TabBarView {
+    segments: SegmentedControlView,
+    closable: BTreeSet<TabId>,
+    reorderable: bool,
+    detachable: bool,
+}
+struct TabBar {
+    segments: SegmentedControl,
+    properties: TabBarView,
+    press: Option<(TabId, Point, bool, bool)>,
+}
+impl TabBar {
+    fn hit(&self, point: Point, size: Size) -> Option<(TabId, usize, bool)> {
+        if point.x < 0.0 || point.y < 0.0 || point.x >= size.width || point.y >= size.height {
+            return None;
+        }
+        let v = &self.properties.segments;
+        let n = v.options.len();
+        if n == 0 {
+            return None;
+        }
+        let gap = v.style.gap as f64;
+        let width = (size.width - n.saturating_sub(1) as f64 * gap).max(0.0) / n as f64;
+        if width <= 0.0 {
+            return None;
+        }
+        let index = (point.x / (width + gap)) as usize;
+        let option = v.options.get(index).filter(|i| !i.disabled)?;
+        let local = point.x - index as f64 * (width + gap);
+        if local > width {
+            return None;
+        }
+        let id = TabId(option.id.0);
+        Some((
+            id,
+            index,
+            self.properties.closable.contains(&id) && local >= (width - 20.0).max(0.0),
+        ))
+    }
+    fn action<T: 'static>(&self, event: T) -> EventResponse {
+        EventResponse {
+            handled: true,
+            actions: alloc::vec![WidgetAction::new(self.properties.segments.action, event)],
+            ..Default::default()
+        }
+    }
+}
 impl ViewSpec for TabBarView {
     type Widget = TabBar;
     fn build(&self) -> TabBar {
-        TabBar(self.0.build())
+        TabBar {
+            segments: self.segments.build(),
+            properties: self.clone(),
+            press: None,
+        }
     }
     fn update(&self, widget: &mut TabBar) -> Invalidation {
-        self.0.update(&mut widget.0)
+        if self.segments.options != widget.properties.segments.options
+            || self.segments.disabled
+            || self.segments.action != widget.properties.segments.action
+        {
+            widget.press = None;
+        }
+        let result = self.segments.update(&mut widget.segments);
+        let changed = self.closable != widget.properties.closable;
+        widget.properties = self.clone();
+        if changed {
+            result.max(Invalidation::Paint)
+        } else {
+            result
+        }
     }
 }
 impl Widget for TabBar {
     fn enabled(&self) -> bool {
-        self.0.enabled()
+        self.segments.enabled()
     }
     fn focusable(&self) -> bool {
-        self.0.focusable()
+        self.segments.focusable()
     }
     fn measure(&mut self, context: MeasureContext) -> Result<Size, LayoutError> {
-        self.0.measure(context)
+        self.segments.measure(context)
     }
     fn prepare(&mut self, context: PrepareContext) -> Result<(), LayoutError> {
-        self.0.prepare(context)
+        self.segments.prepare(context)
     }
     fn paint(&self, context: PaintContext, painter: &mut Painter<'_>) {
-        self.0.paint(context, painter);
+        self.segments.paint(context, painter);
+        let v = &self.properties.segments;
+        let n = v.options.len();
+        if n == 0 {
+            return;
+        }
+        let width = (context.size.width - n.saturating_sub(1) as f64 * v.style.gap as f64).max(0.0)
+            / n as f64;
+        for (index, tab) in v.options.iter().enumerate() {
+            if self.properties.closable.contains(&TabId(tab.id.0)) && width >= 20.0 {
+                crate::Icon::builtin(crate::IconKind::Close).paint(
+                    Rect::new(
+                        index as f64 * (width + v.style.gap as f64) + width - 18.0,
+                        (context.size.height - 14.0) / 2.0,
+                        14.0,
+                        14.0,
+                    ),
+                    if v.disabled || tab.disabled {
+                        v.style.disabled.text
+                    } else {
+                        v.style.normal.text
+                    },
+                    painter,
+                );
+            }
+        }
     }
     fn event(&mut self, context: EventContext, event: &WidgetEvent) -> EventResponse {
-        let mut response = self.0.event(context, event);
+        if matches!(
+            event,
+            WidgetEvent::PointerCaptureLost | WidgetEvent::FocusChanged(false)
+        ) {
+            self.press = None;
+        }
+        if self.enabled() && context.phase == EventPhase::Target {
+            if let WidgetEvent::Input(InputEvent::Key(k)) = event
+                && k.pressed
+                && !k.repeat
+            {
+                if k.key == zui_api::event::Key::Escape && self.press.take().is_some() {
+                    let mut r = self
+                        .segments
+                        .event(context, &WidgetEvent::PointerCaptureLost);
+                    r.capture = CaptureRequest::Release;
+                    r.handled = true;
+                    return r;
+                }
+                if (k.modifiers.control || k.modifiers.super_key)
+                    && !k.modifiers.alt
+                    && let Some(id) = self.properties.segments.selected.map(|id| TabId(id.0))
+                {
+                    if k.key == zui_api::event::Key::Character("w".into())
+                        && self.properties.closable.contains(&id)
+                    {
+                        return self.action(TabCloseRequested { id });
+                    }
+                    if self.properties.reorderable
+                        && k.modifiers.shift
+                        && matches!(
+                            k.key,
+                            zui_api::event::Key::ArrowLeft | zui_api::event::Key::ArrowRight
+                        )
+                    {
+                        let options = &self.properties.segments.options;
+                        if let Some(index) = options.iter().position(|i| i.id.0 == id.0) {
+                            let to_index = if k.key == zui_api::event::Key::ArrowLeft {
+                                index.saturating_sub(1)
+                            } else {
+                                (index + 1).min(options.len() - 1)
+                            };
+                            if to_index != index {
+                                return self.action(TabReorderRequested { id, to_index });
+                            }
+                        }
+                    }
+                }
+            }
+            if let (Some(point), Some(geometry)) = (context.local_position, context.geometry) {
+                match event {
+                    WidgetEvent::Input(InputEvent::PointerButton {
+                        button: PointerButton::Primary,
+                        pressed: true,
+                        ..
+                    }) => {
+                        if let Some((id, _, close)) = self.hit(point, geometry.size) {
+                            self.press = Some((id, point, close, false));
+                        }
+                    }
+                    WidgetEvent::Input(InputEvent::PointerMoved(_)) => {
+                        if let Some((_, start, close, moved)) = &mut self.press
+                            && !*close
+                        {
+                            *moved |= (point.x - start.x).abs() + (point.y - start.y).abs() >= 6.0;
+                        }
+                    }
+                    WidgetEvent::Input(InputEvent::PointerButton {
+                        button: PointerButton::Primary,
+                        pressed: false,
+                        ..
+                    }) => {
+                        if let Some((id, _, close, moved)) = self.press.take() {
+                            let hit = self.hit(point, geometry.size);
+                            let action = if close && hit.is_some_and(|h| h.0 == id && h.2) {
+                                Some(self.action(TabCloseRequested { id }))
+                            } else if moved
+                                && self.properties.detachable
+                                && (point.y < -16.0 || point.y > geometry.size.height + 16.0)
+                            {
+                                Some(self.action(TabDetachRequested {
+                                    id,
+                                    position: point,
+                                }))
+                            } else if moved && self.properties.reorderable {
+                                hit.filter(|h| h.0 != id)
+                                    .map(|h| self.action(TabReorderRequested { id, to_index: h.1 }))
+                            } else {
+                                None
+                            };
+                            if let Some(mut r) = action {
+                                self.segments
+                                    .event(context, &WidgetEvent::PointerCaptureLost);
+                                r.capture = CaptureRequest::Release;
+                                r.invalidation = Invalidation::Paint;
+                                return r;
+                            }
+                            if close {
+                                let mut r = self
+                                    .segments
+                                    .event(context, &WidgetEvent::PointerCaptureLost);
+                                r.capture = CaptureRequest::Release;
+                                r.handled = true;
+                                return r;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut response = self.segments.event(context, event);
         for action in &mut response.actions {
             if let Some(changed) = action.payload::<SegmentChanged>() {
                 *action = WidgetAction::new(

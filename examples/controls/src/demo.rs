@@ -1,5 +1,8 @@
+mod advanced;
+mod catalog;
 mod more;
 mod p0;
+mod p1;
 use more::Extras;
 use std::{error::Error, sync::Arc, time::Duration};
 use zui_api::{
@@ -42,6 +45,9 @@ pub fn run(
 #[derive(Clone)]
 struct Demo {
     p0: p0::State,
+    p1: p1::State,
+    catalog: catalog::State,
+    advanced: advanced::State,
     extras: Extras,
     families: Vec<String>,
     light: bool,
@@ -61,12 +67,18 @@ enum Message {
     SetInput(String),
     Extra(more::Message),
     P0(p0::Message),
+    P1(p1::Message),
+    Catalog(catalog::Message),
+    Advanced(advanced::Message),
 }
 impl Demo {
     fn new(families: Vec<String>, smoke: Option<Duration>) -> Self {
         Self {
             extras: Extras::new(),
             p0: p0::State::default(),
+            p1: p1::State::default(),
+            catalog: catalog::State::default(),
+            advanced: advanced::State::default(),
             families,
             light: false,
             details: CheckState::Checked,
@@ -118,6 +130,9 @@ impl ViewApplication for Demo {
                 .p0
                 .map(event)
                 .map(Message::P0)
+                .or_else(|| self.p1.map(event).map(Message::P1))
+                .or_else(|| self.catalog.map(event).map(Message::Catalog))
+                .or_else(|| self.advanced.map(event).map(Message::Advanced))
                 .or_else(|| self.extras.map_action(event).map(Message::Extra)),
         }
     }
@@ -128,6 +143,9 @@ impl ViewApplication for Demo {
             Message::SetMode(mode) => self.mode = mode,
             Message::SetLevel(level) => self.level = level,
             Message::SetInput(text) => self.input = text,
+            Message::Catalog(message) => self.catalog.apply(message),
+            Message::Advanced(message) => self.advanced.apply(message),
+            Message::P1(message) => self.p1.apply(message),
             Message::Extra(message) => self.extras.message(message),
             Message::P0(message) => self.p0.apply(message, &mut self.level, &mut self.light),
         }
@@ -214,6 +232,9 @@ impl Demo {
         let theme = self.theme();
         let scroll = zui_widgets::ScrollView::vertical(
             column([
+                self.advanced.view(&theme, &self.families),
+                self.catalog.view(&theme, &self.families),
+                self.p1.view(&theme, &self.families),
                 self.basic_view(),
                 self.extras
                     .view(&theme, &self.families, &self.input, self.level),
@@ -243,6 +264,12 @@ impl Demo {
         ];
         if let Some(overlay) = self.p0.overlay(&theme, &self.families, self.level) {
             layers.push(overlay.keyed("popup"));
+        }
+        if let Some(overlay) = self.advanced.overlay(&theme, &self.families) {
+            layers.push(overlay.keyed("advanced-overlay"));
+        }
+        if let Some(overlay) = self.catalog.overlay(&theme, &self.families) {
+            layers.push(overlay.keyed("catalog-overlay"));
         }
         zui_widgets::stack(layers)
             .style(|s| {

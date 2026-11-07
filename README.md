@@ -113,3 +113,9 @@ cargo test -p zui-render-check --all-features --locked -- --ignored --nocapture
 - [现有控件完善与 P0 控件](docs/p0-controls.md)：弹出层、下拉框、菜单、弹窗、Tooltip、数字输入及密码/多选能力。
 
 统一矢量图标、主题配置与自定义路径：[图标说明](docs/icons.md)。
+
+树形选择、表格、分栏与多行编辑：[P1 控件](docs/p1-controls.md)。
+
+P1/P2 完整清单、可编辑表格与专用选择器：[控件清单](docs/controls-catalog.md)。
+
+已有控件增强的接口、示例与剩余缺项见 [控件增强](docs/advanced-controls.md)。

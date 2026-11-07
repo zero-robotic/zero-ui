@@ -24,6 +24,10 @@ impl TextInputDraftMemory {
         )
     }
 }
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Slot is already behind Rc; inline state avoids another allocation on every handoff"
+)]
 enum Slot {
     Idle(Option<Saved>),
     Attached,
@@ -36,6 +40,8 @@ struct Saved {
     anchor_affinity: TextAffinity,
     focus_affinity: TextAffinity,
     scroll: f64,
+    scroll_y: f64,
+    multiline: bool,
 }
 impl Default for TextInputDraft {
     fn default() -> Self {
@@ -120,7 +126,8 @@ impl TextInput {
         };
         self.draft_attached = true;
         if let Some(saved) = saved {
-            let forced = saved.revision != self.properties.revision
+            let forced = saved.multiline != self.properties.multiline
+                || saved.revision != self.properties.revision
                 || saved.limits != self.properties.limits;
             let replacement = saved.external_text != self.properties.text
                 && saved.buffer.as_ref().ok().map(TextBuffer::text)
@@ -130,6 +137,7 @@ impl TextInput {
                 self.anchor_affinity = saved.anchor_affinity;
                 self.focus_affinity = saved.focus_affinity;
                 self.scroll = saved.scroll;
+                self.scroll_y = saved.scroll_y;
             }
         }
     }
@@ -146,6 +154,8 @@ impl TextInput {
             anchor_affinity: self.anchor_affinity,
             focus_affinity: self.focus_affinity,
             scroll: self.scroll,
+            scroll_y: self.scroll_y,
+            multiline: self.properties.multiline,
         };
         *handle.0.borrow_mut() = Slot::Idle(Some(saved));
         self.draft_attached = false;

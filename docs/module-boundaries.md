@@ -210,3 +210,17 @@ examples/controls 和 examples/dashboard 是顶层应用装配：依赖公开控
 Widget 增加默认关闭的 focus_scope 契约。core 只维护通用范围、焦点恢复栈、输入隔离和修饰键快照，不引用 Popup、Menu 或 Dialog。控件使用 Action 请求关闭与执行，应用确认后更新 View。祖先进入/离开通知也通过原有事件契约传递。
 
 zui-edit 提供 Unicode 字素边界迭代，TextInput 使用它建立掩码与原文偏移映射；密码策略和数值校验留在控件层。菜单复用列表交互，数字输入复用文本编辑，弹窗复用 Popup。没有新增反向依赖、渲染器类型或窗口服务。
+
+## P1 控件的职责
+
+TreeView 将应用的层级数据展平为带缩进的 ListBox，并转换选择/展开消息；Table 组合按钮、文本和 ScrollView，排序规则由应用执行；Splitter 只提供布局比例和交互请求；TextArea 复用已有 TextInput/TextBuffer 与文本几何。它们均位于 widgets 层，core、layout、paint、renderer 不增加具体控件依赖。控件之间的设备选择联动只在 examples/controls 的应用状态中实现。
+
+## P1/P2 组合控件与选择器
+
+DataGrid、Form、分组与页面组件、日期时间、颜色和文件选择器均在 widgets 层实现，复用既有布局、输入、主题、绘制及 Action 契约。DataGrid 的排序、值校验和接受提交由应用负责；表单不识别业务字段类型；Toast 使用通用动画时间，不建立线程或全局通知服务。
+
+FilePicker 仅接收目录条目并发出导航、打开、保存请求，不访问文件系统，也不调用平台原生对话框。应用或独立适配层负责枚举目录、权限、路径解析、异步 I/O 和最终操作。TimePicker 不读取系统时间，颜色选择不依赖渲染器。所有控件联动仍为 Action → 应用状态 → View，底层模块不感知这些控件或示例。详见 [完整控件清单](controls-catalog.md)。
+
+## 已有控件增强边界
+
+ComboBox、树加载/移动、页签关闭/重排/拖出均发出不透明 Action，由应用确认模型修改。TreeView 和 DataGrid 复用 VirtualList；DataGrid 自定义单元格通过 View 工厂注入，编辑草稿使用应用拥有的 TextInputDraft。HSV 转换与绘制位于可移植控件层，不调用屏幕采集。此次未修改平台层或引入反向依赖；拖出请求不等于多窗口实现。实际进展与未完成项见 [控件增强](advanced-controls.md)。

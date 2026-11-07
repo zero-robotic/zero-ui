@@ -53,3 +53,5 @@ cargo run -p zui-render-check --locked --offline -- cpu artifacts/tabs-cpu.png t
 窗口示例在应用层拥有 selected、备注字符串和 TextInputDraft，通过 TabChanged/TextInputEvent 更新模型；控件不引用示例业务类型。--tabs 与 --widgets 互斥。巡检页面卸载后释放草稿的活动绑定，重新进入时恢复绑定；示例集成测试实际经过 WidgetHost 和文本布局验证这一过程。撤销/选区保存机制沿用 TextInputDraft，详见 [文本输入](text-input.md)。
 
 静态预览位于 artifacts/tabs-cpu.png，已目视检查文字、选中/禁用状态和页面布局。窗口示例已编译、完成模型集成测试及严格 Clippy；原生窗口手动交互、实际 IME 和 GPU 运行尚未在本阶段验收。
+
+新增增强交互及能力边界见 [控件增强](advanced-controls.md)。

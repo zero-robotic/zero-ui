@@ -30,3 +30,13 @@ cargo run -p zui-controls-example --no-default-features --features gpu -- gpu
 接口及边界说明见 [P0 控件文档](../../docs/p0-controls.md)。
 
 菜单快捷键示例：Ctrl+Shift+R 设置为 25%；模态弹窗打开时不会触发背景快捷键。
+
+## P1 控件联动
+
+滚动区域顶部新增 TreeView、Table、Splitter、TextArea。点击树节点或表格行同步选择设备；点击树箭头展开/收起，表头点击请求升降序排序；拖动中间分隔条调整宽度，也可聚焦后使用方向键。下方巡检文本支持多行输入、自动换行、IME、粘贴和撤销，并同步显示字数。完整接口及当前边界见 [P1 控件](../../docs/p1-controls.md)。
+
+## 清单补充控件
+
+展厅顶部新增必填表单、分组框/分隔线、工具栏/状态栏、日期范围和时间、DataGrid 编辑/列宽/分页、Toast、文件模式/面包屑及 RGBA 颜色选择。数值单元格 Enter 提交、Escape 取消，示例校验范围为 0–100。文件选择使用演示数据，打开/保存仅显示请求，不读写磁盘。接口与边界见 [完整控件清单](../../docs/controls-catalog.md)。
+
+新增增强交互及能力边界见 [控件增强](../../docs/advanced-controls.md)。

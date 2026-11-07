@@ -34,17 +34,25 @@ pub struct MenuItem {
     pub label: String,
     pub disabled: bool,
     pub checked: bool,
+    pub separator: bool,
     pub shortcut_label: Option<String>,
     pub shortcut: Option<MenuShortcut>,
     pub children: Vec<MenuItem>,
 }
 impl MenuItem {
+    pub fn separator(id: MenuId) -> Self {
+        let mut item = Self::new(id, "");
+        item.separator = true;
+        item.disabled = true;
+        item
+    }
     pub fn new(id: MenuId, label: impl Into<String>) -> Self {
         Self {
             id,
             label: label.into(),
             disabled: false,
             checked: false,
+            separator: false,
             shortcut_label: None,
             shortcut: None,
             children: Vec::new(),
@@ -98,7 +106,7 @@ impl MenuView {
         }
         let mut pending: Vec<_> = self.items.iter().rev().collect();
         while let Some(item) = pending.pop() {
-            if item.disabled {
+            if item.disabled || item.separator {
                 continue;
             }
             if item.children.is_empty()
@@ -134,6 +142,7 @@ impl MenuView {
                 .iter()
                 .map(|i| ListItem {
                     id: ListItemId(i.id.0),
+                    indent: 0.0,
                     label: format!(
                         "{}{}",
                         i.label,
@@ -146,7 +155,7 @@ impl MenuView {
                         .then(|| crate::Icon::builtin(crate::IconKind::Check)),
                     trailing_icon: (!i.children.is_empty())
                         .then(|| crate::Icon::builtin(crate::IconKind::ChevronRight)),
-                    disabled: i.disabled,
+                    disabled: i.disabled || i.separator,
                 })
                 .collect();
             let mut list = ListBoxView::themed(
@@ -172,7 +181,9 @@ impl MenuView {
                 let (index, item) = items
                     .iter()
                     .enumerate()
-                    .find(|(_, i)| i.id == *id && !i.disabled && !i.children.is_empty())
+                    .find(|(_, i)| {
+                        i.id == *id && !i.disabled && !i.separator && !i.children.is_empty()
+                    })
                     .ok_or(MenuError::InvalidPath(*id))?;
                 let origin = match place {
                     PopupPlacement::Anchor(r) => Point::new(r.origin.x, r.origin.y + r.size.height),
@@ -204,6 +215,7 @@ struct MenuListView {
 struct MenuList {
     list: ListBox,
     properties: MenuListView,
+    hovered: Option<ListItemId>,
 }
 impl ViewSpec for MenuListView {
     type Widget = MenuList;
@@ -211,6 +223,7 @@ impl ViewSpec for MenuListView {
         MenuList {
             list: self.list.build(),
             properties: self.clone(),
+            hovered: None,
         }
     }
     fn update(&self, w: &mut MenuList) -> Invalidation {
@@ -225,7 +238,7 @@ impl MenuList {
             .properties
             .items
             .iter()
-            .find(|i| i.id.0 == id.0 && !i.disabled)?;
+            .find(|i| i.id.0 == id.0 && !i.disabled && !i.separator)?;
         Some(if item.children.is_empty() {
             MenuEvent::Selected(item.id)
         } else {
@@ -249,7 +262,22 @@ impl Widget for MenuList {
         self.list.prepare(c)
     }
     fn paint(&self, c: PaintContext, p: &mut Painter<'_>) {
-        self.list.paint(c, p)
+        self.list.paint(c, p);
+        p.with_clip(zui_paint::Path::rectangle(c.content_bounds), |p| {
+            for item in self.properties.items.iter().filter(|i| i.separator) {
+                if let Some(rect) = self.list.item_rect(ListItemId(item.id.0), c.content_bounds) {
+                    p.fill_rect(
+                        zui_types::Rect::new(
+                            rect.origin.x + 8.0,
+                            rect.origin.y + rect.size.height / 2.0,
+                            (rect.size.width - 16.0).max(0.0),
+                            1.0,
+                        ),
+                        self.properties.list.style.normal.text,
+                    );
+                }
+            }
+        });
     }
     fn event(&mut self, c: EventContext, e: &WidgetEvent) -> EventResponse {
         if c.phase == EventPhase::Target
@@ -278,6 +306,22 @@ impl Widget for MenuList {
             }
         }
         let mut r = self.list.event(c, e);
+        if c.phase == EventPhase::Target
+            && matches!(e, WidgetEvent::Input(InputEvent::PointerMoved(_)))
+        {
+            let hit = self.list.hit(c);
+            if hit != self.hovered {
+                self.hovered = hit;
+                if let Some(command @ MenuEvent::OpenPath(_)) = hit.and_then(|id| self.chosen(id)) {
+                    r.actions
+                        .push(WidgetAction::new(self.properties.list.action, command));
+                    r.handled = true;
+                }
+            }
+        }
+        if matches!(e, WidgetEvent::Input(InputEvent::PointerLeft)) {
+            self.hovered = None;
+        }
         for a in &mut r.actions {
             if let Some(e) = a
                 .payload::<ListSelectionChanged>()
@@ -311,20 +355,24 @@ impl MenuBarView {
         }
     }
     pub fn build(self) -> View {
-        row(self.items.into_iter().map(|item| {
-            let mut button =
-                ButtonView::themed(&self.theme, item.label, self.families.clone(), self.action);
-            button.disabled = item.disabled;
-            View::new(ActionButtonView {
-                button,
-                payload: MenuEvent::Open(item.id),
-            })
-            .keyed(item.id.0)
-            .styled(LayoutStyle {
-                padding: Edges::all(10.0),
-                ..Default::default()
-            })
-        }))
+        row(self
+            .items
+            .into_iter()
+            .filter(|item| !item.separator)
+            .map(|item| {
+                let mut button =
+                    ButtonView::themed(&self.theme, item.label, self.families.clone(), self.action);
+                button.disabled = item.disabled;
+                View::new(ActionButtonView {
+                    button,
+                    payload: MenuEvent::Open(item.id),
+                })
+                .keyed(item.id.0)
+                .styled(LayoutStyle {
+                    padding: Edges::all(10.0),
+                    ..Default::default()
+                })
+            }))
         .build()
     }
 }

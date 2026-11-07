@@ -52,7 +52,7 @@ Escape 或外部指针按下产生 `PopupDismissed { reason }`，应用决定何
 
 `SelectEvent::Open` 请求展开，`Selected(id)` 提交选择。方向键、Home/End、PageUp/PageDown 和字符定位移动活动项，跳过禁用项，Enter/Space 或点击提交；Escape 关闭而不改变业务选中项。应用确认后移除弹出层并恢复触发按钮焦点。
 
-当前 `ComboBoxView` 是非编辑 Select 的别名；搜索、自由文本和多选下拉不包含在本批基础版本中。
+`SelectView` 为非编辑选择；`ComboBoxView` 已独立实现搜索、自由文本和多选下拉，使用独立 ComboBoxEvent，见 [控件增强](advanced-controls.md)。
 
 ## Menu / MenuBar / ContextMenu
 
@@ -63,7 +63,7 @@ Escape 或外部指针按下产生 `PopupDismissed { reason }`，应用决定何
 - `MenuEvent::Selected(id)` 表示执行命令；关闭和业务执行由应用处理。
 - `MenuShortcut` 与 `resolve_shortcut()` 解析启用命令，忽略按键重复与禁用分支。应用决定快捷键相对文本编辑器和模态窗口的优先级；不在底层注册全局快捷键。
 
-菜单当前使用列表行，不包含悬停自动展开子菜单、原生系统菜单或专用分隔符条目。子菜单仍可通过键盘及点击完整操作。
+菜单当前使用列表行，已增加分隔条目和当前活动层悬停展开；尚不包含跨层悬停切换和原生系统菜单。子菜单仍可通过键盘及点击完整操作。
 
 ## Dialog / MessageBox
 

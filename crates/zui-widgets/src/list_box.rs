@@ -23,6 +23,8 @@ pub struct ListItemId(pub u64);
 pub struct ListItem {
     pub id: ListItemId,
     pub label: String,
+    /// Additional logical indentation before the leading icon and label.
+    pub indent: f32,
     pub leading_icon: Option<crate::Icon>,
     pub trailing_icon: Option<crate::Icon>,
     pub disabled: bool,
@@ -32,6 +34,7 @@ impl ListItem {
         Self {
             id,
             label: label.into(),
+            indent: 0.0,
             leading_icon: None,
             trailing_icon: None,
             disabled: false,
@@ -163,7 +166,10 @@ impl ListBoxView {
             || !(s.padding_x * 2.0).is_finite()
             || !(s.padding_y * 2.0).is_finite()
             || self.scrollbar.is_some_and(|bar| !bar.valid())
-            || self.items.iter().any(|item| !ids.insert(item.id))
+            || self
+                .items
+                .iter()
+                .any(|item| !ids.insert(item.id) || !item.indent.is_finite() || item.indent < 0.0)
             || self.selected.is_some_and(|id| !ids.contains(&id))
         {
             Err(LayoutError::InvalidStyle(id))
@@ -490,7 +496,21 @@ impl ListBox {
             first.or(self.choice.active)
         }
     }
-    fn hit(&self, context: EventContext) -> Option<ListItemId> {
+    pub(crate) fn item_rect(&self, id: ListItemId, bounds: Rect) -> Option<Rect> {
+        let index = self
+            .properties
+            .items
+            .iter()
+            .position(|item| item.id == id)?;
+        let row = self.rows.get(index)?;
+        Some(Rect::new(
+            bounds.origin.x,
+            bounds.origin.y + row.origin.y - self.offset,
+            row.size.width,
+            row.size.height,
+        ))
+    }
+    pub(crate) fn hit(&self, context: EventContext) -> Option<ListItemId> {
         let bounds = context.geometry?.content_bounds;
         let p = context.local_position?;
         if self.bar(bounds).is_some_and(|bar| bar.track.contains(p)) {
@@ -557,13 +577,18 @@ impl Widget for ListBox {
         input.known_height = None;
         input.available_height = AvailableSpace::MaxContent;
         let mut size = Size::ZERO;
-        for text in &mut self.texts {
+        for (text, item) in self.texts.iter_mut().zip(&self.properties.items) {
+            let mut input = input;
+            input.known_width = input.known_width.map(|v| (v - item.indent).max(0.0));
+            if let AvailableSpace::Definite(w) = input.available_width {
+                input.available_width = AvailableSpace::Definite((w - item.indent).max(0.0));
+            }
             let label = text.measure(MeasureContext {
                 id: context.id,
                 input,
                 text: context.text,
             })?;
-            size.width = size.width.max(label.width + inset);
+            size.width = size.width.max(label.width + inset + item.indent as f64);
             size.height += (label.height + s.padding_y as f64 * 2.0).max(s.min_row_height as f64);
         }
         size.height = (size.height + self.texts.len().saturating_sub(1) as f64 * s.row_gap as f64)
@@ -601,7 +626,8 @@ impl Widget for ListBox {
         self.width = context.content_size.width;
         self.rows.clear();
         let mut y = 0.0;
-        for text in &mut self.texts {
+        for (text, item) in self.texts.iter_mut().zip(&self.properties.items) {
+            let width = (width - item.indent as f64).max(0.0);
             text.prepare(PrepareContext {
                 id: context.id,
                 layout: LayoutBox::new(Rect::new(0.0, 0.0, width, context.content_size.height)),
@@ -682,9 +708,9 @@ impl Widget for ListBox {
                 let color = if selected { c.selected_text } else { c.text };
                 let side = (self.properties.text_style.font_size as f64).min(rect.size.height);
                 let inner = Rect::new(
-                    rect.origin.x + s.padding_x as f64,
+                    rect.origin.x + s.padding_x as f64 + item.indent as f64,
                     rect.origin.y,
-                    (rect.size.width - s.padding_x as f64 * 2.0).max(0.0),
+                    (rect.size.width - s.padding_x as f64 * 2.0 - item.indent as f64).max(0.0),
                     rect.size.height,
                 );
                 painter.with_clip(Path::rectangle(inner), |p| {
@@ -714,9 +740,14 @@ impl Widget for ListBox {
                     }
                 });
                 let label = Rect::new(
-                    rect.origin.x + s.padding_x as f64 + leading,
+                    rect.origin.x + s.padding_x as f64 + leading + item.indent as f64,
                     rect.origin.y + (rect.size.height - text.prepared_size().height) / 2.0,
-                    (rect.size.width - s.padding_x as f64 * 2.0 - leading - trailing).max(0.0),
+                    (rect.size.width
+                        - s.padding_x as f64 * 2.0
+                        - leading
+                        - trailing
+                        - item.indent as f64)
+                        .max(0.0),
                     text.prepared_size().height,
                 );
                 painter.with_clip(Path::rectangle(label), |painter| {

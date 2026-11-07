@@ -176,3 +176,15 @@ Glow、Blur、Mask 等属于可选效果，先核对锁定 Vello 版本的能力
 ## P0 与输入选择增强实现
 
 现有控件已补充 TextInput 占位提示、主题校验态、密码掩码、只读与 Shift 点击，以及 ListBox 激活确认模式和受控多选。新增 Popup、Select/ComboBox、Menu/MenuBar/ContextMenu、Dialog/MessageBox、Tooltip、NumberInput，均接入传统控件展厅。公共接口、交互规则及本批边界详见 [P0 控件文档](p0-controls.md)。
+
+P1 第一批已实现 TreeView、只读文本 Table、双面板 Splitter 和 TextArea，并在传统展厅展示共享选择、排序、比例调整和多行输入。它们的受控状态、键盘操作及第一批交付边界见 [P1 控件说明](p1-controls.md)。
+
+## P1/P2 后续补齐
+
+已增加 DataGrid 的文本单元格编辑、列宽调整、选择和排序请求，以及 Form/FormField、GroupBox/Separator、Calendar/DatePicker/DateRangePicker/TimePicker、Toolbar/StatusBar、Toast/Notification、Breadcrumb/Pagination、FilePicker/ColorPicker。传统展厅包含校验、日期范围约束、表格分页排序、目录导航、颜色预览与状态反馈联动。完整接口、责任分配与限制见 [P1/P2 控件清单](controls-catalog.md)。
+
+这一批提供可组合的基础控件能力；虚拟树和虚拟表格、复杂单元格编辑器、系统原生文件对话框及完整无障碍平台适配仍未交付。文件选择展厅使用内存中的演示目录，不读写磁盘。
+
+## 已有控件增强的后续进度
+
+搜索/可编辑/多选 ComboBox、树加载/多选/普通拖放/虚拟化、虚拟 DataGrid/固定表头/自定义单元格、页签关闭/重排请求、菜单分隔/活动层悬停展开和 HSV 已进入实现。此前关于这些功能未提供的描述属于早期交付状态，以 [控件增强](advanced-controls.md) 的逐项状态表为准。冻结列、范围选择、大文档编辑与原生平台适配等仍未完成。

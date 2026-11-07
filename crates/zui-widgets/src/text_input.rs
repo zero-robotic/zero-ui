@@ -91,6 +91,10 @@ pub struct TextInputView {
     pub action: ActionId,
     pub disabled: bool,
     pub read_only: bool,
+    /// Multiline editing; prefer TextAreaView for this mode.
+    pub multiline: bool,
+    pub wrap: bool,
+    pub visible_lines: u16,
     /// Displayed only when both committed text and IME preedit are empty.
     pub placeholder: String,
     /// Application-owned validation state; never rejects edits implicitly.
@@ -118,6 +122,9 @@ impl TextInputView {
             action,
             disabled: false,
             read_only: false,
+            multiline: false,
+            wrap: false,
+            visible_lines: 4,
             placeholder: String::new(),
             invalid: false,
             password: false,
@@ -130,8 +137,22 @@ impl TextInputView {
         self
     }
     fn buffer(&self) -> Result<TextBuffer, TextInputError> {
-        single_line(&self.text)?;
+        validate_text(&self.text, self.multiline)?;
         TextBuffer::new(self.text.clone(), self.limits).map_err(TextInputError::Edit)
+    }
+}
+fn validate_text(text: &str, multiline: bool) -> Result<(), TextInputError> {
+    if multiline {
+        if text
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t')
+        {
+            Err(TextInputError::InvalidSingleLineText)
+        } else {
+            Ok(())
+        }
+    } else {
+        single_line(text)
     }
 }
 fn single_line(text: &str) -> Result<(), TextInputError> {
@@ -159,6 +180,9 @@ pub struct TextInput {
     focus_affinity: TextAffinity,
     scroll: f64,
     viewport: f64,
+    viewport_height: f64,
+    scroll_y: f64,
+    preferred_x: Option<f64>,
     focused: bool,
     dragging: bool,
     ime_generation: u64,
@@ -175,10 +199,14 @@ impl TextInput {
     pub fn selection(&self) -> Option<Selection> {
         self.buffer.as_ref().ok().map(TextBuffer::selection)
     }
+    pub fn vertical_scroll(&self) -> f64 {
+        self.scroll_y
+    }
     pub fn horizontal_scroll(&self) -> f64 {
         self.scroll
     }
     fn reset_affinity(&mut self) {
+        self.preferred_x = None;
         self.anchor_affinity = TextAffinity::Downstream;
         self.focus_affinity = TextAffinity::Downstream;
     }
@@ -195,11 +223,20 @@ impl TextInput {
         Point::new(
             context.content_bounds.origin.x - self.scroll,
             context.content_bounds.origin.y
-                + ((context.content_bounds.size.height - height) / 2.0).max(0.0),
+                + if self.properties.multiline {
+                    -self.scroll_y
+                } else {
+                    ((context.content_bounds.size.height - height) / 2.0).max(0.0)
+                },
         )
     }
     fn validate(&self, id: NodeId) -> Result<(), LayoutError> {
-        if single_line(&self.properties.placeholder).is_err()
+        if validate_text(&self.properties.placeholder, self.properties.multiline).is_err()
+            || (self.properties.multiline
+                && (self.properties.password || self.properties.visible_lines == 0))
+            || self
+                .text()
+                .is_some_and(|t| validate_text(t, self.properties.multiline).is_err())
             || self.buffer.is_err()
             || self
                 .properties
@@ -228,7 +265,11 @@ impl TextInput {
                     .layout(TextRequest {
                         text: &self.properties.placeholder,
                         style: &self.properties.text_style,
-                        width: TextWidth::Unbounded,
+                        width: if self.properties.multiline && self.properties.wrap {
+                            TextWidth::AtMost(self.viewport as f32)
+                        } else {
+                            TextWidth::Unbounded
+                        },
                     })
                     .map_err(|e| LayoutError::Text(id, e))?,
             );
@@ -249,7 +290,11 @@ impl TextInput {
                     .layout_interactive(TextRequest {
                         text: display,
                         style: &self.properties.text_style,
-                        width: TextWidth::Unbounded,
+                        width: if self.properties.multiline && self.properties.wrap {
+                            TextWidth::AtMost(self.viewport as f32)
+                        } else {
+                            TextWidth::Unbounded
+                        },
                     })
                     .map_err(|e| LayoutError::Text(id, e))?,
             );
@@ -295,6 +340,18 @@ impl TextInput {
         if self.caret.origin.x + self.caret.size.width > self.scroll + self.viewport {
             self.scroll = self.caret.origin.x + self.caret.size.width - self.viewport;
         }
+        if self.properties.multiline {
+            if self.caret.origin.y < self.scroll_y {
+                self.scroll_y = self.caret.origin.y;
+            }
+            if self.caret.origin.y + self.caret.size.height > self.scroll_y + self.viewport_height {
+                self.scroll_y = self.caret.origin.y + self.caret.size.height - self.viewport_height;
+            }
+            self.scroll_y = self.scroll_y.clamp(
+                0.0,
+                (layout.layout.size.height - self.viewport_height).max(0.0),
+            );
+        }
         self.scroll = self.scroll.clamp(
             0.0,
             (layout.layout.size.width + self.caret.size.width - self.viewport).max(0.0),
@@ -310,7 +367,7 @@ impl TextInput {
         self.notify(response, TextInputEvent::Rejected(error));
     }
     fn insert(&mut self, text: &str) -> Result<bool, TextInputError> {
-        single_line(text)?;
+        validate_text(text, self.properties.multiline)?;
         self.buffer
             .as_mut()
             .map_err(|e| e.clone())?
@@ -352,6 +409,7 @@ impl TextInput {
         Ok(())
     }
     fn hit(&mut self, context: EventContext, extend: bool) -> Result<(), TextInputError> {
+        self.preferred_x = None;
         let (Some(point), Some(geometry), Some(layout)) =
             (context.local_position, context.geometry, &self.prepared)
         else {
@@ -361,7 +419,11 @@ impl TextInput {
             .geometry
             .cursor_at(Point::new(
                 point.x - geometry.content_bounds.origin.x + self.scroll,
-                layout.layout.size.height / 2.0,
+                if self.properties.multiline {
+                    point.y - geometry.content_bounds.origin.y + self.scroll_y
+                } else {
+                    layout.layout.size.height / 2.0
+                },
             ))
             .map_err(TextInputError::Geometry)?;
         hit.byte_index = self
@@ -389,6 +451,65 @@ impl TextInput {
         let buffer = self.buffer.as_mut().map_err(|e| e.clone())?;
         let selection = buffer.selection();
         let display = |i| self.mask.as_ref().map_or(i, |mask| mask.display(i));
+        if self.properties.multiline
+            && matches!(
+                key.key,
+                Key::ArrowUp | Key::ArrowDown | Key::Home | Key::End
+            )
+        {
+            if let Some(layout) = &self.prepared {
+                let caret = layout
+                    .geometry
+                    .caret(
+                        TextPosition {
+                            byte_index: selection.focus,
+                            affinity: self.focus_affinity,
+                        },
+                        1.5,
+                    )
+                    .map_err(TextInputError::Geometry)?;
+                let point = match key.key {
+                    Key::Home => Point::new(0.0, caret.origin.y + caret.size.height / 2.0),
+                    Key::End => Point::new(
+                        layout.layout.size.width + 1.0,
+                        caret.origin.y + caret.size.height / 2.0,
+                    ),
+                    _ => {
+                        let x = *self.preferred_x.get_or_insert(caret.origin.x);
+                        Point::new(
+                            x,
+                            caret.origin.y
+                                + caret.size.height / 2.0
+                                + if key.key == Key::ArrowUp {
+                                    -caret.size.height
+                                } else {
+                                    caret.size.height
+                                },
+                        )
+                    }
+                };
+                let hit = layout
+                    .geometry
+                    .cursor_at(point)
+                    .map_err(TextInputError::Geometry)?;
+                buffer
+                    .set_selection(Selection {
+                        anchor: if key.modifiers.shift {
+                            selection.anchor
+                        } else {
+                            hit.byte_index
+                        },
+                        focus: hit.byte_index,
+                    })
+                    .map_err(TextInputError::Edit)?;
+                self.focus_affinity = hit.affinity;
+                if !key.modifiers.shift {
+                    self.anchor_affinity = hit.affinity;
+                }
+            }
+            return Ok(());
+        }
+        self.preferred_x = None;
         match key.key {
             Key::Home => {
                 buffer.move_cursor(Movement::TextStart, key.modifiers.shift);
@@ -417,14 +538,14 @@ impl TextInput {
                         .geometry
                         .caret(anchor, 0.0)
                         .map_err(TextInputError::Geometry)?
-                        .origin
-                        .x;
+                        .origin;
                     let f = layout
                         .geometry
                         .caret(focus, 0.0)
                         .map_err(TextInputError::Geometry)?
-                        .origin
-                        .x;
+                        .origin;
+                    let a = (a.y, a.x);
+                    let f = (f.y, f.x);
                     if (right && a > f) || (!right && a < f) {
                         anchor
                     } else {
@@ -487,6 +608,9 @@ impl ViewSpec for TextInputView {
             focus_affinity: TextAffinity::Downstream,
             scroll: 0.0,
             viewport: 0.0,
+            viewport_height: 0.0,
+            scroll_y: 0.0,
+            preferred_x: None,
             focused: false,
             dragging: false,
             ime_generation: 0,
@@ -504,6 +628,8 @@ impl ViewSpec for TextInputView {
             widget.buffer = self.buffer();
             widget.reset_affinity();
             widget.scroll = 0.0;
+            widget.scroll_y = 0.0;
+            widget.preferred_x = None;
             widget.dragging = false;
             widget.prepared = None;
             widget.blink.reset();
@@ -514,14 +640,20 @@ impl ViewSpec for TextInputView {
         }
 
         if self.placeholder != widget.properties.placeholder
+            || self.wrap != widget.properties.wrap
+            || self.multiline != widget.properties.multiline
             || self.text_style != widget.properties.text_style
         {
             widget.hint = None;
         }
         let old = &widget.properties;
-        let forced = self.revision != old.revision || self.limits != old.limits;
+        let forced = self.revision != old.revision
+            || self.limits != old.limits
+            || self.multiline != old.multiline;
         let replacement = self.text != old.text && widget.text() != Some(self.text.as_str());
-        let mut layout = self.password != old.password
+        let mut layout = self.wrap != old.wrap
+            || self.visible_lines != old.visible_lines
+            || self.password != old.password
             || self.placeholder != old.placeholder
             || forced
             || replacement
@@ -548,6 +680,8 @@ impl ViewSpec for TextInputView {
             widget.buffer = self.buffer();
             widget.reset_affinity();
             widget.scroll = 0.0;
+            widget.scroll_y = 0.0;
+            widget.preferred_x = None;
             widget.dragging = false;
         }
         if self.disabled
@@ -613,6 +747,20 @@ impl Widget for TextInput {
         })
     }
     fn measure(&mut self, context: MeasureContext) -> Result<Size, LayoutError> {
+        if self.properties.multiline && self.properties.wrap {
+            let width = context
+                .input
+                .known_width
+                .unwrap_or(match context.input.available_width {
+                    AvailableSpace::Definite(w) => w,
+                    _ => self.properties.style.natural_width,
+                }) as f64;
+            if width != self.viewport {
+                self.viewport = width;
+                self.prepared = None;
+                self.hint = None;
+            }
+        }
         self.layout_text(context.text, context.id)?;
         let width = match context.input.available_width {
             AvailableSpace::Definite(w) => self.properties.style.natural_width.min(w),
@@ -625,10 +773,26 @@ impl Widget for TextInput {
                 .input
                 .known_height
                 .map(f64::from)
-                .unwrap_or(self.prepared.as_ref().unwrap().layout.size.height),
+                .unwrap_or_else(|| {
+                    if self.properties.multiline {
+                        self.properties.visible_lines as f64
+                            * self.properties.text_style.font_size as f64
+                            * self.properties.text_style.line_height as f64
+                    } else {
+                        self.prepared.as_ref().unwrap().layout.size.height
+                    }
+                }),
         ))
     }
     fn prepare(&mut self, context: PrepareContext) -> Result<(), LayoutError> {
+        if self.properties.multiline
+            && self.properties.wrap
+            && self.viewport != context.content_size.width
+        {
+            self.prepared = None;
+            self.hint = None;
+        }
+        self.viewport_height = context.content_size.height;
         self.viewport = context.content_size.width;
         self.layout_text(context.text, context.id)
     }
@@ -732,12 +896,36 @@ impl TextInput {
         clipboard: &mut dyn Clipboard,
     ) -> EventResponse {
         let mut response = EventResponse::default();
+        if self.properties.multiline
+            && self.enabled()
+            && context.phase == EventPhase::Target
+            && let WidgetEvent::Input(InputEvent::Scroll(delta)) = event
+        {
+            let (x, y) = match *delta {
+                ScrollDelta::Pixels { x, y } => (x, y),
+                ScrollDelta::Lines { x, y } => (x * 32.0, y * 32.0),
+            };
+            if let Some(layout) = &self.prepared {
+                let before = (self.scroll, self.scroll_y);
+                self.scroll_y = (self.scroll_y - y).clamp(
+                    0.0,
+                    (layout.layout.size.height - self.viewport_height).max(0.0),
+                );
+                self.scroll = (self.scroll - x)
+                    .clamp(0.0, (layout.layout.size.width - self.viewport).max(0.0));
+                if before != (self.scroll, self.scroll_y) {
+                    response.handled = true;
+                    response.invalidation = Invalidation::Paint;
+                }
+            }
+            return response;
+        }
         let mut display_changed = false;
         // Pointer movement and focus notifications must not copy the whole buffer.
         let may_edit = match event {
             WidgetEvent::Input(InputEvent::Key(key)) => matches!(
                 key.key,
-                Key::Character(_) | Key::Space | Key::Backspace | Key::Delete
+                Key::Character(_) | Key::Space | Key::Backspace | Key::Delete | Key::Enter
             ),
             WidgetEvent::Input(InputEvent::ImeCommit(_)) => true,
             _ => false,
@@ -873,6 +1061,22 @@ impl TextInput {
                                 _ => {}
                             }
                         }
+                    } else if command
+                        && self.properties.multiline
+                        && matches!(key.key, Key::Home | Key::End)
+                    {
+                        if let Ok(buffer) = &mut self.buffer {
+                            buffer.move_cursor(
+                                if key.key == Key::Home {
+                                    Movement::TextStart
+                                } else {
+                                    Movement::TextEnd
+                                },
+                                key.modifiers.shift,
+                            );
+                            self.reset_affinity();
+                        }
+                        response.handled = true;
                     } else if command && let Key::Character(letter) = &key.key {
                         match letter.to_ascii_lowercase().as_str() {
                             operation @ ("c" | "x" | "v") => {
@@ -903,6 +1107,10 @@ impl TextInput {
                         }
                     } else if plain {
                         match &key.key {
+                            Key::ArrowUp | Key::ArrowDown if self.properties.multiline => {
+                                response.handled = true;
+                                result = self.navigate(key);
+                            }
                             Key::ArrowLeft | Key::ArrowRight | Key::Home | Key::End => {
                                 response.handled = true;
                                 result = self.navigate(key);
@@ -917,6 +1125,12 @@ impl TextInput {
                                     }
                                     .map(|_| ())
                                     .map_err(TextInputError::Edit);
+                                }
+                            }
+                            Key::Enter if self.properties.multiline => {
+                                response.handled = true;
+                                if !self.properties.read_only {
+                                    result = self.insert("\n").map(|_| ());
                                 }
                             }
                             Key::Enter => {
@@ -974,6 +1188,7 @@ impl TextInput {
             .is_some_and(|text| self.text() != text.as_deref())
         {
             self.prepared = None;
+            self.preferred_x = None;
             self.reset_affinity();
             response.invalidation = Invalidation::Layout;
             if let Some(text) = self.text() {
