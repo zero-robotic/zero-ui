@@ -33,6 +33,7 @@ struct Properties {
     background: Option<Color>,
     focus_color: Color,
     disabled: bool,
+    focusable: bool,
     action: Option<ActionId>,
     request: Option<ScrollRequest>,
     scrollbar: Option<ScrollbarStyle>,
@@ -45,6 +46,7 @@ impl Default for Properties {
             background: None,
             focus_color: Color::rgb(41, 210, 230),
             disabled: false,
+            focusable: true,
             action: None,
             request: None,
             scrollbar: Some(ScrollbarStyle::default()),
@@ -99,6 +101,11 @@ impl ScrollView {
     /// Overlay bars do not change content size; None retains wheel and keyboard scrolling.
     pub fn scrollbar(mut self, style: Option<ScrollbarStyle>) -> Self {
         self.properties.scrollbar = style;
+        self
+    }
+    /// Allow descendants to receive focus without making the scroll surface a Tab stop.
+    pub fn focusable(mut self, focusable: bool) -> Self {
+        self.properties.focusable = focusable;
         self
     }
     pub fn disabled(mut self, disabled: bool) -> Self {
@@ -367,7 +374,11 @@ impl Scroll {
         };
         response.handled = true;
         response.stop_propagation = true;
-        response.focus = FocusRequest::Focus;
+        response.focus = if self.properties.focusable {
+            FocusRequest::Focus
+        } else {
+            FocusRequest::None
+        };
         response.invalidation = Invalidation::Paint;
         Some(response)
     }
@@ -408,7 +419,7 @@ impl Widget for Scroll {
         !self.properties.disabled
     }
     fn focusable(&self) -> bool {
-        !self.properties.disabled
+        !self.properties.disabled && self.properties.focusable
     }
     fn prepare(&mut self, context: PrepareContext) -> Result<(), LayoutError> {
         let mut max_offset = Point::ZERO;
@@ -536,7 +547,11 @@ impl Widget for Scroll {
                 ..
             }) if context.phase == EventPhase::Target => EventResponse {
                 handled: true,
-                focus: FocusRequest::Focus,
+                focus: if self.properties.focusable {
+                    FocusRequest::Focus
+                } else {
+                    FocusRequest::None
+                },
                 ..Default::default()
             },
             WidgetEvent::Input(InputEvent::Key(key))

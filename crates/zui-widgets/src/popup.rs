@@ -20,6 +20,7 @@ pub enum PopupPlacement {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DismissReason {
+    CloseButton,
     Escape,
     OutsidePointer,
 }

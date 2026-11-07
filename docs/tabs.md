@@ -27,7 +27,7 @@ let view = tabs.build(|id| model.page(id))?;
 
 layout 配置整个容器，header_layout 配置页签栏尺寸，panel_layout 配置页面包装容器。根与页面包装容器的布局类型固定为 Column；页签栏固定为 Leaf。默认页签栏 shrink 为 0；固定高度容器的剩余空间分配可由应用设置 panel_layout.grow。内容滚动由页面显式组合 Scroll。
 
-header_style 使用 SegmentedStyle，text_style 配置文字；页签等宽、标签可换行，正常/选中/禁用和焦点视觉复用分段控件。
+header_style 使用 SegmentedStyle，text_style 配置文字；标签栏共用一个外边框，相邻标签只绘制一条分隔线，间隙固定为零（忽略 header_style.gap）；默认 `compact=true`，页签按文字宽度和内边距紧凑靠左排列，不填满剩余空间；`compact=false` 恢复等宽布局。空间不足时按比例收缩并允许标签换行，正常/选中/禁用和焦点视觉复用分段控件。
 
 页签栏占一个 Tab 焦点位置。方向键、Home/End 选择并跳过禁用项，Space 请求活动项，指针沿用捕获与取消规则。模型确认选择后，栏内焦点保持；Tab 按树顺序进入当前页。外部切换若卸载了焦点所在页面，核心清理焦点，不自动跳到新页面。
 
@@ -35,7 +35,7 @@ header_style 使用 SegmentedStyle，text_style 配置文字；页签等宽、�
 
 窗口侧集成测试使用真实 Taffy/Parley 和 WidgetHost，验证动作模型回写、禁用跳过、页面工厂/构建/销毁次数、稳定节点、进入内容区、切换清理焦点及无效选择。另回归 SegmentedControl 模型回写。本阶段没有新增绘制原语，未重跑 GPU 像素测试。
 
-当前是横向等宽页签与单页挂载版本。图标、关闭按钮、拖动重排、页签溢出滚动、竖向/RTL、Ctrl+Tab、保留非活动控件树、页签级无障碍语义与原生设备验收尚未实现。
+当前支持横向紧凑/等宽页签、关闭、拖动重排和单页挂载。关闭与拖动命中使用实际标签边界。页签溢出滚动、竖向/RTL、Ctrl+Tab、保留非活动控件树和页签级无障碍语义尚未实现。
 
 ## 可运行示例
 

@@ -390,6 +390,7 @@ struct ColumnResize {
     properties: ColumnResizeView,
     drag: Option<(f64, f32)>,
     focused: bool,
+    hovered: bool,
 }
 impl ViewSpec for ColumnResizeView {
     type Widget = ColumnResize;
@@ -398,6 +399,7 @@ impl ViewSpec for ColumnResizeView {
             properties: *self,
             drag: None,
             focused: false,
+            hovered: false,
         }
     }
     fn update(&self, w: &mut ColumnResize) -> Invalidation {
@@ -429,9 +431,18 @@ impl Widget for ColumnResize {
         }
     }
     fn paint(&self, c: PaintContext, p: &mut Painter<'_>) {
+        // Keep the generous hit target, but only paint a narrow, inset divider.
+        let active = self.enabled() && (self.hovered || self.focused || self.drag.is_some());
+        let width = if active { 2.0_f64 } else { 1.0_f64 }.min(c.size.width);
+        let inset = 8.0_f64.min(c.size.height / 4.0);
         p.fill_rect(
-            Rect::new(0.0, 0.0, c.size.width, c.size.height),
-            if self.focused || self.drag.is_some() {
+            Rect::new(
+                ((c.size.width - width) / 2.0).max(0.0) as u64 as f64,
+                inset,
+                width,
+                (c.size.height - 2.0 * inset).max(0.0),
+            ),
+            if active {
                 self.properties.active
             } else {
                 self.properties.color
@@ -441,6 +452,14 @@ impl Widget for ColumnResize {
     fn event(&mut self, c: EventContext, e: &WidgetEvent) -> EventResponse {
         let mut r = EventResponse::default();
         match e {
+            WidgetEvent::Input(InputEvent::PointerEntered) => {
+                self.hovered = true;
+                r.invalidation = Invalidation::Paint;
+            }
+            WidgetEvent::Input(InputEvent::PointerLeft) => {
+                self.hovered = false;
+                r.invalidation = Invalidation::Paint;
+            }
             WidgetEvent::FocusChanged(value) => {
                 self.focused = *value;
                 if !value {

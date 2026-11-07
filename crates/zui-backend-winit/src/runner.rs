@@ -97,7 +97,9 @@ impl<H: WindowHandler> ApplicationHandler for Runner<H> {
                 self.config.size.width,
                 self.config.size.height,
             ))
-            .with_resizable(self.config.resizable);
+            .with_resizable(self.config.resizable)
+            .with_decorations(self.config.decorations)
+            .with_enabled_buttons(window_buttons(&self.config));
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(DesktopWindow(window)),
             Err(error) => {
@@ -200,5 +202,37 @@ impl<H: WindowHandler> ApplicationHandler for Runner<H> {
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.detach();
+    }
+}
+
+fn window_buttons(config: &WindowConfig) -> winit::window::WindowButtons {
+    use winit::window::WindowButtons;
+    let mut buttons = WindowButtons::empty();
+    buttons.set(WindowButtons::CLOSE, config.close_button);
+    buttons.set(WindowButtons::MINIMIZE, config.minimize_button);
+    buttons.set(
+        WindowButtons::MAXIMIZE,
+        config.maximize_button && config.resizable,
+    );
+    buttons
+}
+
+#[cfg(test)]
+mod chrome_tests {
+    use super::*;
+    #[test]
+    fn window_button_requests_are_independent_and_maximize_requires_resize() {
+        use winit::window::WindowButtons;
+        let mut config = WindowConfig::default();
+        assert_eq!(window_buttons(&config), WindowButtons::all());
+        config.minimize_button = false;
+        assert_eq!(
+            window_buttons(&config),
+            WindowButtons::CLOSE | WindowButtons::MAXIMIZE
+        );
+        config.resizable = false;
+        assert_eq!(window_buttons(&config), WindowButtons::CLOSE);
+        config.close_button = false;
+        assert!(window_buttons(&config).is_empty());
     }
 }

@@ -42,6 +42,19 @@ impl NativeWindow for DesktopWindow {
     fn set_title(&self, title: &str) {
         self.0.set_title(title);
     }
+    fn drag_window(&self) -> Result<(), zui_platform::PlatformError> {
+        self.0
+            .drag_window()
+            .map_err(|e| zui_platform::PlatformError::Backend(e.to_string()))
+    }
+    fn set_minimized(&self, minimized: bool) -> Result<(), zui_platform::PlatformError> {
+        self.0.set_minimized(minimized);
+        Ok(())
+    }
+    fn set_maximized(&self, maximized: bool) -> Result<(), zui_platform::PlatformError> {
+        self.0.set_maximized(maximized);
+        Ok(())
+    }
     fn set_ime_enabled(&self, enabled: bool) {
         self.0.set_ime_allowed(enabled);
     }

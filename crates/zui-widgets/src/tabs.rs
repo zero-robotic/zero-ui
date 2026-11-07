@@ -72,6 +72,8 @@ impl core::error::Error for TabsError {}
 /// The factory runs once for the selected page, or never for `None`/invalid IDs.
 pub struct TabsView {
     pub tabs: Vec<TabOption>,
+    /// Content-width labels grouped at the start; false restores equal-width tabs.
+    pub compact: bool,
     pub closable: BTreeSet<TabId>,
     pub reorderable: bool,
     pub detachable: bool,
@@ -97,6 +99,7 @@ impl TabsView {
         let header = SegmentedControlView::themed(theme, Vec::new(), families, None, action);
         Self {
             tabs,
+            compact: true,
             closable: BTreeSet::new(),
             reorderable: false,
             detachable: false,
@@ -104,7 +107,10 @@ impl TabsView {
             disabled: false,
             action,
             text_style: header.text_style,
-            header_style: header.style,
+            header_style: SegmentedStyle {
+                gap: 0.0,
+                ..header.style
+            },
             layout: LayoutStyle::default(),
             header_layout: LayoutStyle {
                 shrink: 0.0,
@@ -127,10 +133,12 @@ impl TabsView {
             return Err(TabsError::UnknownSelection(id));
         }
         let mut header_style = self.header_style;
+        header_style.gap = 0.0;
         if !self.closable.is_empty() {
             header_style.padding_x = header_style.padding_x.max(22.0);
         }
         let header = TabBarView {
+            compact: self.compact,
             closable: self.closable,
             reorderable: self.reorderable,
             detachable: self.detachable,
@@ -172,6 +180,7 @@ impl TabsView {
 // Adapter stays in the controls layer: the runtime transports opaque actions.
 #[derive(Clone)]
 struct TabBarView {
+    compact: bool,
     segments: SegmentedControlView,
     closable: BTreeSet<TabId>,
     reorderable: bool,
@@ -187,29 +196,28 @@ impl TabBar {
         if point.x < 0.0 || point.y < 0.0 || point.x >= size.width || point.y >= size.height {
             return None;
         }
-        let v = &self.properties.segments;
-        let n = v.options.len();
-        if n == 0 {
-            return None;
-        }
-        let gap = v.style.gap as f64;
-        let width = (size.width - n.saturating_sub(1) as f64 * gap).max(0.0) / n as f64;
-        if width <= 0.0 {
-            return None;
-        }
-        let index = (point.x / (width + gap)) as usize;
-        let option = v.options.get(index).filter(|i| !i.disabled)?;
-        let local = point.x - index as f64 * (width + gap);
-        if local > width {
-            return None;
-        }
+        let (index, slot) = self
+            .segments
+            .slots()
+            .iter()
+            .enumerate()
+            .find(|(_, slot)| slot.contains(point))?;
+        let option = self
+            .properties
+            .segments
+            .options
+            .get(index)
+            .filter(|o| !o.disabled)?;
         let id = TabId(option.id.0);
         Some((
             id,
             index,
-            self.properties.closable.contains(&id) && local >= (width - 20.0).max(0.0),
+            self.properties.closable.contains(&id)
+                && slot.size.width >= 20.0
+                && point.x >= slot.origin.x + slot.size.width - 20.0,
         ))
     }
+
     fn action<T: 'static>(&self, event: T) -> EventResponse {
         EventResponse {
             handled: true,
@@ -221,8 +229,11 @@ impl TabBar {
 impl ViewSpec for TabBarView {
     type Widget = TabBar;
     fn build(&self) -> TabBar {
+        let mut segments = self.segments.build();
+        segments.compact = self.compact;
+        segments.joined = true;
         TabBar {
-            segments: self.segments.build(),
+            segments,
             properties: self.clone(),
             press: None,
         }
@@ -234,7 +245,12 @@ impl ViewSpec for TabBarView {
         {
             widget.press = None;
         }
-        let result = self.segments.update(&mut widget.segments);
+        let mut result = self.segments.update(&mut widget.segments);
+        if self.compact != widget.properties.compact {
+            widget.segments.compact = self.compact;
+            widget.press = None;
+            result = Invalidation::Layout;
+        }
         let changed = self.closable != widget.properties.closable;
         widget.properties = self.clone();
         if changed {
@@ -260,18 +276,15 @@ impl Widget for TabBar {
     fn paint(&self, context: PaintContext, painter: &mut Painter<'_>) {
         self.segments.paint(context, painter);
         let v = &self.properties.segments;
-        let n = v.options.len();
-        if n == 0 {
-            return;
-        }
-        let width = (context.size.width - n.saturating_sub(1) as f64 * v.style.gap as f64).max(0.0)
-            / n as f64;
         for (index, tab) in v.options.iter().enumerate() {
-            if self.properties.closable.contains(&TabId(tab.id.0)) && width >= 20.0 {
+            let Some(slot) = self.segments.slots().get(index) else {
+                continue;
+            };
+            if self.properties.closable.contains(&TabId(tab.id.0)) && slot.size.width >= 20.0 {
                 crate::Icon::builtin(crate::IconKind::Close).paint(
                     Rect::new(
-                        index as f64 * (width + v.style.gap as f64) + width - 18.0,
-                        (context.size.height - 14.0) / 2.0,
+                        context.content_bounds.origin.x + slot.origin.x + slot.size.width - 18.0,
+                        context.content_bounds.origin.y + (slot.size.height - 14.0) / 2.0,
                         14.0,
                         14.0,
                     ),
@@ -336,13 +349,18 @@ impl Widget for TabBar {
                 }
             }
             if let (Some(point), Some(geometry)) = (context.local_position, context.geometry) {
+                let point = Point::new(
+                    point.x - geometry.content_bounds.origin.x,
+                    point.y - geometry.content_bounds.origin.y,
+                );
                 match event {
                     WidgetEvent::Input(InputEvent::PointerButton {
                         button: PointerButton::Primary,
                         pressed: true,
                         ..
                     }) => {
-                        if let Some((id, _, close)) = self.hit(point, geometry.size) {
+                        if let Some((id, _, close)) = self.hit(point, geometry.content_bounds.size)
+                        {
                             self.press = Some((id, point, close, false));
                         }
                     }
@@ -359,12 +377,13 @@ impl Widget for TabBar {
                         ..
                     }) => {
                         if let Some((id, _, close, moved)) = self.press.take() {
-                            let hit = self.hit(point, geometry.size);
+                            let hit = self.hit(point, geometry.content_bounds.size);
                             let action = if close && hit.is_some_and(|h| h.0 == id && h.2) {
                                 Some(self.action(TabCloseRequested { id }))
                             } else if moved
                                 && self.properties.detachable
-                                && (point.y < -16.0 || point.y > geometry.size.height + 16.0)
+                                && (point.y < -16.0
+                                    || point.y > geometry.content_bounds.size.height + 16.0)
                             {
                                 Some(self.action(TabDetachRequested {
                                     id,

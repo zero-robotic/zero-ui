@@ -624,11 +624,11 @@ fn small_dialog_reveals_initial_action_without_waiting_for_more_input() {
         Size::new(320.0, 120.0),
     )
     .unwrap();
-    let scroll = tree.children(tree.root()).unwrap()[0];
-    tree.update_widget::<Scroll>(scroll, zui_api::widget::Invalidation::None, |s| {
-        assert!(s.offset().y > 0.0)
-    })
-    .unwrap();
+    // Footer stays visible even when the body needs to scroll.
+    let focused = tree.focused().unwrap();
+    let bounds = tree.presented_bounds(focused).unwrap();
+    assert!(bounds.origin.y >= 0.0);
+    assert!(bounds.origin.y + bounds.size.height <= 120.0);
     assert_eq!(
         key(&mut tree, Key::Enter).actions[0]
             .action
@@ -746,5 +746,85 @@ fn dropdown_and_menu_icons_do_not_require_symbol_font_glyphs() {
                 .iter()
                 .any(|command| matches!(command, zui_paint::Command::Stroke { .. }))
         );
+    }
+}
+
+#[test]
+fn dialog_title_and_close_button_are_independent_and_dismiss_without_accepting() {
+    fn find(tree: &Tree, id: zui_types::NodeId, key: &str) -> Option<zui_types::NodeId> {
+        if tree.key(id).unwrap() == Some(&zui_api::view::Key::from(key)) {
+            return Some(id);
+        }
+        tree.children(id)
+            .unwrap()
+            .iter()
+            .find_map(|&child| find(tree, child, key))
+    }
+    let (mut text, f) = text();
+    for show_title in [false, true] {
+        for show_close_button in [false, true] {
+            let mut dialog =
+                DialogView::themed(&Theme::desktop_dark(), "确认设置", f.clone(), ActionId(90));
+            dialog.show_title = show_title;
+            dialog.show_close_button = show_close_button;
+            dialog.size = Size::new(300.0, 220.0);
+            let body = column((0..30).map(|_| button(&f, "长内容"))).build();
+            let mut tree =
+                Tree::from_view(dialog.build(body, button(&f, "确认")), Default::default())
+                    .unwrap();
+            layout(&mut tree, &mut text);
+            assert_eq!(
+                find(&tree, tree.root(), "dialog-title").is_some(),
+                show_title
+            );
+            let close = find(&tree, tree.root(), "dialog-close");
+            assert_eq!(close.is_some(), show_close_button);
+            let footer = find(&tree, tree.root(), "dialog-footer").unwrap();
+            let bounds = tree.presented_bounds(footer).unwrap();
+            assert!(bounds.origin.y + bounds.size.height <= 230.0);
+            tree.scene().unwrap().validate(Default::default()).unwrap();
+            if let Some(close) = close {
+                let bounds = tree.presented_bounds(close).unwrap();
+                let point = Point::new(
+                    bounds.origin.x + bounds.size.width / 2.0,
+                    bounds.origin.y + bounds.size.height / 2.0,
+                );
+                for pressed in [true, false] {
+                    let result = tree
+                        .dispatch_input(InputEvent::PointerButton {
+                            button: PointerButton::Primary,
+                            pressed,
+                            position: Some(point),
+                        })
+                        .unwrap();
+                    if !pressed {
+                        assert_eq!(result.actions.len(), 1);
+                        assert_eq!(result.actions[0].action.id, ActionId(90));
+                        assert_eq!(
+                            result.actions[0].action.payload::<PopupDismissed>(),
+                            Some(&PopupDismissed {
+                                reason: DismissReason::CloseButton
+                            })
+                        );
+                        assert!(result.actions[0].action.payload::<DialogResult>().is_none());
+                    }
+                }
+                tree.request_focus(Some(close)).unwrap();
+                let result = key(&mut tree, Key::Enter);
+                assert_eq!(
+                    result.actions[0].action.payload::<PopupDismissed>(),
+                    Some(&PopupDismissed {
+                        reason: DismissReason::CloseButton
+                    })
+                );
+            }
+            let result = key(&mut tree, Key::Escape);
+            assert_eq!(
+                result.actions[0].action.payload::<PopupDismissed>(),
+                Some(&PopupDismissed {
+                    reason: DismissReason::Escape
+                })
+            );
+        }
     }
 }

@@ -11,8 +11,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         _ => return Err("expected cpu or gpu".into()),
     };
     let mut smoke = None;
+    let mut config = WindowConfig {
+        title: "ZUI · 传统控件展厅".into(),
+        size: Size::new(1100.0, 800.0),
+        ..Default::default()
+    };
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--no-titlebar" => config.decorations = false,
+            "--no-minimize" => config.minimize_button = false,
+            "--no-maximize" => config.maximize_button = false,
+            "--no-close" => config.close_button = false,
             "--smoke-ms" => {
                 smoke = Some(Duration::from_millis(
                     args.next().ok_or("missing duration")?.parse()?,
@@ -21,15 +30,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             _ => return Err(format!("unknown option: {arg}").into()),
         }
     }
-    let report = demo::run(
-        WindowConfig {
-            title: "ZUI · 传统控件展厅".into(),
-            size: Size::new(1100.0, 800.0),
-            ..Default::default()
-        },
-        backend,
-        smoke,
-    )?;
+    let report = demo::run(config, backend, smoke)?;
     println!("events={}, redraws={}", report.events, report.redraws);
     if report.redraws == 0 {
         return Err("window never drew".into());

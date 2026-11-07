@@ -214,6 +214,7 @@ fn tabs_close_drag_reorder_and_detach_requests() {
         Some(TabId(1)),
         ActionId(4),
     );
+    view.compact = false; // Legacy equal-width mode retains its hit geometry.
     view.closable.insert(TabId(1));
     view.reorderable = true;
     view.detachable = true;
@@ -623,4 +624,135 @@ fn tree_double_click_is_cancelled_by_drag_scroll_and_disabled_state() {
     layout(&mut tree, &mut text);
     no_expansion(click(&mut tree, 60.0, 15.0));
     no_expansion(click(&mut tree, 60.0, 15.0));
+}
+
+#[test]
+fn compact_tabs_use_label_widths_for_selection_close_and_reorder() {
+    use zui_api::text::{TextRequest, TextService, TextWidth};
+    let (mut text, f) = text();
+    let mut view = TabsView::themed(
+        &Theme::desktop_dark(),
+        vec![
+            TabOption::new(TabId(1), "A"),
+            TabOption::new(TabId(2), "设备运行详情"),
+        ],
+        f,
+        Some(TabId(1)),
+        ActionId(4),
+    );
+    view.closable = BTreeSet::from([TabId(1), TabId(2)]);
+    view.reorderable = true;
+    view.layout.width = Dimension::Length(600.0);
+    let widths: Vec<_> = view
+        .tabs
+        .iter()
+        .map(|tab| {
+            text.layout(TextRequest {
+                text: &tab.label,
+                style: &view.text_style,
+                width: TextWidth::Unbounded,
+            })
+            .unwrap()
+            .size
+            .width
+                + 44.0
+        })
+        .collect();
+    assert!(widths[1] > widths[0]);
+    let second = widths[0] + f64::from(view.header_style.gap) + widths[1] / 2.0;
+    let mut tree =
+        Tree::from_view(view.build(|_| row([]).build()).unwrap(), Default::default()).unwrap();
+    layout(&mut tree, &mut text);
+    assert!(click(&mut tree, 550.0, 15.0).actions.is_empty());
+    let result = click(&mut tree, second, 15.0);
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| a.action.payload::<TabChanged>() == Some(&TabChanged { selected: TabId(2) }))
+    );
+    let result = click(&mut tree, widths[0] - 8.0, 15.0);
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| a.action.payload::<TabCloseRequested>()
+                == Some(&TabCloseRequested { id: TabId(1) }))
+    );
+    tree.dispatch_input(InputEvent::PointerButton {
+        button: PointerButton::Primary,
+        pressed: true,
+        position: Some(Point::new(12.0, 15.0)),
+    })
+    .unwrap();
+    tree.dispatch_input(InputEvent::PointerMoved(Point::new(second, 15.0)))
+        .unwrap();
+    let result = tree
+        .dispatch_input(InputEvent::PointerButton {
+            button: PointerButton::Primary,
+            pressed: false,
+            position: Some(Point::new(second, 15.0)),
+        })
+        .unwrap();
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| a.action.payload::<TabReorderRequested>()
+                == Some(&TabReorderRequested {
+                    id: TabId(1),
+                    to_index: 1
+                }))
+    );
+    let result = key(&mut tree, Key::End, false);
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| a.action.payload::<TabChanged>() == Some(&TabChanged { selected: TabId(2) }))
+    );
+}
+
+#[cfg(feature = "cpu")]
+#[test]
+fn tabs_share_one_divider_without_independent_cell_borders() {
+    use zui_paint::{Frame, OffscreenRenderer};
+    use zui_types::Extent;
+    let (mut text, f) = text();
+    let theme = Theme::desktop_dark();
+    let mut view = TabsView::themed(
+        &theme,
+        vec![TabOption::new(TabId(1), "A"), TabOption::new(TabId(2), "B")],
+        f,
+        Some(TabId(1)),
+        ActionId(1),
+    );
+    view.compact = false;
+    view.layout.width = Dimension::Length(300.0);
+    let mut tree =
+        Tree::from_view(view.build(|_| row([]).build()).unwrap(), Default::default()).unwrap();
+    layout(&mut tree, &mut text);
+    for scale in [1_u32, 2] {
+        let pixels = zui_render_cpu::CpuRenderer::default()
+            .render(
+                &tree.scene().unwrap(),
+                Frame {
+                    extent: Extent::new(300 * scale, 80 * scale),
+                    scale: f64::from(scale),
+                    background: Color::BLACK,
+                },
+            )
+            .unwrap();
+        for (x, color) in [
+            (149, theme.selection_background()),
+            (150, theme.color(zui_theme::ColorRole::Border)),
+            (151, theme.color(zui_theme::ColorRole::Surface)),
+        ] {
+            let i = (2 * scale) as usize * pixels.stride() + (x * scale * 4) as usize;
+            assert_eq!(
+                &pixels.pixels()[i..i + 4],
+                &[color.r, color.g, color.b, color.a]
+            );
+        }
+    }
 }

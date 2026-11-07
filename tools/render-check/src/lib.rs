@@ -34,7 +34,7 @@ pub use text_input::text_input_preview;
 mod theme;
 pub use layout::layout_preview;
 pub use text::{text_preview, text_selection_preview, text_widget_preview};
-pub use theme::{desktop_preview, theme_preview, theme_view};
+pub use theme::{desktop_preview, dialog_preview, theme_preview, theme_view};
 use zui_paint::{Path, Scene};
 use zui_types::{Affine, Color, Point, Rect};
 

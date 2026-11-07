@@ -165,3 +165,30 @@ pub fn desktop_preview(theme: &Theme) -> Result<Scene, Box<dyn std::error::Error
     )?;
     Ok(tree.scene()?)
 }
+
+pub fn dialog_preview(header: bool) -> Result<Scene, Box<dyn std::error::Error>> {
+    use zui_api::action::ActionId;
+    let theme = Theme::desktop_dark();
+    let mut text = zui_text::ParleyText::default();
+    let families = text.register_font(Arc::from(
+        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
+    ))?;
+    let mut dialog = zui_widgets::MessageBoxView::themed(
+        &theme,
+        "确认设备设置",
+        "应用当前配置后，设备将使用新的采集参数。你也可以取消并继续编辑。",
+        families,
+        ActionId(1),
+        ActionId(2),
+    );
+    dialog.dialog.show_title = header;
+    dialog.dialog.show_close_button = header;
+    dialog.dialog.size = Size::new(420.0, 220.0);
+    let mut tree = zui_core::Tree::from_view(dialog.build(), Default::default())?;
+    tree.layout_with_text(
+        &mut zui_layout::TaffyLayout::default(),
+        &mut text,
+        Size::new(640.0, 360.0),
+    )?;
+    Ok(tree.scene()?)
+}

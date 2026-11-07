@@ -13,7 +13,7 @@ pub fn tabs_preview() -> Result<Scene, Box<dyn std::error::Error>> {
     let families = text.register_font(Arc::from(
         include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
     ))?;
-    let theme = Theme::dashboard();
+    let theme = Theme::desktop_dark();
     let label = |value, role| View::new(TextView::themed(&theme, value, families.clone(), role));
     let mut disabled = TabOption::new(TabId(3), "历史归档");
     disabled.disabled = true;

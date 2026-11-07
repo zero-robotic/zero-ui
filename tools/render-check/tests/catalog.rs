@@ -509,3 +509,56 @@ fn picker_and_separator_pixels_gpu() {
         &mut pollster::block_on(zui_render_gpu::GpuRenderer::new(Default::default())).unwrap(),
     );
 }
+
+#[cfg(feature = "cpu")]
+#[test]
+fn grid_resize_divider_is_thin_and_highlights_without_filling_hit_target() {
+    use zui_paint::{Frame, OffscreenRenderer};
+    use zui_theme::ColorRole;
+    use zui_types::Extent;
+    let (mut text, f) = text();
+    let grid = grid(f);
+    let mut tree = Tree::from_view(sized_grid(&grid), Default::default()).unwrap();
+    layout(&mut tree, &mut text);
+    for hovered in [false, true, false] {
+        tree.dispatch_input(InputEvent::PointerMoved(Point::new(
+            if hovered { 116.0 } else { 350.0 },
+            15.0,
+        )))
+        .unwrap();
+        for scale in [1_u32, 2] {
+            let pixels = zui_render_cpu::CpuRenderer::default()
+                .render(
+                    &tree.scene().unwrap(),
+                    Frame {
+                        extent: Extent::new(400 * scale, 200 * scale),
+                        scale: f64::from(scale),
+                        background: Color::BLACK,
+                    },
+                )
+                .unwrap();
+            let expected = grid.table.theme.color(if hovered {
+                ColorRole::Accent
+            } else {
+                ColorRole::Border
+            });
+            for (left, active) in [(112, hovered), (232, false)] {
+                let mut count = 0;
+                for x in left * scale..(left + 8) * scale {
+                    let i = (15 * scale) as usize * pixels.stride() + x as usize * 4;
+                    let p = &pixels.pixels()[i..i + 4];
+                    if p != [0, 0, 0, 255] {
+                        let c = if active {
+                            expected
+                        } else {
+                            grid.table.theme.color(ColorRole::Border)
+                        };
+                        assert_eq!(p, [c.r, c.g, c.b, c.a]);
+                        count += 1;
+                    }
+                }
+                assert_eq!(count, if active { 2 * scale } else { scale });
+            }
+        }
+    }
+}

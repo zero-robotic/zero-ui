@@ -36,6 +36,12 @@ pub struct WindowConfig {
     pub title: String,
     pub size: Size,
     pub resizable: bool,
+    /// Native title bar and frame. False permits borderless or application-drawn chrome.
+    pub decorations: bool,
+    /// Requests to the desktop backend; platforms may disable rather than hide buttons.
+    pub close_button: bool,
+    pub minimize_button: bool,
+    pub maximize_button: bool,
 }
 
 impl Default for WindowConfig {
@@ -44,6 +50,10 @@ impl Default for WindowConfig {
             title: String::from("ZUI"),
             size: Size::new(800.0, 480.0),
             resizable: true,
+            decorations: true,
+            close_button: true,
+            minimize_button: true,
+            maximize_button: true,
         }
     }
 }
@@ -55,6 +65,16 @@ pub trait NativeWindow: HasWindowHandle + HasDisplayHandle + Send + Sync {
     fn request_redraw(&self);
     fn request_size(&self, size: Size);
     fn set_title(&self, title: &str);
+    /// Begin a native window move from a primary pointer press in custom chrome.
+    fn drag_window(&self) -> Result<(), PlatformError> {
+        Err(PlatformError::Unsupported("window dragging"))
+    }
+    fn set_minimized(&self, _minimized: bool) -> Result<(), PlatformError> {
+        Err(PlatformError::Unsupported("window minimizing"))
+    }
+    fn set_maximized(&self, _maximized: bool) -> Result<(), PlatformError> {
+        Err(PlatformError::Unsupported("window maximizing"))
+    }
     fn set_ime_enabled(&self, enabled: bool);
     fn set_ime_cursor_area(&self, rect: Rect);
     fn pre_present_notify(&self);

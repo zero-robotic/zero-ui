@@ -175,6 +175,8 @@ pub struct SegmentedControl {
     choice: ChoiceState<SegmentId>,
     texts: Vec<Text>,
     slots: Vec<Rect>,
+    pub(crate) compact: bool,
+    pub(crate) joined: bool,
 }
 impl ViewSpec for SegmentedControlView {
     type Widget = SegmentedControl;
@@ -184,6 +186,8 @@ impl ViewSpec for SegmentedControlView {
             choice: ChoiceState::new(&self.options, self.selected),
             texts: self.texts(),
             slots: Vec::new(),
+            compact: false,
+            joined: false,
         }
     }
     fn update(&self, widget: &mut SegmentedControl) -> Invalidation {
@@ -221,6 +225,40 @@ impl ViewSpec for SegmentedControlView {
     }
 }
 impl SegmentedControl {
+    pub(crate) fn slots(&self) -> &[Rect] {
+        &self.slots
+    }
+    fn compact_widths(
+        &mut self,
+        id: NodeId,
+        service: &mut dyn zui_api::text::TextService,
+        available: f64,
+    ) -> Result<Vec<f64>, LayoutError> {
+        let mut widths = Vec::new();
+        for text in &mut self.texts {
+            let size = text.measure(MeasureContext {
+                id,
+                text: service,
+                input: zui_api::layout::MeasureInput {
+                    known_width: None,
+                    known_height: None,
+                    available_width: AvailableSpace::MaxContent,
+                    available_height: AvailableSpace::MaxContent,
+                },
+            })?;
+            widths.push(size.width + f64::from(self.properties.style.padding_x) * 2.0);
+        }
+        let total: f64 = widths.iter().sum();
+        let gaps = widths.len().saturating_sub(1) as f64 * f64::from(self.properties.style.gap);
+        let room = (available - gaps).max(0.0);
+        if total > room && total > 0.0 {
+            for width in &mut widths {
+                *width *= room / total;
+            }
+        }
+        Ok(widths)
+    }
+
     fn option_at(&self, context: EventContext) -> Option<SegmentId> {
         let bounds = context.geometry?.content_bounds;
         let point = context.local_position?;
@@ -267,6 +305,40 @@ impl Widget for SegmentedControl {
         self.properties.validate(context.id)?;
         let style = self.properties.style;
         let inset = f64::from(style.padding_x) * 2.0;
+        if self.compact {
+            let available = context.input.known_width.map(f64::from).unwrap_or(
+                match context.input.available_width {
+                    AvailableSpace::Definite(w) => f64::from(w),
+                    AvailableSpace::MinContent => 0.0,
+                    AvailableSpace::MaxContent => f64::MAX,
+                },
+            );
+            let widths = self.compact_widths(context.id, context.text, available)?;
+            let mut height = 0.0_f64;
+            for (text, width) in self.texts.iter_mut().zip(&widths) {
+                let size = text.measure(MeasureContext {
+                    id: context.id,
+                    text: context.text,
+                    input: zui_api::layout::MeasureInput {
+                        known_width: Some((width - inset).max(0.0) as f32),
+                        known_height: None,
+                        available_width: AvailableSpace::Definite((width - inset).max(0.0) as f32),
+                        available_height: AvailableSpace::MaxContent,
+                    },
+                })?;
+                height = height.max(
+                    (size.height + f64::from(style.padding_y) * 2.0)
+                        .max(f64::from(style.min_height)),
+                );
+            }
+            return Ok(Size::new(
+                context.input.known_width.map(f64::from).unwrap_or(
+                    widths.iter().sum::<f64>()
+                        + widths.len().saturating_sub(1) as f64 * f64::from(style.gap),
+                ),
+                context.input.known_height.map(f64::from).unwrap_or(height),
+            ));
+        }
         let mut input = context.input;
         input.known_width = input
             .known_width
@@ -304,24 +376,26 @@ impl Widget for SegmentedControl {
         self.properties.validate(context.id)?;
         self.slots.clear();
         let style = self.properties.style;
-        let slot_width = self.properties.slot_width(context.content_size.width);
-        let label_size = Size::new(
-            (slot_width - style.padding_x as f64 * 2.0).max(0.0),
-            (context.content_size.height - style.padding_y as f64 * 2.0).max(0.0),
-        );
-        for (index, text) in self.texts.iter_mut().enumerate() {
+        let widths = if self.compact {
+            self.compact_widths(context.id, context.text, context.content_size.width)?
+        } else {
+            alloc::vec![self.properties.slot_width(context.content_size.width); self.texts.len()]
+        };
+        let mut x = 0.0;
+        for (text, slot_width) in self.texts.iter_mut().zip(widths) {
+            let label_size = Size::new(
+                (slot_width - style.padding_x as f64 * 2.0).max(0.0),
+                (context.content_size.height - style.padding_y as f64 * 2.0).max(0.0),
+            );
             text.prepare(PrepareContext {
                 id: context.id,
                 layout: LayoutBox::new(Rect::new(0.0, 0.0, label_size.width, label_size.height)),
                 content_size: label_size,
                 text: context.text,
             })?;
-            self.slots.push(Rect::new(
-                index as f64 * (slot_width + style.gap as f64),
-                0.0,
-                slot_width,
-                context.content_size.height,
-            ));
+            self.slots
+                .push(Rect::new(x, 0.0, slot_width, context.content_size.height));
+            x += slot_width + f64::from(style.gap);
         }
         Ok(())
     }
@@ -351,7 +425,7 @@ impl Widget for SegmentedControl {
                         colors.background
                     },
                 );
-                if rect.size.width >= 1.0 && rect.size.height >= 1.0 {
+                if !self.joined && rect.size.width >= 1.0 && rect.size.height >= 1.0 {
                     painter.stroke(
                         Path::rectangle(Rect::new(
                             rect.origin.x + 0.5,
@@ -407,6 +481,43 @@ impl Widget for SegmentedControl {
                         style.focus_ring,
                         1.0,
                     );
+                }
+            }
+            if self.joined
+                && let Some(last) = self.slots.last()
+            {
+                let width = last.origin.x + last.size.width;
+                let height = context.content_bounds.size.height;
+                let color = if self.properties.disabled {
+                    style.disabled.border
+                } else {
+                    style.normal.border
+                };
+                if width >= 1.0 && height >= 1.0 {
+                    painter.stroke(
+                        Path::rectangle(Rect::new(
+                            context.content_bounds.origin.x + 0.5,
+                            context.content_bounds.origin.y + 0.5,
+                            width - 1.0,
+                            height - 1.0,
+                        )),
+                        color,
+                        1.0,
+                    );
+                    // Each shared boundary is drawn once, after all cell backgrounds.
+                    for slot in self.slots.iter().skip(1) {
+                        if slot.origin.x >= 1.0 && slot.origin.x < width - 1.0 {
+                            painter.fill_rect(
+                                Rect::new(
+                                    context.content_bounds.origin.x + slot.origin.x,
+                                    context.content_bounds.origin.y + 1.0,
+                                    1.0,
+                                    (height - 2.0).max(0.0),
+                                ),
+                                color,
+                            );
+                        }
+                    }
                 }
             }
         });
