@@ -28,9 +28,14 @@ pub struct ButtonStyle {
     pub pressed: ButtonColors,
     pub disabled: ButtonColors,
     pub focus_ring: Color,
+    pub border: Color,
+    pub metrics: zui_theme::ControlMetrics,
 }
 impl ButtonStyle {
     pub fn from_theme(theme: &Theme) -> Self {
+        Self::primary(theme)
+    }
+    pub fn primary(theme: &Theme) -> Self {
         let accent = theme.color(ColorRole::Accent);
         let foreground = theme.color(ColorRole::OnAccent);
         Self {
@@ -50,8 +55,37 @@ impl ButtonStyle {
                 background: theme.color(ColorRole::SurfaceRaised),
                 foreground: theme.color(ColorRole::TextMuted),
             },
-            focus_ring: theme.color(ColorRole::Text),
+            focus_ring: theme.color(if theme.controls().min_height > 0 {
+                ColorRole::Accent
+            } else {
+                ColorRole::Text
+            }),
+            border: Color::TRANSPARENT,
+            metrics: theme.controls(),
         }
+    }
+    pub fn secondary(theme: &Theme) -> Self {
+        let mut style = Self::primary(theme);
+        style.normal = ButtonColors {
+            background: theme.color(ColorRole::SurfaceRaised),
+            foreground: theme.color(ColorRole::Text),
+        };
+        style.hovered = ButtonColors {
+            background: mix(style.normal.background, theme.color(ColorRole::Text), 16),
+            ..style.normal
+        };
+        style.pressed = ButtonColors {
+            background: theme.selection_background(),
+            ..style.normal
+        };
+        style.border = theme.color(ColorRole::Border);
+        style
+    }
+    pub fn text(theme: &Theme) -> Self {
+        let mut style = Self::secondary(theme);
+        style.normal.background = Color::TRANSPARENT;
+        style.border = Color::TRANSPARENT;
+        style
     }
 }
 fn mix(a: Color, b: Color, amount: u16) -> Color {
@@ -85,7 +119,11 @@ impl ButtonView {
                 line_height: metrics.line_height(),
                 align: TextAlign::Center,
             },
-            style: ButtonStyle::from_theme(theme),
+            style: if theme.controls().min_height > 0 {
+                ButtonStyle::secondary(theme)
+            } else {
+                ButtonStyle::from_theme(theme)
+            },
             action,
             disabled: false,
         }
@@ -114,7 +152,9 @@ impl ViewSpec for ButtonView {
     }
     fn update(&self, button: &mut Button) -> Invalidation {
         let mut invalidation = self.text().update(&mut button.text);
-        if self.trailing_icon.is_some() != button.properties.trailing_icon.is_some() {
+        if self.trailing_icon.is_some() != button.properties.trailing_icon.is_some()
+            || self.style.metrics != button.properties.style.metrics
+        {
             invalidation = Invalidation::Layout;
         }
         if self != &button.properties {
@@ -166,7 +206,9 @@ impl Widget for Button {
         self.enabled()
     }
     fn measure(&mut self, context: MeasureContext) -> Result<Size, LayoutError> {
-        let extra = self.icon_space();
+        let known_width = context.input.known_width;
+        let known_height = context.input.known_height;
+        let extra = self.icon_space() + f64::from(self.properties.style.metrics.padding_x) * 2.0;
         let mut context = context;
         context.input.known_width = context
             .input
@@ -181,31 +223,74 @@ impl Widget for Button {
         if self.properties.trailing_icon.is_some() {
             size.height = size.height.max(self.properties.text_style.font_size as f64);
         }
+        size.height = size
+            .height
+            .max(f64::from(self.properties.style.metrics.min_height));
+        if let Some(width) = known_width {
+            size.width = f64::from(width);
+        }
+        if let Some(height) = known_height {
+            size.height = f64::from(height);
+        }
         Ok(size)
     }
     fn prepare(&mut self, context: PrepareContext) -> Result<(), LayoutError> {
         let mut context = context;
-        context.content_size.width = (context.content_size.width - self.icon_space()).max(0.0);
+        context.content_size.width = (context.content_size.width
+            - self.icon_space()
+            - f64::from(self.properties.style.metrics.padding_x) * 2.0)
+            .max(0.0);
         self.text.prepare(context)
     }
     fn paint(&self, mut context: PaintContext, painter: &mut Painter<'_>) {
         let colors = self.colors();
-        painter.fill_rect(
-            Rect::new(0.0, 0.0, context.size.width, context.size.height),
+        let metrics = self.properties.style.metrics;
+        painter.fill(
+            Path::rounded_rectangle(
+                Rect::new(0.0, 0.0, context.size.width, context.size.height),
+                f64::from(metrics.radius),
+            )
+            .expect("valid button bounds"),
             colors.background,
         );
+        if self.properties.style.border.a > 0
+            && context.size.width > 1.0
+            && context.size.height > 1.0
+        {
+            painter.stroke(
+                Path::rounded_rectangle(
+                    Rect::new(
+                        0.5,
+                        0.5,
+                        context.size.width - 1.0,
+                        context.size.height - 1.0,
+                    ),
+                    f64::from(metrics.radius),
+                )
+                .expect("valid border"),
+                self.properties.style.border,
+                1.0,
+            );
+        }
+        let padding = f64::from(metrics.padding_x).min(context.content_bounds.size.width / 2.0);
+        context.content_bounds.origin.x += padding;
+        context.content_bounds.size.width -= 2.0 * padding;
         if self.state.focused
             && self.enabled()
             && context.size.width > 4.0
             && context.size.height > 4.0
         {
             painter.stroke(
-                Path::rectangle(Rect::new(
-                    1.0,
-                    1.0,
-                    context.size.width - 2.0,
-                    context.size.height - 2.0,
-                )),
+                Path::rounded_rectangle(
+                    Rect::new(
+                        1.0,
+                        1.0,
+                        context.size.width - 2.0,
+                        context.size.height - 2.0,
+                    ),
+                    f64::from(metrics.radius.saturating_sub(1)),
+                )
+                .expect("valid focus ring"),
                 self.properties.style.focus_ring,
                 2.0,
             );

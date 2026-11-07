@@ -1080,3 +1080,33 @@ fn draft_cache_entry_limits_and_active_protection_are_explicit_and_retryable() {
     assert_eq!(zero.get_or_insert(0), Err(DraftCacheError::EntryLimit));
     assert!(zero.maintain(0, DraftCachePolicy::HistoryOnly).budget_met);
 }
+
+#[test]
+fn internal_padding_keeps_clicks_scroll_and_ime_in_the_text_viewport() {
+    let mut f = Fixture::new("abcdefghijklmnopqrstuvwxyz");
+    f.view.style.padding_x = 10;
+    f.view.style.padding_y = 6;
+    f.width = 120.0;
+    f.update();
+    f.input(mouse(true, 18.0));
+    f.input(mouse(false, 18.0));
+    f.input(key(Key::Home));
+    f.prepare();
+    let start = f.tree.text_input().unwrap().unwrap().cursor_area;
+    assert!((start.origin.x - 18.0).abs() < 0.01);
+    assert!(start.origin.y >= 14.0);
+    assert!(start.origin.y + start.size.height <= 34.0);
+    f.input(mouse(true, 18.0));
+    f.input(mouse(false, 18.0));
+    assert_eq!(f.state().2, 0);
+    f.input(key(Key::End));
+    f.prepare();
+    let end = f.tree.text_input().unwrap().unwrap().cursor_area;
+    assert!(end.origin.x + end.size.width <= 102.0);
+    assert!(f.state().3 > 0.0);
+    // Padding changes invalidate wrapping/viewport geometry, not just painting.
+    f.view.style.padding_x = 16;
+    assert!(f.update());
+    let end = f.tree.text_input().unwrap().unwrap().cursor_area;
+    assert!(end.origin.x + end.size.width <= 96.0);
+}

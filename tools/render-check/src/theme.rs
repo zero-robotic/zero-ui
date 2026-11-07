@@ -60,3 +60,108 @@ pub fn theme_preview(theme: &Theme) -> Result<Scene, Box<dyn std::error::Error>>
     )?;
     Ok(tree.scene()?)
 }
+
+/// Desktop control specimen used for visual and scale-factor checks.
+pub fn desktop_preview(theme: &Theme) -> Result<Scene, Box<dyn std::error::Error>> {
+    use zui_api::action::ActionId;
+    use zui_widgets::*;
+    let mut text = zui_text::ParleyText::default();
+    let families = text.register_font(Arc::from(
+        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
+    ))?;
+    let button = |label: &str, style: ButtonStyle| {
+        let mut b = ButtonView::themed(theme, label, families.clone(), ActionId(1));
+        b.style = style;
+        View::new(b)
+    };
+    let mut editor = TextInputView::themed(theme, "采集设备 A", families.clone(), ActionId(2));
+    editor.placeholder = "输入设备名称".into();
+    let mut combo = ComboBoxView::themed(
+        theme,
+        vec![ListItem::new(ListItemId(1), "设备 1")],
+        Some(ListItemId(1)),
+        families.clone(),
+        ActionId(3),
+    );
+    combo.searchable = true;
+    let mut parent = TreeItem::new(TreeItemId(1), "采集设备");
+    parent.children = vec![
+        TreeItem::new(TreeItemId(2), "设备 1 · 在线"),
+        TreeItem::new(TreeItemId(3), "设备 2 · 待连接"),
+    ];
+    let mut nodes = TreeView::themed(
+        theme,
+        vec![parent],
+        families.clone(),
+        Some(TreeItemId(2)),
+        ActionId(4),
+    );
+    nodes.expanded.insert(TreeItemId(1));
+    let left = GroupBoxView::themed(theme, "设备设置", families.clone())
+        .build(
+            column([
+                View::new(TextView::themed(
+                    theme,
+                    "设备名称",
+                    families.clone(),
+                    TypeRole::Caption,
+                )),
+                View::new(editor),
+                combo.build(),
+                row([
+                    button("确认表单", ButtonStyle::primary(theme)),
+                    button("取消", ButtonStyle::secondary(theme)),
+                    button("帮助", ButtonStyle::text(theme)),
+                ])
+                .style(|s| s.gap = Size::new(8.0, 0.0))
+                .build(),
+            ])
+            .style(|s| s.gap = Size::new(0.0, 12.0))
+            .build(),
+        )
+        .styled(zui_api::layout::LayoutStyle {
+            kind: zui_api::layout::LayoutKind::Column,
+            width: Dimension::Length(304.0),
+            ..Default::default()
+        });
+    let right = GroupBoxView::themed(theme, "设备列表", families.clone())
+        .build(nodes.build()?)
+        .styled(zui_api::layout::LayoutStyle {
+            kind: zui_api::layout::LayoutKind::Column,
+            grow: 1.0,
+            min_width: Dimension::Length(0.0),
+            ..Default::default()
+        });
+    let root = column([
+        View::new(TextView::themed(
+            theme,
+            "ZUI · 桌面控件",
+            families.clone(),
+            TypeRole::Heading,
+        )),
+        View::new(TextView::themed(
+            theme,
+            "清晰层级 · 柔和选中 · 统一逻辑尺寸",
+            families,
+            TypeRole::Caption,
+        )),
+        row([left, right])
+            .style(|s| s.gap = Size::new(16.0, 0.0))
+            .build(),
+    ])
+    .background(theme.color(ColorRole::Background))
+    .style(|s| {
+        s.width = Dimension::Percent(1.0);
+        s.height = Dimension::Percent(1.0);
+        s.padding = Edges::all(16.0);
+        s.gap = Size::new(0.0, 12.0);
+    })
+    .build();
+    let mut tree = zui_core::Tree::from_view(root, Default::default())?;
+    tree.layout_with_text(
+        &mut zui_layout::TaffyLayout::default(),
+        &mut text,
+        Size::new(640.0, 360.0),
+    )?;
+    Ok(tree.scene()?)
+}

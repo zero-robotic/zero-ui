@@ -45,6 +45,7 @@ impl ToggleButtonStyle {
                     ..normal
                 },
                 focus_ring: theme.color(ColorRole::Accent),
+                ..selected
             },
         }
     }

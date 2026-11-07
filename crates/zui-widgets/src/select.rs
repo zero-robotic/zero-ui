@@ -55,7 +55,11 @@ impl SelectView {
             payload: SelectEvent::Open,
         })
         .styled(LayoutStyle {
-            padding: Edges::all(10.0),
+            padding: Edges::all(if self.button.style.metrics.min_height > 0 {
+                0.0
+            } else {
+                10.0
+            }),
             ..Default::default()
         })
     }
@@ -65,7 +69,18 @@ impl SelectView {
             Size::new(anchor.size.width.max(160.0), height),
             dismiss,
         )
-        .build(View::new(SelectList(self.list.clone())))
+        .build(
+            crate::Container::new(View::new(SelectList(self.list.clone())))
+                .background(self.list.style.normal.background)
+                .border(self.button.style.border)
+                .radius(self.button.style.metrics.panel_radius)
+                .style(|s| {
+                    if self.button.style.metrics.min_height > 0 {
+                        s.padding = Edges::all(6.0);
+                    }
+                })
+                .build(),
+        )
     }
 }
 #[derive(Clone)]

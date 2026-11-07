@@ -9,7 +9,7 @@ use core::time::Duration;
 use zui_api::{
     action::{ActionId, WidgetAction},
     event::*,
-    layout::{Dimension, LayoutError, LayoutStyle},
+    layout::{Dimension, Edges, LayoutError, LayoutStyle},
     view::{View, ViewSpec},
     widget::*,
 };
@@ -120,7 +120,16 @@ impl ComboBoxView {
                     editor,
                     allow_custom: self.allow_custom,
                 })
-                .keyed("query"),
+                .keyed("query")
+                .styled(LayoutStyle {
+                    padding: Edges::all(if self.button.style.metrics.min_height > 0 {
+                        6.0
+                    } else {
+                        0.0
+                    }),
+                    shrink: 0.0,
+                    ..Default::default()
+                }),
             );
         }
         children.push(
@@ -143,7 +152,14 @@ impl ComboBoxView {
         )
         .build(
             column(children)
+                .background(self.list.style.normal.background)
+                .border(self.editor.style.border)
+                .radius(self.button.style.metrics.panel_radius)
                 .style(|s| {
+                    if self.button.style.metrics.min_height > 0 {
+                        s.padding = Edges::all(6.0);
+                        s.gap = Size::new(0.0, 4.0);
+                    }
                     s.width = Dimension::Percent(1.0);
                     s.height = Dimension::Percent(1.0);
                 })

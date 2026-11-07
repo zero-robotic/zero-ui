@@ -83,8 +83,8 @@ impl ListBoxStyle {
         let normal = ListBoxColors {
             background: theme.color(ColorRole::Surface),
             text: theme.color(ColorRole::Text),
-            selected_background: theme.color(ColorRole::Accent),
-            selected_text: theme.color(ColorRole::OnAccent),
+            selected_background: theme.selection_background(),
+            selected_text: theme.selection_foreground(),
         };
         Self {
             normal,
@@ -104,8 +104,16 @@ impl ListBoxStyle {
             },
             focus_ring: theme.color(ColorRole::Text),
             padding_x: 12.0,
-            padding_y: 8.0,
-            row_gap: 2.0,
+            padding_y: if theme.controls().min_height > 0 {
+                6.0
+            } else {
+                8.0
+            },
+            row_gap: if theme.controls().min_height > 0 {
+                0.0
+            } else {
+                2.0
+            },
             min_row_height: 32.0,
             natural_max_height: 240.0,
         }

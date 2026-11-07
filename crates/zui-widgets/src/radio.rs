@@ -190,6 +190,7 @@ pub struct RadioGroup {
     texts: Vec<Text>,
     rows: Vec<Rect>,
     choice: ChoiceState<RadioOptionId>,
+    pointer_focus: bool,
 }
 impl ViewSpec for RadioGroupView {
     type Widget = RadioGroup;
@@ -199,6 +200,7 @@ impl ViewSpec for RadioGroupView {
             texts: self.texts(),
             rows: Vec::new(),
             choice: ChoiceState::new(&self.options, self.selected),
+            pointer_focus: false,
         }
     }
     fn update(&self, widget: &mut RadioGroup) -> Invalidation {
@@ -422,6 +424,7 @@ impl Widget for RadioGroup {
                     )
                 });
                 if self.choice.interaction.focused
+                    && !self.pointer_focus
                     && !disabled
                     && self.choice.active == Some(option.id)
                     && row.size.width > 2.0
@@ -441,6 +444,21 @@ impl Widget for RadioGroup {
         });
     }
     fn event(&mut self, context: EventContext, event: &WidgetEvent) -> EventResponse {
+        let pointer_focus = self.pointer_focus;
+        match event {
+            WidgetEvent::FocusChanged(false) => self.pointer_focus = false,
+            WidgetEvent::Input(InputEvent::PointerButton { pressed: true, .. })
+                if context.phase == EventPhase::Target =>
+            {
+                self.pointer_focus = true;
+            }
+            WidgetEvent::Input(InputEvent::Key(key))
+                if context.phase == EventPhase::Target && key.pressed =>
+            {
+                self.pointer_focus = false;
+            }
+            _ => {}
+        }
         let hit = self.option_at(context);
         let enabled = self.enabled();
         let (mut response, selected) = self.choice.event(
@@ -451,6 +469,9 @@ impl Widget for RadioGroup {
             self.properties.selected,
             hit,
         );
+        if pointer_focus != self.pointer_focus {
+            response.invalidation = response.invalidation.max(Invalidation::Paint);
+        }
         if let Some(selected) = selected {
             response.actions.push(WidgetAction::new(
                 self.properties.action,

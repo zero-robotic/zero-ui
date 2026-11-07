@@ -276,12 +276,11 @@ impl State {
     pub fn view(&self, theme: &Theme, f: &[String]) -> View {
         let text = |s: String| View::new(TextView::themed(theme, s, f.to_vec(), TypeRole::Caption));
         let toolbar = ToolbarView::themed(theme).build([
-            View::new(ButtonView::themed(
-                theme,
-                "确认表单",
-                f.to_vec(),
-                ActionId(300),
-            )),
+            View::new({
+                let mut button = ButtonView::themed(theme, "确认表单", f.to_vec(), ActionId(300));
+                button.style = ButtonStyle::primary(theme);
+                button
+            }),
             View::new(SeparatorView::themed(theme, SeparatorAxis::Vertical)),
             View::new(ButtonView::themed(
                 theme,

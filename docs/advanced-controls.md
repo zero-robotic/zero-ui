@@ -25,7 +25,7 @@
 
 `TreeItem.children_state` 为 Loaded、Unloaded、Loading 或 Failed。非 Loaded 的空节点仍有展开箭头；展开 Unloaded/Failed 节点同时发出 Expansion 和 TreeLoadRequested。应用应立即设为 Loading，再提交异步结果或 Failed，避免重复请求。控件本身不创建线程、不读取目录。
 
-树节点单击文字选中，双击文字区域展开或折叠分支（间隔 500 毫秒，位置偏差小于 6 个逻辑像素）；箭头仍为单击切换。叶节点和禁用节点不响应展开。拖动、滚动、键盘操作或失焦会取消待判定的双击，展开懒加载节点仍发送 TreeLoadRequested。
+树节点单击文字选中，双击文字区域展开或折叠分支（默认间隔 500 毫秒，可通过 `double_click_interval` 设置平台偏好，零值禁用；位置偏差小于 6 个逻辑像素）；箭头仍为单击切换。叶节点和禁用节点不响应展开。拖动、滚动、键盘操作或失焦会取消待判定的双击，展开懒加载节点仍发送 TreeLoadRequested。
 
 `selection=Some(BTreeSet<TreeItemId>)` 启用多选，接收 TreeSelectionChanged；折叠隐藏的选项仍保留。`selected` 表示主选中/导航项。`draggable=true` 的普通树在拖动距离超过 6 个逻辑像素、释放到另一个可用节点时发出 TreeDropRequested。当前放置语义为“移入目标节点”；应用负责业务校验、更新结构和拒绝非法移动。控件拒绝将可见源节点移入自身或其后代，Escape 取消拖动。
 
@@ -62,3 +62,5 @@ ColorPicker 内置 HsvPickerView。HsvChanged 同时给出 HSV 和 RGBA；ColorC
 `cargo run -p zui-controls-example -- cpu` 的“增强交互”展示搜索多选、自定义输入、页签关闭/重排、按展开请求加载设备、树多选/移动，以及万行虚拟表格。原颜色区域增加 HSV 控件。
 
 专项测试覆盖过滤后的隐藏选择、自由文本提交、懒加载状态、多选/拖放请求、页签关闭/重排/拖出请求、万行表格节点上限、万节点虚拟树末项导航和焦点保留、编辑草稿回收恢复、菜单分隔/悬停及 HSV 转换/键盘/绘制。测试不等同于所有交互的人工验收或 MCU 实机运行。
+
+桌面呈现主题、控件层级和跨缩放验证见 [桌面控件呈现](desktop-presentation.md)。

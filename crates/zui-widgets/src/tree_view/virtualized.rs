@@ -31,6 +31,7 @@ pub(super) fn build(view: &TreeView, row_height: f64, height: f32) -> Result<Vie
             rows: alloc::vec![r],
             selection: source.selection.clone(),
             draggable: false,
+            double_click_interval: source.double_click_interval,
             global_rows: Some(rows.clone()),
         })
         .keyed(id)

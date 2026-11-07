@@ -71,8 +71,8 @@ impl SegmentedStyle {
         let normal = SegmentColors {
             background: theme.color(ColorRole::Surface),
             text: theme.color(ColorRole::Text),
-            selected_background: theme.color(ColorRole::Accent),
-            selected_text: theme.color(ColorRole::OnAccent),
+            selected_background: theme.selection_background(),
+            selected_text: theme.selection_foreground(),
             border: theme.color(ColorRole::Border),
         };
         Self {

@@ -564,6 +564,18 @@ fn tree_label_double_click_toggles_and_expires() {
     tree.advance_animations(Duration::from_millis(300)).unwrap();
     tree.advance_animations(Duration::from_millis(800)).unwrap();
     assert_eq!(expansion(&click(&mut tree, 60.0, 15.0)), None);
+    // Platform interval overrides reset any pending gesture; zero disables it.
+    view.double_click_interval = Duration::ZERO;
+    tree.reconcile(view.build().unwrap()).unwrap();
+    layout(&mut tree, &mut text);
+    assert_eq!(expansion(&click(&mut tree, 60.0, 15.0)), None);
+    assert_eq!(expansion(&click(&mut tree, 60.0, 15.0)), None);
+    assert!(
+        tree.advance_animations(Duration::from_millis(900))
+            .unwrap()
+            .next_frame
+            .is_none()
+    );
     // Arrow clicks still toggle immediately; leaves never expand.
     assert_eq!(expansion(&click(&mut tree, 18.0, 15.0)), Some(false));
     assert_eq!(expansion(&click(&mut tree, 60.0, 55.0)), None);

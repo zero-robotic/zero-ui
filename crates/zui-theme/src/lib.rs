@@ -76,10 +76,20 @@ impl fmt::Display for ThemeError {
 }
 impl core::error::Error for ThemeError {}
 
+/// Device-independent control metrics shared by CPU and GPU rendering.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ControlMetrics {
+    pub radius: u16,
+    pub panel_radius: u16,
+    pub min_height: u16,
+    pub padding_x: u16,
+}
+
 /// Owned values can be cloned for local overrides. Resolve tokens while building
 /// a View; rebuilding that View applies theme changes through normal reconciliation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
+    controls: ControlMetrics,
     colors: [Color; 11],
     typography: [Typography; 4],
     spacing: [f32; 6],
@@ -92,6 +102,7 @@ impl Default for Theme {
 impl Theme {
     fn palette(colors: [Color; 11]) -> Self {
         Self {
+            controls: ControlMetrics::default(),
             colors,
             typography: [
                 Typography {
@@ -159,6 +170,85 @@ impl Theme {
             Color::rgb(255, 192, 83),
             Color::rgb(255, 105, 126),
         ])
+    }
+    /// Compact desktop presentation. Legacy themes retain their original metrics.
+    pub fn desktop_dark() -> Self {
+        Self::desktop(false)
+    }
+    pub fn desktop_light() -> Self {
+        Self::desktop(true)
+    }
+    fn desktop(light: bool) -> Self {
+        let mut theme = if light { Self::light() } else { Self::dark() };
+        theme.controls = ControlMetrics {
+            radius: 6,
+            panel_radius: 8,
+            min_height: 32,
+            padding_x: 10,
+        };
+        theme.typography = [
+            Typography {
+                font_size: 12.0,
+                line_height: 1.5,
+            },
+            Typography {
+                font_size: 14.0,
+                line_height: 1.4,
+            },
+            Typography {
+                font_size: 20.0,
+                line_height: 1.3,
+            },
+            Typography {
+                font_size: 28.0,
+                line_height: 1.2,
+            },
+        ];
+        theme.spacing = [0.0, 4.0, 8.0, 12.0, 16.0, 24.0];
+        theme.set_color(
+            ColorRole::Border,
+            if light {
+                Color::rgb(213, 219, 227)
+            } else {
+                Color::rgb(54, 63, 76)
+            },
+        );
+        theme.set_color(
+            ColorRole::Accent,
+            if light {
+                Color::rgb(49, 104, 210)
+            } else {
+                Color::rgb(124, 164, 238)
+            },
+        );
+        theme
+    }
+    pub fn controls(&self) -> ControlMetrics {
+        self.controls
+    }
+    pub fn set_controls(&mut self, metrics: ControlMetrics) {
+        self.controls = metrics;
+    }
+    /// Opaque, subdued selection surface; never exposes underlying content.
+    pub fn selection_background(&self) -> Color {
+        if self.controls.min_height == 0 {
+            return self.color(ColorRole::Accent);
+        }
+        let base = self.color(ColorRole::Surface);
+        let accent = self.color(ColorRole::Accent);
+        let blend = |a: u8, b: u8| ((u16::from(a) * 4 + u16::from(b)) / 5) as u8;
+        Color::rgb(
+            blend(base.r, accent.r),
+            blend(base.g, accent.g),
+            blend(base.b, accent.b),
+        )
+    }
+    pub fn selection_foreground(&self) -> Color {
+        self.color(if self.controls.min_height == 0 {
+            ColorRole::OnAccent
+        } else {
+            ColorRole::Text
+        })
     }
     pub fn color(&self, role: ColorRole) -> Color {
         self.colors[role as usize]

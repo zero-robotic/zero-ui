@@ -62,6 +62,10 @@ pub struct TextInputStyle {
     pub caret: Color,
     pub disabled_foreground: Color,
     pub natural_width: f32,
+    /// Additional logical inset inside layout padding.
+    pub padding_x: u16,
+    pub padding_y: u16,
+    pub metrics: zui_theme::ControlMetrics,
 }
 impl TextInputStyle {
     pub fn from_theme(theme: &Theme) -> Self {
@@ -71,10 +75,21 @@ impl TextInputStyle {
             border: theme.color(ColorRole::Border),
             focus_border: theme.color(ColorRole::Accent),
             invalid_border: theme.color(ColorRole::Danger),
-            selection: theme.color(ColorRole::SurfaceRaised),
+            selection: if theme.controls().min_height > 0 {
+                theme.selection_background()
+            } else {
+                theme.color(ColorRole::SurfaceRaised)
+            },
             caret: theme.color(ColorRole::Accent),
             disabled_foreground: theme.color(ColorRole::TextMuted),
             natural_width: 240.0,
+            padding_x: theme.controls().padding_x,
+            padding_y: if theme.controls().min_height > 0 {
+                6
+            } else {
+                0
+            },
+            metrics: theme.controls(),
         }
     }
 }
@@ -219,7 +234,18 @@ impl TextInput {
             false
         }
     }
-    fn text_origin(&self, context: PaintContext, height: f64) -> Point {
+    fn text_bounds(&self, bounds: Rect) -> Rect {
+        let x = f64::from(self.properties.style.padding_x).min(bounds.size.width / 2.0);
+        let y = f64::from(self.properties.style.padding_y).min(bounds.size.height / 2.0);
+        Rect::new(
+            bounds.origin.x + x,
+            bounds.origin.y + y,
+            (bounds.size.width - 2.0 * x).max(0.0),
+            (bounds.size.height - 2.0 * y).max(0.0),
+        )
+    }
+    fn text_origin(&self, mut context: PaintContext, height: f64) -> Point {
+        context.content_bounds = self.text_bounds(context.content_bounds);
         Point::new(
             context.content_bounds.origin.x - self.scroll,
             context.content_bounds.origin.y
@@ -415,12 +441,13 @@ impl TextInput {
         else {
             return Ok(());
         };
+        let content = self.text_bounds(geometry.content_bounds);
         let mut hit = layout
             .geometry
             .cursor_at(Point::new(
-                point.x - geometry.content_bounds.origin.x + self.scroll,
+                point.x - content.origin.x + self.scroll,
                 if self.properties.multiline {
-                    point.y - geometry.content_bounds.origin.y + self.scroll_y
+                    point.y - content.origin.y + self.scroll_y
                 } else {
                     layout.layout.size.height / 2.0
                 },
@@ -658,7 +685,10 @@ impl ViewSpec for TextInputView {
             || forced
             || replacement
             || self.text_style != old.text_style
-            || self.style.natural_width != old.style.natural_width;
+            || self.style.natural_width != old.style.natural_width
+            || self.style.metrics != old.style.metrics
+            || self.style.padding_x != old.style.padding_x
+            || self.style.padding_y != old.style.padding_y;
         let changed = self != old;
         let reset_blink = forced
             || replacement
@@ -729,7 +759,7 @@ impl Widget for TextInput {
             return None;
         }
         let layout = self.prepared.as_ref()?;
-        let content = context.content_bounds;
+        let content = self.text_bounds(context.content_bounds);
         if content.size.width <= 0.0 || content.size.height <= 0.0 {
             return None;
         }
@@ -755,6 +785,7 @@ impl Widget for TextInput {
                     AvailableSpace::Definite(w) => w,
                     _ => self.properties.style.natural_width,
                 }) as f64;
+            let width = (width - 2.0 * f64::from(self.properties.style.padding_x)).max(0.0);
             if width != self.viewport {
                 self.viewport = width;
                 self.prepared = None;
@@ -774,42 +805,58 @@ impl Widget for TextInput {
                 .known_height
                 .map(f64::from)
                 .unwrap_or_else(|| {
+                    let padding = 2.0 * f64::from(self.properties.style.padding_y);
                     if self.properties.multiline {
-                        self.properties.visible_lines as f64
-                            * self.properties.text_style.font_size as f64
-                            * self.properties.text_style.line_height as f64
+                        padding
+                            + self.properties.visible_lines as f64
+                                * self.properties.text_style.font_size as f64
+                                * self.properties.text_style.line_height as f64
                     } else {
-                        self.prepared.as_ref().unwrap().layout.size.height
+                        (self.prepared.as_ref().unwrap().layout.size.height + padding)
+                            .max(f64::from(self.properties.style.metrics.min_height))
                     }
                 }),
         ))
     }
     fn prepare(&mut self, context: PrepareContext) -> Result<(), LayoutError> {
-        if self.properties.multiline
-            && self.properties.wrap
-            && self.viewport != context.content_size.width
-        {
+        let content = self
+            .text_bounds(Rect::new(
+                0.0,
+                0.0,
+                context.content_size.width,
+                context.content_size.height,
+            ))
+            .size;
+        if self.properties.multiline && self.properties.wrap && self.viewport != content.width {
             self.prepared = None;
             self.hint = None;
         }
-        self.viewport_height = context.content_size.height;
-        self.viewport = context.content_size.width;
+        self.viewport_height = content.height;
+        self.viewport = content.width;
         self.layout_text(context.text, context.id)
     }
     fn paint(&self, context: PaintContext, painter: &mut Painter<'_>) {
         let s = self.properties.style;
-        painter.fill_rect(
-            Rect::new(0.0, 0.0, context.size.width, context.size.height),
+        painter.fill(
+            Path::rounded_rectangle(
+                Rect::new(0.0, 0.0, context.size.width, context.size.height),
+                f64::from(s.metrics.radius),
+            )
+            .expect("valid input bounds"),
             s.background,
         );
         if context.size.width > 2.0 && context.size.height > 2.0 {
             painter.stroke(
-                Path::rectangle(Rect::new(
-                    0.5,
-                    0.5,
-                    context.size.width - 1.0,
-                    context.size.height - 1.0,
-                )),
+                Path::rounded_rectangle(
+                    Rect::new(
+                        0.5,
+                        0.5,
+                        context.size.width - 1.0,
+                        context.size.height - 1.0,
+                    ),
+                    f64::from(s.metrics.radius),
+                )
+                .expect("valid input border"),
                 if self.properties.invalid {
                     s.invalid_border
                 } else if self.focused && self.enabled() {
@@ -825,55 +872,61 @@ impl Widget for TextInput {
             && let Some(hint) = &self.hint
         {
             let origin = self.text_origin(context, hint.size.height);
-            painter.with_clip(Path::rectangle(context.content_bounds), |p| {
-                p.with_transform(Affine::translate(origin.x, origin.y), |p| {
-                    hint.paint(p, s.disabled_foreground)
-                });
-            });
+            painter.with_clip(
+                Path::rectangle(self.text_bounds(context.content_bounds)),
+                |p| {
+                    p.with_transform(Affine::translate(origin.x, origin.y), |p| {
+                        hint.paint(p, s.disabled_foreground)
+                    });
+                },
+            );
         }
         if let Some(layout) = &self.prepared {
             let origin = self.text_origin(context, layout.layout.size.height);
-            painter.with_clip(Path::rectangle(context.content_bounds), |painter| {
-                painter.with_transform(Affine::translate(origin.x, origin.y), |painter| {
-                    if self.focused {
-                        for rect in &self.selection_rects {
-                            painter.fill_rect(*rect, s.selection);
+            painter.with_clip(
+                Path::rectangle(self.text_bounds(context.content_bounds)),
+                |painter| {
+                    painter.with_transform(Affine::translate(origin.x, origin.y), |painter| {
+                        if self.focused {
+                            for rect in &self.selection_rects {
+                                painter.fill_rect(*rect, s.selection);
+                            }
                         }
-                    }
-                    layout.layout.paint(
-                        painter,
-                        if self.enabled() {
-                            s.foreground
-                        } else {
-                            s.disabled_foreground
-                        },
-                    );
-                    for rect in &self.preedit_rects {
-                        painter.fill_rect(
-                            Rect::new(
-                                rect.origin.x,
-                                rect.origin.y + rect.size.height - 1.0,
-                                rect.size.width,
-                                1.0,
-                            ),
-                            s.caret,
-                        );
-                    }
-                    if self.focused
-                        && self.blink.visible
-                        && self.enabled()
-                        && !self.properties.read_only
-                        && self.composition.as_ref().map_or_else(
-                            || self.selection().is_some_and(|s| s.is_caret()),
-                            |composition| {
-                                composition.show_caret && composition.selection.is_caret()
+                        layout.layout.paint(
+                            painter,
+                            if self.enabled() {
+                                s.foreground
+                            } else {
+                                s.disabled_foreground
                             },
-                        )
-                    {
-                        painter.fill_rect(self.caret, s.caret);
-                    }
-                })
-            });
+                        );
+                        for rect in &self.preedit_rects {
+                            painter.fill_rect(
+                                Rect::new(
+                                    rect.origin.x,
+                                    rect.origin.y + rect.size.height - 1.0,
+                                    rect.size.width,
+                                    1.0,
+                                ),
+                                s.caret,
+                            );
+                        }
+                        if self.focused
+                            && self.blink.visible
+                            && self.enabled()
+                            && !self.properties.read_only
+                            && self.composition.as_ref().map_or_else(
+                                || self.selection().is_some_and(|s| s.is_caret()),
+                                |composition| {
+                                    composition.show_caret && composition.selection.is_caret()
+                                },
+                            )
+                        {
+                            painter.fill_rect(self.caret, s.caret);
+                        }
+                    })
+                },
+            );
         }
     }
     fn event(&mut self, context: EventContext, event: &WidgetEvent) -> EventResponse {

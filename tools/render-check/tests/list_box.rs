@@ -216,7 +216,10 @@ fn verify_selected_rows(renderer: &mut impl OffscreenRenderer) {
                     .as_chunks::<4>()
                     .0
                     .iter()
-                    .all(|pixel| *pixel == [0, 0, 0, 255])
+                    .all(|pixel| {
+                        let c = f.view.style.normal.background;
+                        *pixel == [c.r, c.g, c.b, c.a]
+                    })
             );
         }
     }

@@ -95,9 +95,9 @@ impl Demo {
 
     fn theme(&self) -> Theme {
         if self.light {
-            Theme::light()
+            Theme::desktop_light()
         } else {
-            Theme::dashboard()
+            Theme::desktop_dark()
         }
     }
 }

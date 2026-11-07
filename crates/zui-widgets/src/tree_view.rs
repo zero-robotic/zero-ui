@@ -87,6 +87,8 @@ pub struct TreeView {
     pub list: ListBoxView,
     pub selection: Option<BTreeSet<TreeItemId>>,
     pub draggable: bool,
+    /// Platform double-click interval; zero disables label double-click expansion.
+    pub double_click_interval: Duration,
 }
 #[derive(Clone, PartialEq)]
 struct Row {
@@ -110,6 +112,7 @@ impl TreeView {
             expanded: BTreeSet::new(),
             selection: None,
             draggable: false,
+            double_click_interval: Duration::from_millis(500),
             selected,
             list: ListBoxView::themed(theme, Vec::new(), families, None, action),
         }
@@ -207,6 +210,7 @@ impl TreeView {
             rows,
             selection: self.selection.clone(),
             draggable: self.draggable,
+            double_click_interval: self.double_click_interval,
             global_rows: None,
         })
     }
@@ -217,6 +221,7 @@ struct TreeSpec {
     rows: Vec<Row>,
     selection: Option<BTreeSet<TreeItemId>>,
     draggable: bool,
+    double_click_interval: Duration,
     global_rows: Option<alloc::rc::Rc<Vec<Row>>>,
 }
 struct TreeWidget {
@@ -243,6 +248,7 @@ impl ViewSpec for TreeSpec {
         if self.rows != w.properties.rows
             || self.list.disabled
             || self.list.action != w.properties.list.action
+            || self.double_click_interval != w.properties.double_click_interval
         {
             w.armed = None;
             w.drag = None;
@@ -258,7 +264,8 @@ impl Widget for TreeWidget {
     fn animate(&mut self, elapsed: Duration) -> AnimationUpdate {
         let mut next_frame = None;
         if let Some((_, _, deadline)) = &mut self.last_click {
-            let end = *deadline.get_or_insert(elapsed + Duration::from_millis(500));
+            let end = *deadline
+                .get_or_insert(elapsed.saturating_add(self.properties.double_click_interval));
             if elapsed >= end {
                 self.last_click = None;
             } else {
@@ -387,7 +394,8 @@ impl Widget for TreeWidget {
             });
         let label = hit.filter(|&i| {
             let row = &self.properties.rows[i];
-            row.branch
+            !self.properties.double_click_interval.is_zero()
+                && row.branch
                 && !row.disabled
                 && c.local_position.is_some_and(|p| {
                     let left = c.geometry.map_or(0.0, |g| g.content_bounds.origin.x)

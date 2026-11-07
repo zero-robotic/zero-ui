@@ -39,12 +39,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         "virtual-list" => zui_render_check::virtual_list_preview()?,
         "scroll" => zui_render_check::scroll_preview()?,
         "scroll-both" => zui_render_check::scroll_both_preview()?,
+        "desktop-dark" => zui_render_check::desktop_preview(&zui_theme::Theme::desktop_dark())?,
+        "desktop-light" => zui_render_check::desktop_preview(&zui_theme::Theme::desktop_light())?,
         "theme-dark" => zui_render_check::theme_preview(&zui_theme::Theme::dark())?,
         "theme-light" => zui_render_check::theme_preview(&zui_theme::Theme::light())?,
         "theme-dashboard" => zui_render_check::theme_preview(&zui_theme::Theme::dashboard())?,
         other => {
             return Err(format!(
-                "unknown scene: {other}; expected primitives, layout, text, text-widget, text-selection, text-input, button, checkbox, segmented, tabs, accordion, sparkline, metric, panel, radio, radio-horizontal, slider, switch, progress, stack, scroll, scroll-both, virtual-list, virtual-list-measured, theme-dark, theme-light or theme-dashboard"
+                "unknown scene: {other}; expected primitives, layout, text, text-widget, text-selection, text-input, button, checkbox, segmented, tabs, accordion, sparkline, metric, panel, radio, radio-horizontal, slider, switch, progress, stack, scroll, scroll-both, virtual-list, virtual-list-measured, desktop-dark, desktop-light, theme-dark, theme-light or theme-dashboard"
             )
             .into());
         }

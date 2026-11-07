@@ -483,3 +483,44 @@ fn horizontal_radio_rows_render_gpu() {
         &mut pollster::block_on(zui_render_gpu::GpuRenderer::new(Default::default())).unwrap(),
     );
 }
+
+#[cfg(feature = "cpu")]
+#[test]
+fn mouse_hides_row_focus_and_keyboard_restores_it() {
+    let mut f = Fixture::new();
+    // A unique color lets us inspect only the rectangular focus indicator.
+    f.view.style.focus_ring = Color::rgb(255, 0, 255);
+    f.update();
+    let has_ring = |f: &mut Fixture| {
+        let pixels = zui_render_cpu::CpuRenderer::default()
+            .render(
+                &f.tree.scene().unwrap(),
+                Frame {
+                    extent: Extent::new(260, 200),
+                    scale: 1.0,
+                    background: Color::BLACK,
+                },
+            )
+            .unwrap();
+        pixels
+            .pixels()
+            .chunks_exact(4)
+            .any(|p| p[0] > 80 && p[1] == 0 && p[2] > 80)
+    };
+    let point = f.center(0);
+    f.click(point);
+    assert!(f.tree.focused().is_some());
+    assert!(!has_ring(&mut f));
+    // Rebuilding the controlled selection must not reintroduce the mouse ring.
+    f.update();
+    assert!(!has_ring(&mut f));
+    f.input(key(Key::ArrowDown, true));
+    assert!(has_ring(&mut f));
+    let point = f.center(2);
+    f.click(point);
+    assert!(!has_ring(&mut f));
+    f.tree.request_focus(None).unwrap();
+    f.input(key(Key::Tab, true));
+    assert!(f.tree.focused().is_some());
+    assert!(has_ring(&mut f));
+}

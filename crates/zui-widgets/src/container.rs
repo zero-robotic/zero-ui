@@ -5,7 +5,7 @@ use zui_api::{
     view::{Key, View, ViewSpec},
     widget::{Invalidation, PaintContext, Widget},
 };
-use zui_paint::Painter;
+use zui_paint::{Painter, Path};
 use zui_types::{Color, Point, Rect, Size};
 
 /// A box around zero or one child. Row/column/grid/stack builders use the same surface
@@ -17,6 +17,8 @@ pub struct Container {
     clip: bool,
     kind: LayoutKind,
     background: Option<Color>,
+    border: Option<Color>,
+    radius: u16,
 }
 impl Container {
     pub fn new(child: View) -> Self {
@@ -36,6 +38,8 @@ impl Container {
             clip: false,
             kind,
             background: None,
+            border: None,
+            radius: 0,
         }
     }
     /// Edit size, padding, alignment, tracks and gaps without erasing defaults.
@@ -49,6 +53,15 @@ impl Container {
         self.background = Some(color);
         self
     }
+    /// Rounded surface only; use padding to keep children inside the border.
+    pub fn radius(mut self, radius: u16) -> Self {
+        self.radius = radius;
+        self
+    }
+    pub fn border(mut self, color: Color) -> Self {
+        self.border = Some(color);
+        self
+    }
     pub fn keyed(mut self, key: impl Into<Key>) -> Self {
         self.key = Some(key.into());
         self
@@ -58,7 +71,7 @@ impl Container {
         self
     }
     pub fn build(self) -> View {
-        let mut view = View::new(SurfaceView(self.background))
+        let mut view = View::new(SurfaceView(self.background, self.border, self.radius))
             .styled(self.style)
             .clipped(self.clip)
             .with_children(self.children);
@@ -90,13 +103,36 @@ pub fn grid(
         .style(|style| style.columns = columns.into_iter().collect())
 }
 
-struct Surface(Option<Color>);
+struct Surface(Option<Color>, Option<Color>, u16);
 impl Widget for Surface {
     fn paint(&self, context: PaintContext, painter: &mut Painter<'_>) {
         if let Some(color) = self.0 {
-            painter.fill_rect(
-                Rect::new(0.0, 0.0, context.size.width, context.size.height),
+            painter.fill(
+                Path::rounded_rectangle(
+                    Rect::new(0.0, 0.0, context.size.width, context.size.height),
+                    f64::from(self.2),
+                )
+                .expect("valid surface bounds"),
                 color,
+            );
+        }
+        if let Some(color) = self.1
+            && context.size.width > 1.0
+            && context.size.height > 1.0
+        {
+            painter.stroke(
+                Path::rounded_rectangle(
+                    Rect::new(
+                        0.5,
+                        0.5,
+                        context.size.width - 1.0,
+                        context.size.height - 1.0,
+                    ),
+                    f64::from(self.2),
+                )
+                .expect("valid surface border"),
+                color,
+                1.0,
             );
         }
     }
@@ -106,17 +142,17 @@ impl Widget for Surface {
         false
     }
 }
-struct SurfaceView(Option<Color>);
+struct SurfaceView(Option<Color>, Option<Color>, u16);
 impl ViewSpec for SurfaceView {
     type Widget = Surface;
     fn build(&self) -> Surface {
-        Surface(self.0)
+        Surface(self.0, self.1, self.2)
     }
     fn update(&self, widget: &mut Surface) -> Invalidation {
-        if widget.0 == self.0 {
+        if (widget.0, widget.1, widget.2) == (self.0, self.1, self.2) {
             Invalidation::None
         } else {
-            widget.0 = self.0;
+            *widget = Surface(self.0, self.1, self.2);
             Invalidation::Paint
         }
     }

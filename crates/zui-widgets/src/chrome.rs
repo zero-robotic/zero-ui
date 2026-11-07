@@ -147,6 +147,7 @@ impl GroupBoxView {
         })
         .build();
         View::new(GroupFrame {
+            radius: self.theme.controls().panel_radius,
             border: self.theme.color(ColorRole::Border),
             background: self.theme.color(ColorRole::Surface),
         })
@@ -159,6 +160,7 @@ impl GroupBoxView {
 }
 #[derive(Clone, Copy, PartialEq)]
 struct GroupFrame {
+    radius: u16,
     border: Color,
     background: Color,
 }
@@ -183,13 +185,21 @@ impl Widget for Frame {
         false
     }
     fn paint(&self, c: PaintContext, p: &mut Painter<'_>) {
-        p.fill_rect(
-            Rect::new(0.0, 0.0, c.size.width, c.size.height),
+        p.fill(
+            Path::rounded_rectangle(
+                Rect::new(0.0, 0.0, c.size.width, c.size.height),
+                f64::from(self.0.radius),
+            )
+            .expect("valid panel bounds"),
             self.0.background,
         );
         if c.size.width > 1.0 && c.size.height > 1.0 {
             p.stroke(
-                Path::rectangle(Rect::new(0.5, 0.5, c.size.width - 1.0, c.size.height - 1.0)),
+                Path::rounded_rectangle(
+                    Rect::new(0.5, 0.5, c.size.width - 1.0, c.size.height - 1.0),
+                    f64::from(self.0.radius),
+                )
+                .expect("valid panel border"),
                 self.0.border,
                 1.0,
             );
