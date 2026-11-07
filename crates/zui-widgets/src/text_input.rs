@@ -85,7 +85,7 @@ impl TextInputStyle {
             natural_width: 240.0,
             padding_x: theme.controls().padding_x,
             padding_y: if theme.controls().min_height > 0 {
-                6
+                4
             } else {
                 0
             },

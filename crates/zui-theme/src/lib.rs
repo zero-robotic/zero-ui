@@ -183,8 +183,8 @@ impl Theme {
         theme.controls = ControlMetrics {
             radius: 6,
             panel_radius: 8,
-            min_height: 32,
-            padding_x: 10,
+            min_height: 28,
+            padding_x: 8,
         };
         theme.typography = [
             Typography {

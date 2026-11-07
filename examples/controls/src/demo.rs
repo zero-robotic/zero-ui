@@ -62,6 +62,7 @@ struct Demo {
 enum Message {
     OpenSelect(zui_types::Rect),
     OpenCombo(zui_types::Rect),
+    OpenDate(bool, zui_types::Rect),
     ToggleTheme,
     SetDetails(CheckState),
     SetMode(RadioOptionId),
@@ -145,13 +146,18 @@ impl ViewApplication for Demo {
         let combo = event.action.id == ActionId(400)
             && event.action.payload::<zui_widgets::ComboBoxEvent>()
                 == Some(&zui_widgets::ComboBoxEvent::Open);
-        if select || combo {
+        let date = matches!(event.action.id, ActionId(302) | ActionId(303))
+            && event.action.payload::<zui_widgets::DateEvent>()
+                == Some(&zui_widgets::DateEvent::Open);
+        if select || combo || date {
             let mut anchor = tree.presented_bounds(event.source).ok()?;
             let root = tree.presented_bounds(tree.root()).ok()?;
             anchor.origin.x -= root.origin.x;
             anchor.origin.y -= root.origin.y;
             return Some(if select {
                 Message::OpenSelect(anchor)
+            } else if date {
+                Message::OpenDate(event.action.id == ActionId(302), anchor)
             } else {
                 Message::OpenCombo(anchor)
             });
@@ -173,6 +179,7 @@ impl ViewApplication for Demo {
                 self.advanced
                     .apply(advanced::Message::Combo(zui_widgets::ComboBoxEvent::Open));
             }
+            Message::OpenDate(start, anchor) => self.catalog.open_date(start, anchor),
             Message::ToggleTheme => self.light = !self.light,
             Message::SetDetails(state) => self.details = state,
             Message::SetMode(mode) => self.mode = mode,
@@ -229,6 +236,7 @@ impl ViewApplication for Demo {
             WindowEvent::Resized | WindowEvent::ScaleChanged => {
                 self.p0.close_anchored();
                 self.advanced.close_anchored();
+                self.catalog.apply(catalog::Message::CloseDate);
                 ViewAction::rebuild()
             }
             WindowEvent::CloseRequested => ViewAction::exit(),
@@ -381,13 +389,7 @@ impl Demo {
                     .keyed("toggle-theme")
                     .styled(zui_api::layout::LayoutStyle {
                         width: Dimension::Length(200.0),
-                        min_height: Dimension::Length(44.0),
-                        padding: Edges {
-                            left: 16.0,
-                            right: 16.0,
-                            top: 8.0,
-                            bottom: 8.0,
-                        },
+                        min_height: Dimension::Length(28.0),
                         ..Default::default()
                     }),
                     View::new(CheckBoxView::themed(
@@ -399,8 +401,7 @@ impl Demo {
                     ))
                     .keyed("show-details")
                     .styled(zui_api::layout::LayoutStyle {
-                        min_height: Dimension::Length(40.0),
-                        padding: Edges::all(8.0),
+                        min_height: Dimension::Length(28.0),
                         ..Default::default()
                     }),
                 ])
@@ -419,7 +420,6 @@ impl Demo {
                 .keyed("mode")
                 .styled(zui_api::layout::LayoutStyle {
                     width: Dimension::Length(200.0),
-                    padding: Edges::all(8.0),
                     ..Default::default()
                 }),
             ])
@@ -475,8 +475,7 @@ impl Demo {
                 .keyed("input")
                 .styled(zui_api::layout::LayoutStyle {
                     width: Dimension::Length(320.0),
-                    height: Dimension::Length(48.0),
-                    padding: Edges::all(8.0),
+                    min_height: Dimension::Length(28.0),
                     ..Default::default()
                 }),
             ])
@@ -711,6 +710,71 @@ mod anchor_tests {
             pending.extend_from_slice(tree.children(id).unwrap());
         }
         panic!("missing {key}");
+    }
+    #[test]
+    fn date_popup_uses_the_activated_start_or_end_button_bounds() {
+        use zui_api::action::WidgetAction;
+        use zui_widgets::{Date, DateEvent, DatePickerView};
+        let mut text = zui_text::ParleyText::default();
+        let families = text
+            .register_font(Arc::from(
+                include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
+            ))
+            .unwrap();
+        for action in [302, 303] {
+            let mut demo = Demo::new(families.clone(), None);
+            let theme = demo.theme();
+            let trigger = DatePickerView::themed(
+                &theme,
+                Date::new(2026, 11, 1).unwrap(),
+                families.clone(),
+                ActionId(action),
+            )
+            .build()
+            .unwrap()
+            .keyed("date-trigger");
+            let view = column([trigger])
+                .style(|s| {
+                    s.padding = Edges::all(40.0);
+                    s.width = Dimension::Length(240.0);
+                })
+                .build();
+            let mut tree = zui_core::Tree::from_view(view, Default::default()).unwrap();
+            tree.layout_with_text(
+                &mut zui_layout::TaffyLayout::default(),
+                &mut text,
+                Size::new(800.0, 800.0),
+            )
+            .unwrap();
+            let source = find(&tree, "date-trigger");
+            let button = tree.presented_bounds(source).unwrap();
+            let message = demo
+                .map_action_with_tree(
+                    &ActionEvent {
+                        source,
+                        action: WidgetAction::new(ActionId(action), DateEvent::Open),
+                    },
+                    &tree,
+                )
+                .unwrap();
+            demo.message(message);
+            let overlay = demo.catalog.overlay(&theme, &families).unwrap();
+            let mut popup = zui_core::Tree::from_view(overlay, Default::default()).unwrap();
+            popup
+                .layout_with_text(
+                    &mut zui_layout::TaffyLayout::default(),
+                    &mut text,
+                    Size::new(800.0, 800.0),
+                )
+                .unwrap();
+            let bounds = popup
+                .presented_bounds(popup.children(popup.root()).unwrap()[0])
+                .unwrap();
+            assert!((bounds.origin.x - button.origin.x).abs() < 0.01);
+            assert!((bounds.origin.y - button.origin.y - button.size.height).abs() < 0.01);
+            demo.catalog.apply(catalog::Message::CloseDate);
+            assert!(demo.catalog.overlay(&theme, &families).is_none());
+        }
     }
     #[test]
     fn dropdowns_anchor_to_actual_buttons_after_layout_and_scroll() {

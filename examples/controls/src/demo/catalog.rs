@@ -5,7 +5,7 @@ use zui_api::{
     view::View,
 };
 use zui_theme::{Theme, TypeRole};
-use zui_types::{Color, Size};
+use zui_types::{Color, Rect, Size};
 use zui_widgets::*;
 #[derive(Clone)]
 pub struct State {
@@ -15,6 +15,7 @@ pub struct State {
     end: Date,
     month: (u16, u8),
     date_open: Option<bool>,
+    date_anchor: Option<Rect>,
     time: Time,
     color: Color,
     hsv: Option<HsvColor>,
@@ -41,6 +42,7 @@ impl Default for State {
             end: Date::new(2026, 11, 30).unwrap(),
             month: (2026, 11),
             date_open: None,
+            date_anchor: None,
             time: Time::new(9, 30, 0).unwrap(),
             hsv: None,
             color: Color::rgb(32, 200, 220),
@@ -259,20 +261,18 @@ impl State {
         }
         p
     }
+    pub fn open_date(&mut self, start: bool, anchor: Rect) {
+        self.date_anchor = Some(anchor);
+        self.date(start, DateEvent::Open);
+    }
     pub fn overlay(&self, theme: &Theme, f: &[String]) -> Option<View> {
         let start = self.date_open?;
         let mut picker = self.picker(theme, f, start);
         picker.calendar.year = self.month.0;
         picker.calendar.month = self.month.1;
-        Some(
-            PopupView::new(
-                PopupPlacement::Center,
-                Size::new(340.0, 340.0),
-                ActionId(320),
-            )
-            .build(ScrollView::vertical(picker.calendar.build().unwrap()).build()),
-        )
+        Some(picker.popup(self.date_anchor?, ActionId(320)).unwrap())
     }
+
     pub fn view(&self, theme: &Theme, f: &[String]) -> View {
         let text = |s: String| View::new(TextView::themed(theme, s, f.to_vec(), TypeRole::Caption));
         let toolbar = ToolbarView::themed(theme).build([
@@ -524,7 +524,7 @@ mod tests {
                 "数值错误".into(),
             );
             state.toast = Some((1, "测试通知".into()));
-            state.date_open = Some(true);
+            state.open_date(true, Rect::new(120.0, 180.0, 140.0, 28.0));
             for width in [480.0, 1100.0] {
                 let content = state.view(&theme, &f);
                 let overlay = state.overlay(&theme, &f).unwrap();

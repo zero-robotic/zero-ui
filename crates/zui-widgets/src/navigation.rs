@@ -139,7 +139,11 @@ impl PaginationView {
                 payload: PageChanged { page },
             })
             .styled(LayoutStyle {
-                padding: Edges::all(8.0),
+                padding: Edges::all(if self.theme.controls().min_height > 0 {
+                    0.0
+                } else {
+                    8.0
+                }),
                 ..Default::default()
             })
         };

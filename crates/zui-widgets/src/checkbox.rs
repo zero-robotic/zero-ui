@@ -70,7 +70,11 @@ impl CheckBoxStyle {
                 text: theme.color(ColorRole::TextMuted),
             },
             focus_ring: theme.color(ColorRole::Text),
-            indicator_size: 20.0,
+            indicator_size: if theme.controls().min_height > 0 {
+                16.0
+            } else {
+                20.0
+            },
             gap: theme.space(Space::Sm),
         }
     }

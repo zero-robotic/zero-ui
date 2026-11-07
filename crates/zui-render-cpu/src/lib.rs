@@ -106,7 +106,8 @@ impl Canvas for CpuCanvas<'_> {
         self.0
             .glyph_run(self.1, font)
             .font_size(run.font_size)
-            .hint(false)
+            // Grid-fit small text at the renderer’s device scale.
+            .hint(true)
             .normalized_coords(zui_vello::coords(run))
             .fill_glyphs(zui_vello::glyphs(run))
             .map_err(|error| RenderError::Backend(error.to_string()))

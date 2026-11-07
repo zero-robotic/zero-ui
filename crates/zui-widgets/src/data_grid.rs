@@ -137,7 +137,11 @@ impl DataGridView {
                     width: Dimension::Length(c.width - if self.resizable { 8.0 } else { 0.0 }),
                     min_width: Dimension::Length(0.0),
                     shrink: 0.0,
-                    padding: Edges::all(4.0),
+                    padding: Edges::all(if t.theme.controls().min_height > 0 {
+                        0.0
+                    } else {
+                        4.0
+                    }),
                     ..Default::default()
                 })
             ];
@@ -153,7 +157,11 @@ impl DataGridView {
                     })
                     .styled(LayoutStyle {
                         width: Dimension::Length(8.0),
-                        min_height: Dimension::Length(36.0),
+                        min_height: Dimension::Length(if t.theme.controls().min_height > 0 {
+                            f32::from(t.theme.controls().min_height)
+                        } else {
+                            36.0
+                        }),
                         shrink: 0.0,
                         ..Default::default()
                     }),
@@ -321,7 +329,11 @@ impl DataGridView {
                         s.width = Dimension::Length(c.width);
                         s.min_width = Dimension::Length(0.0);
                         s.shrink = 0.0;
-                        s.padding = Edges::all(6.0);
+                        s.padding = Edges::all(if t.theme.controls().min_height > 0 {
+                            4.0
+                        } else {
+                            6.0
+                        });
                     })
                     .build(),
             );

@@ -89,7 +89,11 @@ impl RadioGroupStyle {
                 ..normal
             },
             focus_ring: theme.color(ColorRole::Accent),
-            indicator_size: 20.0,
+            indicator_size: if theme.controls().min_height > 0 {
+                16.0
+            } else {
+                20.0
+            },
             label_gap: theme.space(Space::Sm),
             row_gap: theme.space(Space::Sm),
         }
