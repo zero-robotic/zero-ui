@@ -513,3 +513,102 @@ fn hsv_pixels_gpu() {
         &mut pollster::block_on(zui_render_gpu::GpuRenderer::new(Default::default())).unwrap(),
     );
 }
+
+#[test]
+fn tree_label_double_click_toggles_and_expires() {
+    use std::time::Duration;
+    let (mut text, f) = text();
+    let mut branch = TreeItem::new(TreeItemId(1), "Branch");
+    branch.children_state = TreeChildrenState::Unloaded;
+    let mut view = TreeView::themed(
+        &Theme::dark(),
+        vec![branch, TreeItem::new(TreeItemId(2), "Leaf")],
+        f,
+        None,
+        ActionId(1),
+    );
+    view.draggable = true;
+    let mut tree = Tree::from_view(view.build().unwrap(), Default::default()).unwrap();
+    layout(&mut tree, &mut text);
+    let expansion = |result: &zui_core::DispatchResult| {
+        result
+            .actions
+            .iter()
+            .find_map(|a| match a.action.payload::<TreeEvent>() {
+                Some(TreeEvent::Expansion { expanded, .. }) => Some(*expanded),
+                _ => None,
+            })
+    };
+    assert_eq!(expansion(&click(&mut tree, 60.0, 15.0)), None);
+    tree.advance_animations(Duration::ZERO).unwrap();
+    // Selection reconciliation must preserve the first click.
+    view.selected = Some(TreeItemId(1));
+    tree.reconcile(view.build().unwrap()).unwrap();
+    layout(&mut tree, &mut text);
+    tree.advance_animations(Duration::from_millis(100)).unwrap();
+    let result = click(&mut tree, 60.0, 15.0);
+    assert_eq!(expansion(&result), Some(true));
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| a.action.payload::<TreeLoadRequested>().is_some())
+    );
+    view.expanded.insert(TreeItemId(1));
+    tree.reconcile(view.build().unwrap()).unwrap();
+    layout(&mut tree, &mut text);
+    assert_eq!(expansion(&click(&mut tree, 60.0, 15.0)), None);
+    tree.advance_animations(Duration::from_millis(200)).unwrap();
+    assert_eq!(expansion(&click(&mut tree, 60.0, 15.0)), Some(false));
+    assert_eq!(expansion(&click(&mut tree, 60.0, 15.0)), None);
+    tree.advance_animations(Duration::from_millis(300)).unwrap();
+    tree.advance_animations(Duration::from_millis(800)).unwrap();
+    assert_eq!(expansion(&click(&mut tree, 60.0, 15.0)), None);
+    // Arrow clicks still toggle immediately; leaves never expand.
+    assert_eq!(expansion(&click(&mut tree, 18.0, 15.0)), Some(false));
+    assert_eq!(expansion(&click(&mut tree, 60.0, 55.0)), None);
+    assert_eq!(expansion(&click(&mut tree, 60.0, 55.0)), None);
+}
+
+#[test]
+fn tree_double_click_is_cancelled_by_drag_scroll_and_disabled_state() {
+    let (mut text, f) = text();
+    let mut branch = TreeItem::new(TreeItemId(1), "Branch");
+    branch.children_state = TreeChildrenState::Unloaded;
+    let mut view = TreeView::themed(&Theme::dark(), vec![branch], f, None, ActionId(1));
+    view.draggable = true;
+    let mut tree = Tree::from_view(view.build().unwrap(), Default::default()).unwrap();
+    layout(&mut tree, &mut text);
+    let no_expansion = |result: zui_core::DispatchResult| {
+        assert!(!result.actions.iter().any(|a| matches!(
+            a.action.payload::<TreeEvent>(),
+            Some(TreeEvent::Expansion { .. })
+        )))
+    };
+    no_expansion(click(&mut tree, 60.0, 15.0));
+    tree.dispatch_input(InputEvent::PointerButton {
+        button: PointerButton::Primary,
+        pressed: true,
+        position: Some(Point::new(60.0, 15.0)),
+    })
+    .unwrap();
+    tree.dispatch_input(InputEvent::PointerMoved(Point::new(80.0, 15.0)))
+        .unwrap();
+    no_expansion(
+        tree.dispatch_input(InputEvent::PointerButton {
+            button: PointerButton::Primary,
+            pressed: false,
+            position: Some(Point::new(60.0, 15.0)),
+        })
+        .unwrap(),
+    );
+    no_expansion(click(&mut tree, 60.0, 15.0));
+    tree.dispatch_input(InputEvent::Scroll(ScrollDelta::Lines { x: 0.0, y: 1.0 }))
+        .unwrap();
+    no_expansion(click(&mut tree, 60.0, 15.0));
+    view.items[0].disabled = true;
+    tree.reconcile(view.build().unwrap()).unwrap();
+    layout(&mut tree, &mut text);
+    no_expansion(click(&mut tree, 60.0, 15.0));
+    no_expansion(click(&mut tree, 60.0, 15.0));
+}

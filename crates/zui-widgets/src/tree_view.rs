@@ -5,6 +5,7 @@ use crate::{
     ListSelectionChanged,
 };
 use alloc::{collections::BTreeSet, string::String, vec::Vec};
+use core::time::Duration;
 use zui_api::{
     action::{ActionId, WidgetAction},
     event::*,
@@ -223,6 +224,8 @@ struct TreeWidget {
     list: ListBox,
     armed: Option<TreeItemId>,
     drag: Option<(TreeItemId, zui_types::Point, bool)>,
+    label_press: Option<(TreeItemId, zui_types::Point)>,
+    last_click: Option<(TreeItemId, zui_types::Point, Option<Duration>)>,
 }
 impl ViewSpec for TreeSpec {
     type Widget = TreeWidget;
@@ -232,6 +235,8 @@ impl ViewSpec for TreeSpec {
             list: self.list.build(),
             armed: None,
             drag: None,
+            label_press: None,
+            last_click: None,
         }
     }
     fn update(&self, w: &mut TreeWidget) -> Invalidation {
@@ -241,6 +246,8 @@ impl ViewSpec for TreeSpec {
         {
             w.armed = None;
             w.drag = None;
+            w.label_press = None;
+            w.last_click = None;
         }
         let result = self.list.update(&mut w.list);
         w.properties = self.clone();
@@ -248,6 +255,21 @@ impl ViewSpec for TreeSpec {
     }
 }
 impl Widget for TreeWidget {
+    fn animate(&mut self, elapsed: Duration) -> AnimationUpdate {
+        let mut next_frame = None;
+        if let Some((_, _, deadline)) = &mut self.last_click {
+            let end = *deadline.get_or_insert(elapsed + Duration::from_millis(500));
+            if elapsed >= end {
+                self.last_click = None;
+            } else {
+                next_frame = Some(end);
+            }
+        }
+        AnimationUpdate {
+            next_frame,
+            ..Default::default()
+        }
+    }
     fn enabled(&self) -> bool {
         self.list.enabled()
     }
@@ -264,6 +286,13 @@ impl Widget for TreeWidget {
         self.list.paint(c, p)
     }
     fn event(&mut self, c: EventContext, e: &WidgetEvent) -> EventResponse {
+        if matches!(
+            e,
+            WidgetEvent::Input(InputEvent::Key(_) | InputEvent::Scroll(_))
+        ) {
+            self.label_press = None;
+            self.last_click = None;
+        }
         if self.drag.is_some()
             && matches!(
                 e,
@@ -276,6 +305,8 @@ impl Widget for TreeWidget {
         {
             self.drag = None;
             self.armed = None;
+            self.label_press = None;
+            self.last_click = None;
             let mut response = self.list.event(c, &WidgetEvent::PointerCaptureLost);
             response.capture = CaptureRequest::Release;
             response.handled = true;
@@ -354,6 +385,79 @@ impl Widget for TreeWidget {
                         && p.x < left + self.properties.list.text_style.font_size as f64 * 1.4
                 })
             });
+        let label = hit.filter(|&i| {
+            let row = &self.properties.rows[i];
+            row.branch
+                && !row.disabled
+                && c.local_position.is_some_and(|p| {
+                    let left = c.geometry.map_or(0.0, |g| g.content_bounds.origin.x)
+                        + self.properties.list.style.padding_x as f64
+                        + self.properties.list.items[i].indent as f64
+                        + self.properties.list.text_style.font_size as f64 * 1.4;
+                    p.x >= left
+                })
+        });
+        let mut label_expansion = None;
+        if self.enabled() && c.phase == EventPhase::Target {
+            match e {
+                WidgetEvent::Input(InputEvent::PointerButton {
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    ..
+                }) => {
+                    self.label_press = label
+                        .and_then(|i| c.local_position.map(|p| (self.properties.rows[i].id, p)));
+                    if self.label_press.is_none() || c.modifiers != Modifiers::default() {
+                        self.label_press = None;
+                        self.last_click = None;
+                    }
+                }
+                WidgetEvent::Input(InputEvent::PointerMoved(_)) => {
+                    if let Some(p) = c.local_position {
+                        if self.label_press.is_some_and(|(_, start)| {
+                            (p.x - start.x).abs() + (p.y - start.y).abs() >= 6.0
+                        }) {
+                            self.label_press = None;
+                            self.last_click = None;
+                        }
+                    }
+                }
+                WidgetEvent::Input(InputEvent::PointerButton {
+                    button: PointerButton::Primary,
+                    pressed: false,
+                    ..
+                }) => {
+                    let pressed = self.label_press.take();
+                    if let Some(i) = label.filter(|&i| {
+                        pressed.is_some_and(|(id, _)| id == self.properties.rows[i].id)
+                    }) {
+                        let (id, start) = pressed.unwrap();
+                        let p = c.local_position.unwrap();
+                        if (p.x - start.x).abs() + (p.y - start.y).abs() < 6.0 {
+                            if self.last_click.take().is_some_and(|(previous, point, _)| {
+                                previous == id
+                                    && (p.x - point.x).abs() + (p.y - point.y).abs() < 6.0
+                            }) {
+                                label_expansion = Some(i);
+                            } else {
+                                self.last_click = Some((id, p, None));
+                            }
+                        } else {
+                            self.last_click = None;
+                        }
+                    } else {
+                        self.last_click = None;
+                    }
+                }
+                WidgetEvent::Input(
+                    InputEvent::Key(_) | InputEvent::Scroll(_) | InputEvent::PointerButton { .. },
+                ) => {
+                    self.label_press = None;
+                    self.last_click = None;
+                }
+                _ => {}
+            }
+        }
         if self.enabled() && self.properties.draggable && c.phase == EventPhase::Target {
             match e {
                 WidgetEvent::Input(InputEvent::PointerButton {
@@ -449,6 +553,11 @@ impl Widget for TreeWidget {
         ) {
             self.armed = None;
             self.drag = None;
+            // Normal release also relinquishes capture after a completed click.
+            if self.label_press.is_some() || matches!(e, WidgetEvent::FocusChanged(false)) {
+                self.last_click = None;
+            }
+            self.label_press = None;
         }
         let mut response = self.list.event(c, e);
         for action in &mut response.actions {
@@ -499,7 +608,7 @@ impl Widget for TreeWidget {
                 TreeEvent::Selected(TreeItemId(active.0)),
             ));
         }
-        if let Some(i) = expansion {
+        if let Some(i) = expansion.or(label_expansion) {
             response.actions.clear();
             let row = &self.properties.rows[i];
             response.actions = self.actions(TreeEvent::Expansion {

@@ -20,7 +20,7 @@ pub enum NotificationKind {
 pub struct NotificationDismissed {
     pub id: u64,
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct NotificationView {
     pub id: u64,
     pub title: String,
@@ -91,7 +91,7 @@ impl NotificationView {
         .build()
     }
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct ToastView {
     pub notification: NotificationView,
     pub duration: Duration,
@@ -129,6 +129,11 @@ impl ViewSpec for ToastView {
         }
     }
     fn update(&self, w: &mut Toast) -> Invalidation {
+        // Layout owners may regenerate identical descriptions on every pass.
+        // An unchanged toast must not keep that layout cycle alive.
+        if self == &w.properties {
+            return Invalidation::None;
+        }
         if self.revision != w.properties.revision
             || self.notification.id != w.properties.notification.id
             || self.duration != w.properties.duration

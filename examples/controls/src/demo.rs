@@ -511,6 +511,9 @@ mod tests {
         let mut model = Demo::new(families, None);
         let mut tree = zui_core::Tree::from_view(model.view(), Default::default()).unwrap();
         let actions = [
+            WidgetAction::new(ActionId(300), ButtonActivated),
+            WidgetAction::new(ActionId(300), ButtonActivated),
+            WidgetAction::new(ActionId(312), NotificationDismissed { id: 2 }),
             WidgetAction::new(ActionId(100), SelectEvent::Open),
             WidgetAction::new(ActionId(100), SelectEvent::Selected(ListItemId(75))),
             WidgetAction::new(ActionId(101), NumberChanged { value: 35.0 }),
