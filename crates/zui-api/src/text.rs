@@ -154,6 +154,7 @@ impl core::error::Error for TextError {}
 pub trait TextService {
     fn layout(&mut self, request: TextRequest<'_>) -> Result<TextLayout, TextError>;
     /// A changed epoch invalidates text measurement and paint caches owned by callers.
+    /// Replacing a service for an existing tree must also change this epoch.
     fn font_epoch(&self) -> u64;
     fn layout_interactive(
         &mut self,

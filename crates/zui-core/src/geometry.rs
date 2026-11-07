@@ -86,14 +86,25 @@ impl Tree {
     ) -> Result<bool, TreeError> {
         self.layout_with_text(engine, &mut UnavailableText, viewport)
     }
-    /// Font epoch changes force layout. Replacing the service with another one
-    /// having the same epoch requires explicit Layout invalidation by the owner.
+    /// Font epoch changes force layout. A replacement service must use a distinct
+    /// epoch (or the owner must rebuild the tree) to invalidate widget text caches.
     pub fn layout_with_text(
         &mut self,
         engine: &mut dyn LayoutEngine,
         text: &mut dyn TextService,
         viewport: Size,
     ) -> Result<bool, TreeError> {
+        if self.dirty == Invalidation::None
+            && self.viewport == Some(viewport)
+            && self.text_epoch == Some(text.font_epoch())
+        {
+            // Focus scope/reveal work remains observable even in a clean tree.
+            self.sync_focus_scopes();
+            self.reveal_pending_focus()?;
+            if self.dirty == Invalidation::None {
+                return Ok(false);
+            }
+        }
         let mut changed = false;
         // Bound callbacks even if a custom owner changes layout on every query.
         for _ in 0..16 {

@@ -282,3 +282,26 @@ fn new_nested_owner_waits_for_geometry_and_removed_owner_is_not_queried() {
     assert_eq!(tree.len(), 1);
     assert_eq!(props.calls.get(), calls);
 }
+
+#[test]
+fn clean_tree_skips_factories_but_paint_and_viewport_changes_refresh_them() {
+    let props = owner();
+    let mut tree = Tree::from_view(owned(&props), TreeLimits::default()).unwrap();
+    let mut layout = Layout(0);
+    let size = Size::new(100.0, 20.0);
+    tree.layout(&mut layout, size).unwrap();
+    tree.scene().unwrap();
+    let calls = props.calls.get();
+    for _ in 0..10 {
+        assert!(!tree.layout(&mut layout, size).unwrap());
+    }
+    assert_eq!(props.calls.get(), calls);
+    tree.invalidate(Invalidation::Paint);
+    assert!(!tree.layout(&mut layout, size).unwrap());
+    assert!(props.calls.get() > calls);
+    tree.scene().unwrap();
+    let calls = props.calls.get();
+    assert!(tree.layout(&mut layout, Size::new(100.0, 30.0)).unwrap());
+    assert!(props.calls.get() > calls);
+    assert_eq!(tree.children(tree.root()).unwrap().len(), 3);
+}

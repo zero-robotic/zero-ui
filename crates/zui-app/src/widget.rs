@@ -1,5 +1,5 @@
 //! Declarative application assembly, independent of concrete controls and services.
-use crate::{Application, ApplicationError};
+use crate::{Application, ApplicationError, RefreshMetrics, RefreshPhase, refresh::Profiler};
 use std::time::Duration;
 use zui_api::{
     action::ActionEvent, layout::LayoutEngine, text::TextService, view::View, widget::Invalidation,
@@ -75,6 +75,7 @@ pub trait ViewApplication {
 /// Owns the model, persistent tree, and injected layout/text services. Concrete
 /// service construction and font registration belong to the caller.
 pub struct WidgetHost<M, L, T> {
+    profiler: Profiler,
     model: M,
     tree: Tree,
     layout: L,
@@ -88,6 +89,7 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> WidgetHost<M, L, T> {
     pub fn new(model: M, layout: L, text: T, limits: TreeLimits) -> Result<Self, TreeError> {
         let tree = Tree::from_view(model.view(), limits)?;
         Ok(Self {
+            profiler: Profiler::default(),
             model,
             tree,
             layout,
@@ -105,6 +107,16 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> WidgetHost<M, L, T> {
         self.clipboard = Box::new(clipboard);
         self
     }
+    /// Profiling is opt-in; disabling it avoids reading the wall clock.
+    pub fn set_profiling(&mut self, enabled: bool) {
+        self.profiler.enabled = enabled;
+    }
+    pub fn refresh_metrics(&self) -> &RefreshMetrics {
+        &self.profiler.metrics
+    }
+    pub fn take_refresh_metrics(&mut self) -> RefreshMetrics {
+        std::mem::take(&mut self.profiler.metrics)
+    }
     pub fn model(&self) -> &M {
         &self.model
     }
@@ -114,7 +126,13 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> WidgetHost<M, L, T> {
     }
     fn prepare(&mut self, metrics: WindowMetrics) -> Result<(), TreeError> {
         if self.rebuild {
-            if let Err(error) = self.tree.reconcile(self.model.view()) {
+            let started = self.profiler.start();
+            let view = self.model.view();
+            self.profiler.finish(RefreshPhase::View, started);
+            let started = self.profiler.start();
+            let result = self.tree.reconcile(view);
+            self.profiler.finish(RefreshPhase::Reconcile, started);
+            if let Err(error) = result {
                 self.ime = None;
                 self.next_frame = None;
                 return Err(error);
@@ -122,8 +140,7 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> WidgetHost<M, L, T> {
             self.rebuild = false;
         }
         let result = (|| {
-            self.tree
-                .layout_with_text(&mut self.layout, &mut self.text, metrics.logical_size())?;
+            self.prepare_layout(metrics)?;
             if let Some(request) = self.model.take_focus_request(&self.tree) {
                 self.tree.request_focus(match request {
                     ViewFocusRequest::Focus(id) => Some(id),
@@ -132,11 +149,7 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> WidgetHost<M, L, T> {
                 // Focus notifications may change geometry. Finish that work before
                 // input dispatch or IME queries without asking for another intent.
                 if self.tree.invalidation() == Invalidation::Layout {
-                    self.tree.layout_with_text(
-                        &mut self.layout,
-                        &mut self.text,
-                        metrics.logical_size(),
-                    )?;
+                    self.prepare_layout(metrics)?;
                 }
             }
             Ok(())
@@ -147,12 +160,26 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> WidgetHost<M, L, T> {
         }
         result
     }
+    fn prepare_layout(&mut self, metrics: WindowMetrics) -> Result<(), TreeError> {
+        let started = self.profiler.start();
+        let result =
+            self.tree
+                .layout_with_text(&mut self.layout, &mut self.text, metrics.logical_size());
+        self.profiler.finish(RefreshPhase::Layout, started);
+        if result? && self.profiler.enabled {
+            self.profiler.metrics.layouts += 1;
+        }
+        Ok(())
+    }
     fn advance(&mut self, metrics: WindowMetrics, elapsed: Duration) -> Result<bool, TreeError> {
         self.next_frame = None;
         if !metrics.drawable() {
             return Ok(false);
         }
-        let update = self.tree.advance_animations(elapsed)?;
+        let started = self.profiler.start();
+        let result = self.tree.advance_animations(elapsed);
+        self.profiler.finish(RefreshPhase::Animation, started);
+        let update = result?;
         self.next_frame = update.next_frame;
         Ok(update.invalidation != Invalidation::None)
     }
@@ -178,6 +205,10 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> WidgetHost<M, L, T> {
         Ok(())
     }
     fn apply(&mut self, response: ViewAction, action: &mut WindowAction) {
+        if self.profiler.enabled && response.rebuild {
+            self.profiler.metrics.rebuild_requests += 1;
+            self.profiler.metrics.coalesced_rebuilds += u64::from(self.rebuild);
+        }
         self.rebuild |= response.rebuild;
         action.redraw |= response.window.redraw || response.rebuild;
         action.exit |= response.window.exit;
@@ -188,6 +219,58 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> WidgetHost<M, L, T> {
     }
 }
 impl<M: ViewApplication, L: LayoutEngine, T: TextService> Application for WidgetHost<M, L, T> {
+    fn profiling_enabled(&self) -> bool {
+        self.profiler.enabled
+    }
+    fn record_presentation(&mut self, duration: Duration) {
+        if self.profiler.enabled {
+            self.profiler
+                .metrics
+                .record(RefreshPhase::Present, duration);
+        }
+    }
+    /// Consecutive Wake events share one animation/IME flush. Input, focus and
+    /// lifecycle events are barriers and retain the ordinary update semantics.
+    fn update_batch(
+        &mut self,
+        events: impl IntoIterator<Item = WindowEvent>,
+        metrics: WindowMetrics,
+        elapsed: Duration,
+    ) -> Result<WindowAction, ApplicationError> {
+        let mut merged = WindowAction::default();
+        let mut pending = false;
+        for event in events {
+            if event == WindowEvent::Wake {
+                let response = self.model.update(event, metrics, elapsed);
+                self.apply(response, &mut merged);
+                pending = true;
+            } else {
+                if pending {
+                    merged.redraw |= self.advance(metrics, elapsed)?;
+                    merged.redraw |= self.rebuild || self.tree.invalidation() != Invalidation::None;
+                    self.refresh_ime(metrics)?;
+                    pending = false;
+                }
+                let window = self.update(event, metrics, elapsed)?;
+                self.apply(
+                    ViewAction {
+                        window,
+                        rebuild: false,
+                    },
+                    &mut merged,
+                );
+            }
+            if merged.exit {
+                break;
+            }
+        }
+        if pending {
+            merged.redraw |= self.advance(metrics, elapsed)?;
+            merged.redraw |= self.rebuild || self.tree.invalidation() != Invalidation::None;
+            self.refresh_ime(metrics)?;
+        }
+        Ok(merged)
+    }
     fn animation_deadline(&self) -> Option<Duration> {
         self.next_frame
     }
@@ -259,12 +342,15 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> Application for Widget
                 if obsolete_ime {
                     handled = true;
                 } else {
+                    let started = self.profiler.start();
                     let result = self.tree.dispatch_input_with_services(
                         input.clone(),
                         &mut zui_api::event::EventServices {
                             clipboard: self.clipboard.as_mut(),
                         },
-                    )?;
+                    );
+                    self.profiler.finish(RefreshPhase::Input, started);
+                    let result = result?;
                     handled = result.handled;
                     action.redraw |= result.invalidation != Invalidation::None;
                     for event in result.actions {
@@ -305,7 +391,10 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> Application for Widget
         self.refresh_ime(metrics)?;
         // Replace the caller's scene only after reconciliation, layout, and
         // preparation all succeed. The driver will not present on an error.
-        *scene = self.tree.scene()?;
+        let started = self.profiler.start();
+        let result = self.tree.scene();
+        self.profiler.finish(RefreshPhase::Scene, started);
+        *scene = result?;
         Ok(())
     }
     fn background(&self) -> Color {

@@ -40,3 +40,15 @@ cargo run -p zui-window-check --all-features --locked -- cpu --widgets --smoke-m
 示例使用真实 TextView、标准容器、主题、Taffy 和 Parley。窗口验证程序包含固定中文测试字体，不代表生产应用必须嵌入整份字体。
 
 测试覆盖连续状态更新合并、主题切换保留节点并跳过排版、逻辑宽度变化重新换行、同逻辑尺寸的 DPI 变化、隐藏期间延迟工作、准备失败保留调用方场景及恢复，以及驱动拒绝提交失败帧。实际 CPU/GPU 窗口已验证打开、呈现、自动主题切换和退出；尚未通过自动化操作验证拖动缩放、真实按键、跨屏 DPI 和输入法交互。
+
+## 刷新计时与批量更新
+
+`host.set_profiling(true)` 启用可选计时；`refresh_metrics()` 读取累计值，`take_refresh_metrics()` 取走并清零，保持启用状态。阶段包括 View、Reconcile、Layout、Input、Animation、Scene、Present，记录调用次数、累计耗时和单次最大耗时。默认关闭，不读取系统时钟。原生驱动自动记录 Present 的渲染与提交 CPU 墙钟耗时，不代表 GPU 完成时间。
+
+`Application::update_batch(events, metrics, elapsed)` 按顺序执行批内事件，合并 redraw/exit 并保留最早 wake_at；退出后不再处理剩余事件。默认实现逐条调用 update，WidgetHost 对连续 Wake 只推进一次动画并更新一次 IME。所有模型 update 仍执行；遇到输入、焦点或窗口生命周期事件，先完成待处理工作，再走原有单事件路径。动画按 elapsed 时间计算，不应依赖 Wake 数量。
+
+该 API 适用于已有队列的上层调用方；当前原生 Winit 驱动仍逐条传递事件，不会自动批处理系统输入。批内共用 metrics/elapsed，跨不同窗口尺寸或时间快照的事件应拆批。已有的 View 重建请求合并逻辑继续保留，新增优化针对重复的动画与 IME 收尾，不把已有功能计作新增收益。
+
+计时、基准复现、优化范围和实测数据见 [刷新性能报告](performance/refresh/README.md)。
+
+CPU 窗口使用 `RetainedCpuRenderer` 保存一帧像素和场景；命令及尺寸/缩放/背景完全不变时复用像素，仍向窗口提交画面。变化帧完整重绘；本轮开销和收益见 [CPU 整帧复用报告](performance/retained-cpu/README.md)。

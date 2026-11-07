@@ -4127,6 +4127,7 @@ dependencies = [
  "zui-layout",
  "zui-paint",
  "zui-platform",
+ "zui-render-cpu",
  "zui-text",
  "zui-theme",
  "zui-types",

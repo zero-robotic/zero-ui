@@ -204,6 +204,7 @@ fn unavailable_or_failed_preparation_blocks_publication_and_can_recover() {
         .unwrap();
     tree.scene().unwrap();
     service.fail = true;
+    service.epoch += 1; // Service changes must invalidate its cached results.
     tree.invalidate(Invalidation::Layout);
     assert!(matches!(
         tree.layout_with_text(&mut engine, &mut service, viewport),
@@ -221,4 +222,40 @@ fn unavailable_or_failed_preparation_blocks_publication_and_can_recover() {
     tree.layout_with_text(&mut engine, &mut service, viewport)
         .unwrap();
     assert!(tree.scene().is_ok());
+}
+
+#[test]
+fn unrelated_layout_reuses_text_but_width_content_style_and_epoch_do_not() {
+    let (mut service, mut view) = setup();
+    let mut tree = Tree::from_view(description(&view, true), TreeLimits::default()).unwrap();
+    let mut engine = TaffyLayout::default();
+    let viewport = Size::new(200.0, 300.0);
+    tree.layout_with_text(&mut engine, &mut service, viewport)
+        .unwrap();
+    let first = tree.scene().unwrap();
+    let calls = service.calls;
+    tree.invalidate(Invalidation::Layout);
+    tree.layout_with_text(&mut engine, &mut service, viewport)
+        .unwrap();
+    assert_eq!(service.calls, calls);
+    assert_eq!(first.commands(), tree.scene().unwrap().commands());
+    for change in 0..4 {
+        let calls = service.calls;
+        let size = if change == 0 {
+            Size::new(180.0, 300.0)
+        } else {
+            viewport
+        };
+        match change {
+            1 => view.text.push_str(" changed"),
+            2 => view.style.font_size += 2.0,
+            3 => service.epoch += 1,
+            _ => {}
+        }
+        tree.reconcile(description(&view, true)).unwrap();
+        tree.layout_with_text(&mut engine, &mut service, size)
+            .unwrap();
+        assert!(service.calls > calls, "change {change} must reshape");
+        tree.scene().unwrap();
+    }
 }

@@ -1,5 +1,7 @@
 //! Vello CPU adapter for ZUI's portable drawing protocol.
 mod images;
+mod retained;
+pub use retained::RetainedCpuRenderer;
 use vello_cpu::{PixmapMut, RenderContext, Resources};
 use zui_paint::{Frame, OffscreenRenderer, PixelBuffer, RenderError, RenderLimits, Scene};
 use zui_vello::{

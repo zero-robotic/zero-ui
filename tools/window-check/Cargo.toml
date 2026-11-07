@@ -8,10 +8,11 @@ publish = false
 
 [features]
 default = ["cpu"]
-cpu = ["zui-app/cpu"]
+cpu = ["zui-app/cpu", "dep:zui-render-cpu"]
 gpu = ["zui-app/gpu"]
 
 [dependencies]
+zui-render-cpu = { workspace = true, optional = true }
 zui-image = { workspace = true, features = ["worker"] }
 png.workspace = true
 zui-charts.workspace = true
@@ -32,3 +33,7 @@ workspace = true
 
 [dev-dependencies]
 zui-core.workspace = true
+
+[[example]]
+name = "refresh-bench"
+required-features = ["cpu"]

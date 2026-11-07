@@ -1,5 +1,7 @@
 //! Top-level platform and renderer assembly.
 mod ime;
+mod refresh;
+pub use refresh::{PhaseTiming, RefreshMetrics, RefreshPhase};
 mod presenter;
 #[cfg(test)]
 mod tests;
@@ -27,6 +29,37 @@ pub enum Backend {
 /// Scene-level application contract. `WidgetHost` assembles declarative controls
 /// through this same entry point without changing the platform event loop.
 pub trait Application {
+    fn profiling_enabled(&self) -> bool {
+        false
+    }
+    /// CPU wall time for renderer + presentation submission; not GPU completion time.
+    fn record_presentation(&mut self, _duration: Duration) {}
+    /// Process every event in order. Implementations may merge deferred work, never input events.
+    fn update_batch(
+        &mut self,
+        events: impl IntoIterator<Item = WindowEvent>,
+        metrics: WindowMetrics,
+        elapsed: Duration,
+    ) -> Result<WindowAction, ApplicationError>
+    where
+        Self: Sized,
+    {
+        let mut merged = WindowAction::default();
+        for event in events {
+            let action = self.update(event, metrics, elapsed)?;
+            merged.redraw |= action.redraw;
+            merged.exit |= action.exit;
+            merged.wake_at = match (merged.wake_at, action.wake_at) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            if merged.exit {
+                break;
+            }
+        }
+        Ok(merged)
+    }
+
     fn animation_deadline(&self) -> Option<Duration> {
         None
     }
@@ -166,6 +199,10 @@ impl<A: Application> WindowHandler for Driver<A> {
                 window.pre_present_notify();
             }
             if let Some(presenter) = &mut self.presenter {
+                let started = self
+                    .application
+                    .profiling_enabled()
+                    .then(std::time::Instant::now);
                 let presentation = match presenter.present(&self.scene, frame) {
                     Ok(presentation) => presentation,
                     Err(error) => {
@@ -173,6 +210,9 @@ impl<A: Application> WindowHandler for Driver<A> {
                         return Err(error);
                     }
                 };
+                if let Some(started) = started {
+                    self.application.record_presentation(started.elapsed());
+                }
                 match presentation {
                     #[cfg(any(feature = "cpu", feature = "gpu"))]
                     Presentation::Presented => self.wake.presented(),

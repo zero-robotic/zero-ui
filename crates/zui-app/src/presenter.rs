@@ -54,14 +54,11 @@ pub(crate) fn create(
 #[cfg(feature = "cpu")]
 mod cpu {
     use super::*;
-    use zui_paint::PixelBuffer;
     use zui_platform::PixelPresenter;
 
     pub(super) struct CpuPresenter {
-        renderer: zui_render_cpu::CpuRenderer,
+        renderer: zui_render_cpu::RetainedCpuRenderer,
         surface: zui_backend_winit::SoftwareSurface,
-        pixels: Option<PixelBuffer>,
-        limits: RenderLimits,
     }
 
     impl CpuPresenter {
@@ -70,28 +67,15 @@ mod cpu {
             limits: RenderLimits,
         ) -> Result<Self, PlatformError> {
             Ok(Self {
-                renderer: zui_render_cpu::CpuRenderer::new(limits),
+                renderer: zui_render_cpu::RetainedCpuRenderer::new(limits),
                 surface: zui_backend_winit::SoftwareSurface::new(window)?,
-                pixels: None,
-                limits,
             })
         }
     }
 
     impl Presenter for CpuPresenter {
         fn present(&mut self, scene: &Scene, frame: Frame) -> Result<Presentation, PlatformError> {
-            if !self
-                .pixels
-                .as_ref()
-                .is_some_and(|pixels| pixels.extent() == frame.extent)
-            {
-                self.pixels = Some(PixelBuffer::new(frame.extent, self.limits)?);
-            }
-            let pixels = self
-                .pixels
-                .as_mut()
-                .ok_or(PlatformError::Unsupported("missing CPU frame buffer"))?;
-            self.renderer.render_into(scene, frame, pixels)?;
+            let pixels = self.renderer.render(scene, frame)?;
             self.surface.present(pixels)?;
             Ok(Presentation::Presented)
         }
