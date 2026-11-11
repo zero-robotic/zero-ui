@@ -148,6 +148,87 @@ fn tab(shift: bool) -> InputEvent {
         },
     })
 }
+
+#[test]
+fn focus_visibility_tracks_input_without_transferring_or_cancelling_focus() {
+    let (mut tree, log) = setup();
+    let visibility = |log: &Log| {
+        log.borrow()
+            .iter()
+            .filter_map(|record| match record {
+                Record::Event(context, WidgetEvent::FocusVisibleChanged(visible)) => {
+                    Some((context.id, *visible))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let point = Point::new(20.0, 35.0);
+    tree.dispatch_input(button(PointerButton::Primary, true, point))
+        .unwrap();
+    let focused = tree.focused().unwrap();
+    assert_eq!(visibility(&log), vec![(focused, false)]);
+    tree.dispatch_input(button(PointerButton::Primary, false, point))
+        .unwrap();
+    log.borrow_mut().clear();
+    tree.dispatch_input(InputEvent::Key(KeyInput {
+        key: Key::ArrowRight,
+        pressed: true,
+        repeat: false,
+        text: None,
+        modifiers: Default::default(),
+    }))
+    .unwrap();
+    assert_eq!(tree.focused(), Some(focused));
+    assert_eq!(visibility(&log), vec![(focused, true)]);
+    assert!(
+        !log.borrow()
+            .iter()
+            .any(|record| matches!(record, Record::Event(_, WidgetEvent::FocusChanged(_))))
+    );
+    log.borrow_mut().clear();
+    tree.dispatch_input(InputEvent::PointerMoved(point))
+        .unwrap();
+    tree.dispatch_input(InputEvent::Scroll(ScrollDelta::Lines { x: 0.0, y: 1.0 }))
+        .unwrap();
+    tree.dispatch_input(InputEvent::ModifiersChanged(Modifiers {
+        shift: true,
+        ..Default::default()
+    }))
+    .unwrap();
+    assert!(visibility(&log).is_empty());
+    tree.dispatch_input(button(PointerButton::Primary, true, point))
+        .unwrap();
+    assert_eq!(tree.focused(), Some(focused));
+    assert_eq!(tree.pointer_capture(), Some(focused));
+    assert_eq!(visibility(&log), vec![(focused, false)]);
+    tree.dispatch_input(button(PointerButton::Primary, false, point))
+        .unwrap();
+    log.borrow_mut().clear();
+    tree.dispatch_input(InputEvent::Key(KeyInput {
+        key: Key::Tab,
+        pressed: true,
+        repeat: false,
+        text: None,
+        modifiers: Modifiers {
+            control: true,
+            ..Default::default()
+        },
+    }))
+    .unwrap();
+    assert!(visibility(&log).is_empty());
+    tree.dispatch_input(tab(false)).unwrap();
+    let next = tree.focused().unwrap();
+    assert_ne!(next, focused);
+    assert_eq!(visibility(&log), vec![(focused, true), (next, true)]);
+    log.borrow_mut().clear();
+    tree.dispatch_input(tab(true)).unwrap();
+    assert_eq!(tree.focused(), Some(focused));
+    assert_eq!(visibility(&log), vec![(focused, true)]);
+    log.borrow_mut().clear();
+    tree.request_focus(Some(next)).unwrap();
+    assert_eq!(visibility(&log), vec![(next, true)]);
+}
 #[test]
 fn routing_phases_and_receiver_coordinates_match_nested_paint_transforms() {
     let (mut tree, log) = setup();

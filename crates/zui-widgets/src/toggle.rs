@@ -80,6 +80,7 @@ impl ToggleButtonView {
     fn button(&self) -> ButtonView {
         ButtonView {
             trailing_icon: None,
+            reserve_trailing_icon: false,
             label: self.label.clone(),
             text_style: self.text_style.clone(),
             style: if self.selected {

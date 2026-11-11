@@ -477,6 +477,7 @@ impl Widget for SegmentedControl {
                     );
                 });
                 if self.choice.interaction.focused
+                    && self.choice.interaction.focus_visible
                     && !self.properties.disabled
                     && !option.disabled
                     && self.choice.active == Some(option.id)

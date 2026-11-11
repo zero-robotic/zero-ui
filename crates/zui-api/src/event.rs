@@ -60,6 +60,7 @@ pub enum WidgetEvent {
     /// Positional input coordinates have been transformed into the receiver's space.
     Input(InputEvent),
     FocusChanged(bool),
+    FocusVisibleChanged(bool),
     PointerCaptureLost,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -93,6 +93,7 @@ impl DisclosureView {
         let header = HeaderView {
             button: ButtonView {
                 trailing_icon: None,
+                reserve_trailing_icon: false,
                 label: format!("{}  {}", if self.expanded { "−" } else { "+" }, self.label),
                 text_style: self.text_style,
                 style: self.header_style,

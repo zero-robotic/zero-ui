@@ -22,6 +22,7 @@ pub struct TextInputTarget {
 pub(crate) struct EventState {
     pub(crate) reveal_focus: Option<NodeId>,
     focus: Option<NodeId>,
+    keyboard_focus: bool,
     capture: Option<NodeId>,
     hover: Option<NodeId>,
     position: Option<Point>,
@@ -190,6 +191,19 @@ impl Tree {
         }
         let presentation = self.presentation()?;
         self.prune_input();
+        match &input {
+            InputEvent::PointerButton { pressed: true, .. } => self.set_focus_visible(false),
+            InputEvent::Key(key)
+                if key.pressed
+                    && !key.modifiers.control
+                    && !key.modifiers.alt
+                    && !key.modifiers.super_key
+                    && !matches!(key.key, Key::Unidentified) =>
+            {
+                self.set_focus_visible(true);
+            }
+            _ => {}
+        }
         if let Some(point) = position {
             self.events.position = Some(point);
         }
@@ -424,6 +438,19 @@ impl Tree {
         self.events.reveal_focus = focus;
         if let Some(id) = focus {
             self.direct(id, WidgetEvent::FocusChanged(true));
+            self.direct(
+                id,
+                WidgetEvent::FocusVisibleChanged(self.events.keyboard_focus),
+            );
+        }
+    }
+    fn set_focus_visible(&mut self, visible: bool) {
+        if self.events.keyboard_focus == visible {
+            return;
+        }
+        self.events.keyboard_focus = visible;
+        if let Some(id) = self.events.focus {
+            self.direct(id, WidgetEvent::FocusVisibleChanged(visible));
         }
     }
     pub(crate) fn set_capture(&mut self, capture: Option<NodeId>) {

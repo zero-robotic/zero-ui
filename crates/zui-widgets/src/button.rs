@@ -97,6 +97,7 @@ fn mix(a: Color, b: Color, amount: u16) -> Color {
 pub struct ButtonView {
     pub label: String,
     pub trailing_icon: Option<crate::Icon>,
+    pub reserve_trailing_icon: bool,
     pub text_style: TextStyle,
     pub style: ButtonStyle,
     pub action: ActionId,
@@ -113,6 +114,7 @@ impl ButtonView {
         Self {
             label: label.into(),
             trailing_icon: None,
+            reserve_trailing_icon: false,
             text_style: TextStyle {
                 families,
                 font_size: metrics.font_size(),
@@ -152,7 +154,9 @@ impl ViewSpec for ButtonView {
     }
     fn update(&self, button: &mut Button) -> Invalidation {
         let mut invalidation = self.text().update(&mut button.text);
-        if self.trailing_icon.is_some() != button.properties.trailing_icon.is_some()
+        if (self.trailing_icon.is_some() || self.reserve_trailing_icon)
+            != (button.properties.trailing_icon.is_some()
+                || button.properties.reserve_trailing_icon)
             || self.style.metrics != button.properties.style.metrics
         {
             invalidation = Invalidation::Layout;
@@ -174,7 +178,7 @@ impl Button {
         self.state.cancel();
     }
     fn icon_space(&self) -> f64 {
-        if self.properties.trailing_icon.is_some() {
+        if self.properties.trailing_icon.is_some() || self.properties.reserve_trailing_icon {
             self.properties.text_style.font_size as f64 * 1.4
         } else {
             0.0
@@ -220,7 +224,7 @@ impl Widget for Button {
         }
         let mut size = self.text.measure(context)?;
         size.width += extra;
-        if self.properties.trailing_icon.is_some() {
+        if self.properties.trailing_icon.is_some() || self.properties.reserve_trailing_icon {
             size.height = size.height.max(self.properties.text_style.font_size as f64);
         }
         size.height = size
@@ -276,6 +280,7 @@ impl Widget for Button {
         context.content_bounds.origin.x += padding;
         context.content_bounds.size.width -= 2.0 * padding;
         if self.state.focused
+            && self.state.focus_visible
             && self.enabled()
             && context.size.width > 4.0
             && context.size.height > 4.0

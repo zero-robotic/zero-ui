@@ -284,6 +284,7 @@ impl Widget for Switch {
             );
         });
         if self.interaction.focused
+            && self.interaction.focus_visible
             && self.enabled()
             && context.size.width > 4.0
             && context.size.height > 4.0

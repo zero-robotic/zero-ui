@@ -153,6 +153,7 @@ impl TableView {
                 self.action,
             );
             button.disabled = self.disabled || !c.sortable;
+            button.reserve_trailing_icon = c.sortable;
             let current = self.sort.filter(|s| s.column == c.id);
             button.trailing_icon = current.map(|s| {
                 Icon::builtin(if s.direction == SortDirection::Ascending {

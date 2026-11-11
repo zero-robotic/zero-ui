@@ -187,6 +187,7 @@ pub struct Scroll {
     page: Size,
     pending: bool,
     focused: bool,
+    focus_visible: bool,
     grab: Option<Grab>,
 }
 impl Scroll {
@@ -393,6 +394,7 @@ impl ViewSpec for Properties {
             page: Size::ZERO,
             pending: true,
             focused: false,
+            focus_visible: false,
             grab: None,
         }
     }
@@ -479,7 +481,11 @@ impl Widget for Scroll {
             };
             painter.fill_rect(bar.thumb, color);
         }
-        if self.focused && self.enabled() && context.size.width >= 2.0 && context.size.height >= 2.0
+        if self.focused
+            && self.focus_visible
+            && self.enabled()
+            && context.size.width >= 2.0
+            && context.size.height >= 2.0
         {
             painter.stroke(
                 Path::rectangle(Rect::new(
@@ -513,6 +519,14 @@ impl Widget for Scroll {
         }
         if let WidgetEvent::FocusChanged(focused) = event {
             self.focused = *focused;
+            self.focus_visible = *focused;
+            return EventResponse {
+                invalidation: Invalidation::Paint,
+                ..Default::default()
+            };
+        }
+        if let WidgetEvent::FocusVisibleChanged(visible) = event {
+            self.focus_visible = *visible;
             return EventResponse {
                 invalidation: Invalidation::Paint,
                 ..Default::default()

@@ -107,6 +107,7 @@ struct Drag {
 pub struct Slider {
     properties: SliderView,
     focused: bool,
+    focus_visible: bool,
     hovered: bool,
     drag: Option<Drag>,
 }
@@ -116,6 +117,7 @@ impl ViewSpec for SliderView {
         Slider {
             properties: *self,
             focused: false,
+            focus_visible: false,
             hovered: false,
             drag: None,
         }
@@ -268,7 +270,12 @@ impl Widget for Slider {
                 colors.thumb,
             );
         });
-        if self.focused && self.enabled() && context.size.width > 2.0 && context.size.height > 2.0 {
+        if self.focused
+            && self.focus_visible
+            && self.enabled()
+            && context.size.width > 2.0
+            && context.size.height > 2.0
+        {
             painter.stroke(
                 Path::rectangle(Rect::new(
                     1.0,
@@ -282,16 +289,18 @@ impl Widget for Slider {
         }
     }
     fn event(&mut self, context: EventContext, event: &WidgetEvent) -> EventResponse {
-        let before = (self.focused, self.hovered, self.drag);
+        let before = (self.focused, self.focus_visible, self.hovered, self.drag);
         let mut response = EventResponse::default();
         match event {
             WidgetEvent::FocusChanged(focused) => {
                 self.focused = *focused;
+                self.focus_visible = *focused;
                 if !focused {
                     self.drag = None;
                 }
             }
             WidgetEvent::PointerCaptureLost => self.drag = None,
+            WidgetEvent::FocusVisibleChanged(visible) => self.focus_visible = *visible,
             WidgetEvent::Input(InputEvent::PointerEntered) => self.hovered = true,
             WidgetEvent::Input(InputEvent::PointerLeft) => self.hovered = false,
             _ => {}
@@ -384,7 +393,7 @@ impl Widget for Slider {
                 _ => {}
             }
         }
-        if before != (self.focused, self.hovered, self.drag) {
+        if before != (self.focused, self.focus_visible, self.hovered, self.drag) {
             response.invalidation = Invalidation::Paint;
         }
         response

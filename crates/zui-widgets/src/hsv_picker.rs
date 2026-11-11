@@ -89,6 +89,7 @@ pub struct HsvPicker {
     properties: HsvPickerView,
     drag: Option<bool>,
     focused: bool,
+    focus_visible: bool,
 }
 impl ViewSpec for HsvPickerView {
     type Widget = HsvPicker;
@@ -97,6 +98,7 @@ impl ViewSpec for HsvPickerView {
             properties: *self,
             drag: None,
             focused: false,
+            focus_visible: false,
         }
     }
     fn update(&self, w: &mut HsvPicker) -> Invalidation {
@@ -222,7 +224,7 @@ impl Widget for HsvPicker {
                 Color::WHITE,
                 1.0,
             );
-            if self.focused {
+            if self.focused && self.focus_visible {
                 p.stroke(
                     Path::rectangle(Rect::new(
                         b.origin.x + 1.0,
@@ -243,6 +245,7 @@ impl Widget for HsvPicker {
         match e {
             WidgetEvent::FocusChanged(f) => {
                 self.focused = *f;
+                self.focus_visible = *f;
                 if !f {
                     self.drag = None;
                 }
@@ -254,6 +257,13 @@ impl Widget for HsvPicker {
             WidgetEvent::PointerCaptureLost => {
                 self.drag = None;
                 return EventResponse::default();
+            }
+            WidgetEvent::FocusVisibleChanged(visible) => {
+                self.focus_visible = *visible;
+                return EventResponse {
+                    invalidation: Invalidation::Paint,
+                    ..Default::default()
+                };
             }
             _ => {}
         }

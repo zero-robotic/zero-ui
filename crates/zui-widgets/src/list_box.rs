@@ -787,6 +787,7 @@ impl Widget for ListBox {
                     )
                 });
                 if self.choice.interaction.focused
+                    && self.choice.interaction.focus_visible
                     && !disabled
                     && self.choice.active == Some(item.id)
                     && rect.size.width > 4.0

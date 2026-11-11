@@ -87,6 +87,7 @@ impl StepperView {
             View::new(StepButtonView {
                 button: ButtonView {
                     trailing_icon: None,
+                    reserve_trailing_icon: false,
                     label: label.into(),
                     text_style: self.text_style.clone(),
                     style: self.button_style,

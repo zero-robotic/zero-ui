@@ -146,6 +146,44 @@ fn changing_binding_during_press_does_not_activate_new_action() {
     f.update();
     assert!(f.input(key(Key::Space, false, false)).actions.is_empty());
 }
+
+#[test]
+fn reserved_icon_slot_keeps_text_and_layout_stable_when_icon_changes() {
+    use zui_api::{view::ViewSpec, widget::Invalidation};
+    use zui_widgets::{Icon, IconKind};
+    let mut fixture = Fixture::new();
+    fixture.view.reserve_trailing_icon = true;
+    fixture.update();
+    let bounds = fixture.tree.layout_box(fixture.tree.root()).unwrap();
+    let glyphs = |scene: zui_paint::Scene| {
+        scene
+            .commands()
+            .iter()
+            .filter(|command| matches!(command, zui_paint::Command::Glyphs { .. }))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let expected = glyphs(fixture.tree.scene().unwrap());
+    let mut widget = fixture.view.build();
+    for icon in [
+        Some(Icon::builtin(IconKind::ChevronUp)),
+        Some(Icon::builtin(IconKind::ChevronDown)),
+        None,
+    ] {
+        fixture.view.trailing_icon = icon;
+        assert_eq!(fixture.view.update(&mut widget), Invalidation::Paint);
+        fixture.update();
+        assert_eq!(
+            fixture.tree.layout_box(fixture.tree.root()).unwrap(),
+            bounds
+        );
+        assert_eq!(glyphs(fixture.tree.scene().unwrap()), expected);
+    }
+    fixture.view.reserve_trailing_icon = false;
+    assert_eq!(fixture.view.update(&mut widget), Invalidation::Layout);
+    fixture.view.trailing_icon = Some(Icon::builtin(IconKind::ChevronUp));
+    assert_eq!(fixture.view.update(&mut widget), Invalidation::Layout);
+}
 fn verify(renderer: &mut impl OffscreenRenderer) {
     let mut f = Fixture::new();
     for state in 0..5 {
@@ -193,8 +231,7 @@ fn verify(renderer: &mut impl OffscreenRenderer) {
             assert_eq!(sample(4, 4), &[c.r, c.g, c.b, c.a]);
             assert_eq!(sample(210, 20), &[0, 0, 0, 255]);
             if state == 2 || state == 3 {
-                let ring = f.view.style.focus_ring;
-                assert_eq!(sample(1, 20), &[ring.r, ring.g, ring.b, ring.a]);
+                assert_eq!(sample(1, 20), &[c.r, c.g, c.b, c.a]);
             }
             assert!(
                 pixels.pixels().as_chunks::<4>().0.iter().any(|p| p[..3]

@@ -4,6 +4,7 @@ use zui_api::{event::*, widget::Invalidation};
 pub(crate) struct Interaction {
     pub(crate) hovered: bool,
     pub(crate) focused: bool,
+    pub(crate) focus_visible: bool,
     pub(crate) mouse: bool,
     pub(crate) space: bool,
 }
@@ -25,12 +26,14 @@ impl Interaction {
         match event {
             WidgetEvent::FocusChanged(focused) => {
                 self.focused = *focused;
+                self.focus_visible = *focused;
                 if !focused {
                     self.mouse = false;
                     self.space = false;
                 }
             }
             WidgetEvent::PointerCaptureLost => self.mouse = false,
+            WidgetEvent::FocusVisibleChanged(visible) => self.focus_visible = *visible,
             WidgetEvent::Input(InputEvent::PointerEntered) => self.hovered = true,
             WidgetEvent::Input(InputEvent::PointerLeft) => self.hovered = false,
             _ => {}

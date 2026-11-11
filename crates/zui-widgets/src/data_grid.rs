@@ -118,6 +118,7 @@ impl DataGridView {
             let mut button =
                 ButtonView::themed(&t.theme, c.title.clone(), t.families.clone(), t.action);
             button.disabled = t.disabled || !c.sortable;
+            button.reserve_trailing_icon = c.sortable;
             button.trailing_icon = current.map(|s| {
                 Icon::builtin(if s.direction == SortDirection::Ascending {
                     IconKind::ChevronUp
@@ -233,6 +234,11 @@ impl DataGridView {
     }
     fn build_row(&self, record: &crate::TableRow) -> View {
         let t = &self.table;
+        let background = t.theme.color(if t.selected == Some(record.id) {
+            ColorRole::SurfaceRaised
+        } else {
+            ColorRole::Surface
+        });
 
         let mut cells = Vec::new();
         for (index, c) in t.columns.iter().enumerate() {
@@ -241,12 +247,6 @@ impl DataGridView {
                 column: c.id,
             };
             let disabled = t.disabled || record.disabled;
-            let selected = t.selected == Some(record.id);
-            let background = t.theme.color(if selected {
-                ColorRole::SurfaceRaised
-            } else {
-                ColorRole::Surface
-            });
             let content = if let Some(factory) = &self.cell_factory {
                 factory(cell, &record.cells[index], disabled)
             } else if self.editable_columns.contains(&c.id) {
@@ -309,8 +309,13 @@ impl DataGridView {
                 );
                 button.disabled = disabled;
                 button.text_style.align = TextAlign::Start;
-                button.style.normal.background = background;
+                button.style.normal.background = Color::TRANSPARENT;
                 button.style.normal.foreground = t.theme.color(ColorRole::Text);
+                button.style.hovered = button.style.normal;
+                button.style.pressed = button.style.normal;
+                button.style.disabled.background = Color::TRANSPARENT;
+                button.style.border = Color::TRANSPARENT;
+                button.style.metrics.radius = 0;
                 View::new(ActionButtonView {
                     button,
                     payload: DataGridEvent::Selected(record.id),
@@ -324,7 +329,6 @@ impl DataGridView {
             cells.push(
                 Container::new(content)
                     .keyed(c.id.0)
-                    .background(background)
                     .style(|s| {
                         s.width = Dimension::Length(c.width);
                         s.min_width = Dimension::Length(0.0);
@@ -340,6 +344,7 @@ impl DataGridView {
         }
         row(cells)
             .keyed(alloc::format!("row-{}", record.id.0))
+            .background(background)
             .build()
     }
 }
