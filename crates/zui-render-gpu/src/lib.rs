@@ -1,7 +1,10 @@
 //! Vello GPU adapter for ZUI's portable drawing protocol.
 mod images;
 mod readback;
+mod retained;
 mod surface;
+#[cfg(feature = "profiling")]
+mod timing;
 
 pub use surface::{GpuSurface, PresentStatus};
 
@@ -15,6 +18,10 @@ use zui_vello::{
 /// Owns a GPU device for offscreen work. A separate surface integration can use
 /// `render_to_view` without a CPU readback on each frame.
 pub struct GpuRenderer {
+    #[cfg(feature = "profiling")]
+    timing: Option<timing::GpuTiming>,
+    retained: Option<retained::Retention>,
+    damage_config: zui_paint::DamageConfig,
     device: wgpu::Device,
     queue: wgpu::Queue,
     renderer: vello_gpu::Renderer,
@@ -44,10 +51,17 @@ impl GpuRenderer {
         limits: RenderLimits,
     ) -> Result<Self, RenderError> {
         let adapter_name = adapter.get_info().name;
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
-            .await
-            .map_err(backend)?;
+        let descriptor = wgpu::DeviceDescriptor::default();
+        #[cfg(feature = "profiling")]
+        let descriptor = {
+            let mut descriptor = descriptor;
+            let features = wgpu::Features::TIMESTAMP_QUERY;
+            if adapter.features().contains(features) {
+                descriptor.required_features = features;
+            }
+            descriptor
+        };
+        let (device, queue) = adapter.request_device(&descriptor).await.map_err(backend)?;
         let (renderer, resources) = vello_gpu::Renderer::new(
             &device,
             &vello_gpu::RenderTargetConfig {
@@ -57,6 +71,10 @@ impl GpuRenderer {
             },
         );
         Ok(Self {
+            #[cfg(feature = "profiling")]
+            timing: None,
+            retained: None,
+            damage_config: Default::default(),
             device,
             queue,
             renderer,
@@ -84,13 +102,47 @@ impl GpuRenderer {
         frame: Frame,
         view: &wgpu::TextureView,
     ) -> Result<(), RenderError> {
+        if let Err(error) = frame.validate(self.limits) {
+            self.invalidate_retained();
+            return Err(error);
+        }
+        if frame.extent.rgba_len().unwrap().saturating_mul(2) <= self.damage_config.max_pixel_bytes
+        {
+            return self.with_retained(scene, frame, |renderer, retained| {
+                retained.present(renderer, view)
+            });
+        }
+        self.retained = None;
         let (width, height) = self.prepare(scene, frame)?;
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let mut encoder = self.begin_submission(Some(view));
         self.encode(&mut encoder, view, width, height)?;
-        self.queue.submit([encoder.finish()]);
+        self.end_submission(encoder, Some(view));
         Ok(())
+    }
+
+    fn begin_submission(&self, _view: Option<&wgpu::TextureView>) -> wgpu::CommandEncoder {
+        let encoder = self.device.create_command_encoder(&Default::default());
+        #[cfg(feature = "profiling")]
+        let encoder = {
+            let mut encoder = encoder;
+            if let Some(timing) = &self.timing {
+                timing.begin(&mut encoder, _view.unwrap());
+            }
+            encoder
+        };
+        encoder
+    }
+
+    fn end_submission(&self, encoder: wgpu::CommandEncoder, _view: Option<&wgpu::TextureView>) {
+        #[cfg(feature = "profiling")]
+        let encoder = {
+            let mut encoder = encoder;
+            if let Some(timing) = &self.timing {
+                timing.end(&mut encoder, _view.unwrap());
+            }
+            encoder
+        };
+        self.queue.submit([encoder.finish()]);
     }
 
     pub fn device(&self) -> &wgpu::Device {
@@ -102,7 +154,23 @@ impl GpuRenderer {
     }
 
     fn prepare(&mut self, scene: &Scene, frame: Frame) -> Result<(u16, u16), RenderError> {
-        let (width, height) = zui_vello::dimensions(frame, self.limits)?;
+        self.prepare_region(
+            scene,
+            frame,
+            zui_vello::damage::PixelRegion::full(frame),
+            None,
+        )
+    }
+
+    fn prepare_region(
+        &mut self,
+        scene: &Scene,
+        frame: Frame,
+        region: zui_vello::damage::PixelRegion,
+        plan: Option<&zui_vello::damage::DamagePlan>,
+    ) -> Result<(u16, u16), RenderError> {
+        zui_vello::dimensions(frame, self.limits)?;
+        let (width, height) = (region.width as u16, region.height as u16);
         scene.validate(self.limits)?;
         let maximum = self.device.limits().max_texture_dimension_2d;
         if frame.extent.width > maximum || frame.extent.height > maximum {
@@ -110,11 +178,13 @@ impl GpuRenderer {
         }
         self.images.prepare(scene, &self.device, &self.queue)?;
         self.scene.reset_and_resize(width, height);
-        zui_vello::replay(
+        zui_vello::replay_filtered(
             scene,
             frame,
+            region,
             &mut self.fonts,
             &mut GpuCanvas(&mut self.scene, &mut self.resources, &self.images),
+            |index| plan.is_none_or(|plan| plan.includes(index, region)),
         )?;
         Ok((width, height))
     }

@@ -82,6 +82,9 @@ impl Tree {
                 candidate_child: path.get(index + 1).copied(),
             });
             self.dirty = self.dirty.max(response.invalidation);
+            if response.invalidation != zui_api::widget::Invalidation::None {
+                self.paint_dirty.insert(id);
+            }
             actions.extend(
                 response
                     .actions
@@ -119,6 +122,9 @@ impl Tree {
                 }
                 let response = node.widget.navigate_focus(navigation);
                 self.dirty = self.dirty.max(response.invalidation);
+                if response.invalidation != zui_api::widget::Invalidation::None {
+                    self.paint_dirty.insert(id);
+                }
                 actions.extend(
                     response
                         .actions

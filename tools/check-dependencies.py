@@ -41,7 +41,7 @@ ALLOWED = {
         "zui-types", "zui-paint", "zui-platform", "zui-backend-winit",
         "zui-render-cpu", "zui-render-gpu",
     },
-    "zui-window-check": {"zui-render-cpu", "zui-image", "zui-charts", "zui-dashboard", "zui-core", "zui-types", "zui-paint", "zui-platform", "zui-app", "zui-api", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-clipboard"},
+    "zui-window-check": {"zui-render-cpu", "zui-render-gpu", "zui-image", "zui-charts", "zui-dashboard", "zui-core", "zui-types", "zui-paint", "zui-platform", "zui-app", "zui-api", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-clipboard"},
     "zui-render-check": {"zui-image", "zui-dashboard", "zui-charts", "zui-types", "zui-paint", "zui-api", "zui-layout", "zui-core", "zui-text", "zui-widgets", "zui-theme", "zui-render-cpu", "zui-render-gpu", "zui-custom-widget-example"},
     "zui-custom-widget-example": {"zui-api", "zui-paint", "zui-types"},
 }

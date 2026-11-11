@@ -77,6 +77,8 @@ impl From<LayoutError> for TreeError {
 /// IDs are scoped to one tree and never reused during its lifetime. Topology can
 /// only change through validated operations; callers cannot mutate child arrays.
 pub struct Tree {
+    pub(crate) paint_dirty: BTreeSet<NodeId>,
+    pub(crate) paint_cache: crate::paint_cache::PaintCache,
     pub(crate) events: crate::event::EventState,
     pub(crate) nodes: BTreeMap<NodeId, Node>,
     pub(crate) root: NodeId,
@@ -111,6 +113,8 @@ impl Tree {
             clip: false,
         };
         Ok(Self {
+            paint_dirty: BTreeSet::new(),
+            paint_cache: Default::default(),
             events: Default::default(),
             nodes: BTreeMap::from([(root, node)]),
             root,
@@ -139,7 +143,17 @@ impl Tree {
     }
     /// Use for external resource changes or replacing the injected layout service.
     pub fn invalidate(&mut self, invalidation: Invalidation) {
+        if invalidation != Invalidation::None {
+            self.paint_cache.clear();
+        }
         self.dirty = self.dirty.max(invalidation);
+    }
+    pub fn set_paint_cache_budget(&mut self, bytes: usize) {
+        self.paint_cache.clear();
+        self.paint_cache.budget = bytes;
+    }
+    pub fn paint_cache_stats(&self) -> crate::PaintCacheStats {
+        self.paint_cache.stats
     }
     pub fn children(&self, id: NodeId) -> Result<&[NodeId], TreeError> {
         Ok(&self.get(id)?.children)
@@ -218,6 +232,7 @@ impl Tree {
             .children
             .insert(index, id);
         self.next_id = next;
+        self.paint_dirty.insert(parent);
         self.dirty = Invalidation::Layout;
         Ok(id)
     }
@@ -229,6 +244,7 @@ impl Tree {
             return Err(TreeError::LeafHasChildren);
         }
         if node.style != style {
+            self.paint_dirty.insert(id);
             node.style = style;
             self.dirty = Invalidation::Layout;
         }
@@ -237,6 +253,7 @@ impl Tree {
     pub fn set_clip(&mut self, id: NodeId, clip: bool) -> Result<(), TreeError> {
         let node = self.nodes.get_mut(&id).ok_or(TreeError::MissingNode(id))?;
         if node.clip != clip {
+            self.paint_dirty.insert(id);
             node.clip = clip;
             self.dirty = self.dirty.max(Invalidation::Paint);
         }
@@ -256,6 +273,9 @@ impl Tree {
             .ok_or(TreeError::TypeMismatch(id))?;
         self.dirty = self.dirty.max(invalidation);
         update(widget);
+        if invalidation != Invalidation::None {
+            self.paint_dirty.insert(id);
+        }
         self.prune_input();
         Ok(())
     }
@@ -267,6 +287,7 @@ impl Tree {
             return Err(TreeError::InvalidOrder);
         }
         if node.children != order {
+            self.paint_dirty.insert(parent);
             self.nodes
                 .get_mut(&parent)
                 .expect("validated parent")
@@ -317,18 +338,22 @@ impl Tree {
             .children
             .insert(index, id);
         self.nodes.get_mut(&id).expect("validated node").parent = Some(parent);
+        self.paint_dirty.insert(old);
+        self.paint_dirty.insert(parent);
         self.dirty = Invalidation::Layout;
         Ok(())
     }
     pub fn remove(&mut self, id: NodeId) -> Result<(), TreeError> {
         let parent = self.get(id)?.parent.ok_or(TreeError::RootMutation)?;
         let subtree = self.subtree(id);
+        self.paint_dirty.insert(parent);
         self.nodes
             .get_mut(&parent)
             .expect("validated parent")
             .children
             .retain(|&child| child != id);
         for id in subtree.into_iter().rev() {
+            self.paint_cache.remove(id);
             self.detach_input(id);
             let mut node = self.nodes.remove(&id).expect("validated node");
             node.widget.lifecycle(id, Lifecycle::Unmounted);

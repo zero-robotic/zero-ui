@@ -42,18 +42,38 @@ impl CpuRenderer {
         frame: Frame,
         target: &mut PixelBuffer,
     ) -> Result<(), RenderError> {
-        let (width, height) = zui_vello::dimensions(frame, self.limits)?;
-        scene.validate(self.limits)?;
-        if target.extent() != frame.extent {
-            return Err(RenderError::InvalidTarget);
-        }
-        self.context.reset_and_resize(width, height);
-        self.images.prepare(scene);
-        zui_vello::replay(
+        self.render_region_into(
             scene,
             frame,
+            zui_vello::damage::PixelRegion::full(frame),
+            target,
+            None,
+        )
+    }
+
+    pub(crate) fn render_region_into(
+        &mut self,
+        scene: &Scene,
+        frame: Frame,
+        region: zui_vello::damage::PixelRegion,
+        target: &mut PixelBuffer,
+        plan: Option<&zui_vello::damage::DamagePlan>,
+    ) -> Result<(), RenderError> {
+        zui_vello::dimensions(frame, self.limits)?;
+        scene.validate(self.limits)?;
+        if target.extent() != zui_types::Extent::new(region.width, region.height) {
+            return Err(RenderError::InvalidTarget);
+        }
+        let (width, height) = (region.width as u16, region.height as u16);
+        self.context.reset_and_resize(width, height);
+        self.images.prepare(scene);
+        zui_vello::replay_filtered(
+            scene,
+            frame,
+            region,
             &mut self.fonts,
             &mut CpuCanvas(&mut self.context, &mut self.resources, &mut self.images),
+            |index| plan.is_none_or(|plan| plan.includes(index, region)),
         )?;
         self.context.flush();
         let pixmap =

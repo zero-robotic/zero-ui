@@ -155,6 +155,8 @@ flowchart TD
 
 ## 7. 每次实现的边界审查
 
+子树命令缓存属于 `zui-core`；缓存只保存普通 Scene，按通用失效契约更新。区域比较与保守绘制边界属于 CPU/GPU 共享的 `zui-vello` 适配层；像素缓冲与纹理分别由对应渲染器持有。`zui-paint` 仅提供缓存策略/统计值和不可变绘制描述，不访问控件树。原生呈现自动使用区域复用，平台继续只理解像素或表面，不识别控件。详见 [区域绘制](region-rendering.md)。
+
 每个新增模块明确其职责、拥有的数据及生命周期、公开能力和允许依赖；按共同变化的原因组织代码，而不是按文件大小机械拆分。仅被一个模块使用的辅助实现保留在该模块内部，禁止建立没有明确职责的公共工具集合。
 
 每次交付检查以下条件：
@@ -193,6 +195,8 @@ ViewApplication 的 take_focus_request 只读访问核心 Tree 并返回 ViewFoc
 zui-charts 仅依赖 zui-api、zui-types、zui-paint、zui-theme。数据校验与值域映射位于模块内部，图表通过公共 Widget/Painter 契约实现。render-check 是上层装配与验证入口；核心、渲染适配和标准控件不反向引用图表。该边界已加入自动依赖检查。
 
 ## 大屏组合模块落地
+
+`tools/window-check` 的 `gpu-bench` 可选特性直接装配 GPU 渲染器、wgpu 与 pollster，仅用于无窗口性能测量；默认构建与 CPU-only 构建不引入这些依赖。GPU 时间戳位于渲染适配层的默认关闭 `profiling` 特性中，不进入 core、paint 或控件契约。
 
 zui-dashboard 依赖 zui-api、zui-types、zui-paint、zui-theme、zui-widgets 和 zui-charts，组合现有 View，并通过公共 Painter 绘制装饰，不直接引用核心或渲染后端。指标格式和业务含义由应用输入；组件不承担采样、网络或刷新调度。依赖策略已覆盖该模块及 render-check 的验证入口。
 

@@ -139,6 +139,9 @@ impl Tree {
             return Ok(false);
         }
         self.dirty = Invalidation::Layout;
+        if self.text_epoch != Some(epoch) {
+            self.paint_cache.clear();
+        }
         if !viewport.is_valid() {
             return Err(LayoutError::InvalidViewport.into());
         }
@@ -154,6 +157,9 @@ impl Tree {
         }
         for (&id, layout) in &adapter.outputs {
             let node = adapter.nodes.get_mut(&id).expect("validated layout node");
+            if node.layout != *layout {
+                self.paint_dirty.insert(id);
+            }
             let content_size = content_bounds(node, layout.bounds).size;
             node.widget.prepare(PrepareContext {
                 id,
@@ -190,18 +196,41 @@ impl Tree {
             Ok(())
         }
     }
-    /// Rebuilds the scene in child order; renderers receive no widget references.
+    /// Composes cached subtrees in child order; renderers receive no widget references.
     pub fn scene(&mut self) -> Result<Scene, TreeError> {
         self.ready()?;
-        let mut scene = Scene::new();
+        self.paint_cache.stats.reused_subtrees = 0;
+        self.paint_cache.stats.painted_nodes = 0;
+        for id in core::mem::take(&mut self.paint_dirty) {
+            let mut current = Some(id);
+            while let Some(id) = current {
+                self.paint_cache.remove(id);
+                current = self.nodes.get(&id).and_then(|node| node.parent);
+            }
+        }
+        if let Some(scene) = self.paint_cache.get(self.root) {
+            self.dirty = Invalidation::None;
+            return Ok(scene);
+        }
         let presentation = self.presentation()?;
-        self.paint_node(self.root, &presentation, &mut scene.painter());
+        let scene = self.paint_node(self.root, &presentation);
         self.dirty = Invalidation::None;
         Ok(scene)
     }
-    fn paint_node(&self, id: NodeId, presentation: &Presentation, painter: &mut Painter<'_>) {
+    fn paint_node(&mut self, id: NodeId, presentation: &Presentation) -> Scene {
+        if let Some(scene) = self.paint_cache.get(id) {
+            return scene;
+        }
+        self.paint_cache.stats.painted_nodes += 1;
+        let children = self.nodes[&id].children.clone();
+        let child_scenes: alloc::vec::Vec<_> = children
+            .into_iter()
+            .map(|child| self.paint_node(child, presentation))
+            .collect();
         let node = &self.nodes[&id];
         let bounds = node.layout.bounds;
+        let mut scene = Scene::new();
+        let mut painter = scene.painter();
         painter.with_transform(
             Affine::translate(bounds.origin.x, bounds.origin.y),
             |painter| {
@@ -217,8 +246,8 @@ impl Tree {
                         painter.with_transform(
                             Affine::translate(viewport.translation.x, viewport.translation.y),
                             |painter| {
-                                for &child in &node.children {
-                                    self.paint_node(child, presentation, painter);
+                                for child in &child_scenes {
+                                    painter.append(child);
                                 }
                             },
                         );
@@ -240,6 +269,8 @@ impl Tree {
                 }
             },
         );
+        self.paint_cache.insert(id, &scene);
+        scene
     }
     /// Reverse paint order, sharing the same transforms and rectangular clips.
     /// An unclipped parent may contain a hittable overflowing child.

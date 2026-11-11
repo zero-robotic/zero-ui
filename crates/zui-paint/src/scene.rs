@@ -1,5 +1,5 @@
 use crate::{GlyphRun, ImageResource, Path, RenderError, RenderLimits};
-use alloc::{collections::BTreeSet, vec::Vec};
+use alloc::{collections::BTreeSet, sync::Arc, vec::Vec};
 use zui_types::{Affine, Color, Rect};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -43,7 +43,7 @@ pub enum Command {
 
 #[derive(Clone, Debug, Default)]
 pub struct Scene {
-    commands: Vec<Command>,
+    commands: Arc<Vec<Command>>,
 }
 
 impl Scene {
@@ -53,8 +53,31 @@ impl Scene {
     pub fn commands(&self) -> &[Command] {
         &self.commands
     }
+    pub fn same_commands(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.commands, &other.commands) || self.commands == other.commands
+    }
     pub fn clear(&mut self) {
-        self.commands.clear();
+        Arc::make_mut(&mut self.commands).clear();
+    }
+    pub fn storage_bytes(&self) -> usize {
+        self.commands.iter().fold(
+            self.commands
+                .capacity()
+                .saturating_mul(core::mem::size_of::<Command>()),
+            |bytes, command| {
+                bytes.saturating_add(match command {
+                    Command::Fill { path, .. }
+                    | Command::Stroke { path, .. }
+                    | Command::PushClip { path, .. } => path.storage_bytes(),
+                    Command::Glyphs { run, .. } => run
+                        .glyphs
+                        .capacity()
+                        .saturating_mul(core::mem::size_of::<crate::Glyph>())
+                        .saturating_add(run.normalized_coords.capacity().saturating_mul(2)),
+                    _ => 0,
+                })
+            },
+        )
     }
     pub fn painter(&mut self) -> Painter<'_> {
         Painter {
@@ -75,7 +98,7 @@ impl Scene {
         let mut fonts = BTreeSet::new();
         let mut images = BTreeSet::new();
         let mut image_bytes = 0usize;
-        for command in &self.commands {
+        for command in self.commands.iter() {
             let (path, transform) = match command {
                 Command::Image {
                     image, transform, ..
@@ -171,22 +194,48 @@ pub struct Painter<'a> {
 }
 
 impl Painter<'_> {
+    pub fn append(&mut self, scene: &Scene) {
+        let transform = self.transform;
+        Arc::make_mut(&mut self.scene.commands).extend(scene.commands().iter().cloned().map(
+            |mut command| {
+                match &mut command {
+                    Command::Image {
+                        transform: local, ..
+                    }
+                    | Command::Glyphs {
+                        transform: local, ..
+                    }
+                    | Command::Fill {
+                        transform: local, ..
+                    }
+                    | Command::Stroke {
+                        transform: local, ..
+                    }
+                    | Command::PushClip {
+                        transform: local, ..
+                    } => *local = transform.compose(*local),
+                    Command::PopClip => {}
+                }
+                command
+            },
+        ));
+    }
     pub fn image(&mut self, image: ImageResource, sampling: ImageSampling) {
-        self.scene.commands.push(Command::Image {
+        Arc::make_mut(&mut self.scene.commands).push(Command::Image {
             image,
             sampling,
             transform: self.transform,
         });
     }
     pub fn glyphs(&mut self, run: GlyphRun, color: Color) {
-        self.scene.commands.push(Command::Glyphs {
+        Arc::make_mut(&mut self.scene.commands).push(Command::Glyphs {
             run,
             color,
             transform: self.transform,
         });
     }
     pub fn fill(&mut self, path: Path, color: Color) {
-        self.scene.commands.push(Command::Fill {
+        Arc::make_mut(&mut self.scene.commands).push(Command::Fill {
             path,
             color,
             transform: self.transform,
@@ -196,7 +245,7 @@ impl Painter<'_> {
         self.fill(Path::rectangle(rect), color);
     }
     pub fn stroke(&mut self, path: Path, color: Color, width: f64) {
-        self.scene.commands.push(Command::Stroke {
+        Arc::make_mut(&mut self.scene.commands).push(Command::Stroke {
             path,
             color,
             width,
@@ -211,11 +260,11 @@ impl Painter<'_> {
         draw(&mut nested);
     }
     pub fn with_clip(&mut self, path: Path, draw: impl FnOnce(&mut Painter<'_>)) {
-        self.scene.commands.push(Command::PushClip {
+        Arc::make_mut(&mut self.scene.commands).push(Command::PushClip {
             path,
             transform: self.transform,
         });
         draw(self);
-        self.scene.commands.push(Command::PopClip);
+        Arc::make_mut(&mut self.scene.commands).push(Command::PopClip);
     }
 }

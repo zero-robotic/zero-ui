@@ -77,6 +77,9 @@ impl Tree {
                 content_bounds: content_bounds(parent_node, bounds),
             };
             let invalidated = parent_node.widget.reveal_child(context, area);
+            if invalidated {
+                self.paint_dirty.insert(parent);
+            }
             self.dirty = self.dirty.max(if invalidated {
                 Invalidation::Paint
             } else {

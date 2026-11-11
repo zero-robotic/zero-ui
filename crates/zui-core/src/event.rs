@@ -291,6 +291,9 @@ impl Tree {
                     services,
                 );
                 self.dirty = self.dirty.max(response.invalidation);
+                if response.invalidation != Invalidation::None {
+                    self.paint_dirty.insert(id);
+                }
                 handled |= response.handled;
                 actions.extend(
                     response
@@ -405,6 +408,9 @@ impl Tree {
             );
             // Ownership requests from notifications are ignored to avoid recursive transfers.
             self.dirty = self.dirty.max(response.invalidation);
+            if response.invalidation != Invalidation::None {
+                self.paint_dirty.insert(id);
+            }
         }
     }
     pub(crate) fn set_focus(&mut self, focus: Option<NodeId>) {

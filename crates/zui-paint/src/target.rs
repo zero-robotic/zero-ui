@@ -4,7 +4,7 @@ use core::fmt;
 use zui_types::{Color, Extent};
 
 /// Physical target plus logical-to-physical scale. No windowing types required.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Frame {
     pub extent: Extent,
     pub scale: f64,

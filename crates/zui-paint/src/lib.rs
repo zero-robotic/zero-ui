@@ -2,10 +2,12 @@
 #![no_std]
 extern crate alloc;
 
+mod damage;
 mod path;
 mod scene;
 mod shapes;
 mod target;
+pub use damage::{DamageConfig, DamageStats};
 
 pub use path::{Path, PathElement};
 pub use scene::{Command, ImageSampling, Painter, Scene};

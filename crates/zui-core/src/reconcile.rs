@@ -29,6 +29,8 @@ struct Plan {
 impl Tree {
     pub fn from_view(view: View, limits: TreeLimits) -> Result<Self, TreeError> {
         let mut tree = Self {
+            paint_dirty: BTreeSet::new(),
+            paint_cache: Default::default(),
             events: Default::default(),
             nodes: BTreeMap::new(),
             root: NodeId(0),
@@ -99,6 +101,7 @@ impl Tree {
         let mut report = ReconcileReport::default();
         remove_unretained(self, old_nodes, &plans, &mut report);
         if order != old_children {
+            self.paint_dirty.insert(parent);
             self.dirty = Invalidation::Layout;
         }
         self.nodes
@@ -269,6 +272,7 @@ fn remove_unretained(
     }
     for id in old_nodes.into_iter().rev() {
         if !retained.contains(&id) {
+            tree.paint_cache.remove(id);
             tree.detach_input(id);
             let mut node = tree.nodes.remove(&id).expect("planned node");
             node.widget.lifecycle(id, Lifecycle::Unmounted);
@@ -296,14 +300,19 @@ fn apply(tree: &mut Tree, plan: Plan, parent: Option<NodeId>, report: &mut Recon
             .update_widget(node.widget.as_mut())
             .expect("type checked during planning");
         tree.dirty = tree.dirty.max(invalidation);
+        if invalidation != Invalidation::None {
+            tree.paint_dirty.insert(id);
+        }
         if node.style != view.style
             || node.children != order
             || node.child_ownership != view.child_ownership
             || node.layout_tag != view.layout_tag
         {
+            tree.paint_dirty.insert(id);
             tree.dirty = Invalidation::Layout;
         }
         if node.clip != view.clip {
+            tree.paint_dirty.insert(id);
             tree.dirty = tree.dirty.max(Invalidation::Paint);
         }
         node.layout_tag = view.layout_tag;

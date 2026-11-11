@@ -4132,6 +4132,7 @@ dependencies = [
 name = "zui-render-gpu"
 version = "0.1.0"
 dependencies = [
+ "pollster",
  "vello_gpu",
  "wgpu",
  "zui-paint",
@@ -4194,6 +4195,8 @@ name = "zui-window-check"
 version = "0.1.0"
 dependencies = [
  "png",
+ "pollster",
+ "wgpu",
  "zui-api",
  "zui-app",
  "zui-charts",
@@ -4205,6 +4208,7 @@ dependencies = [
  "zui-paint",
  "zui-platform",
  "zui-render-cpu",
+ "zui-render-gpu",
  "zui-text",
  "zui-theme",
  "zui-types",

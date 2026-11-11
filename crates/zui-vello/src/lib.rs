@@ -7,6 +7,7 @@ use vello_common::{
     peniko::Color,
 };
 use zui_paint::{Command, Frame, Path, PathElement, RenderError, RenderLimits, Scene};
+pub mod damage;
 
 pub use glifo::{Glyph, NormalizedCoord};
 use std::{
@@ -87,20 +88,45 @@ pub fn replay(
     fonts: &mut FontCache,
     canvas: &mut impl Canvas,
 ) -> Result<(), RenderError> {
+    replay_region(
+        scene,
+        frame,
+        damage::PixelRegion::full(frame),
+        fonts,
+        canvas,
+    )
+}
+
+pub fn replay_region(
+    scene: &Scene,
+    frame: Frame,
+    region: damage::PixelRegion,
+    fonts: &mut FontCache,
+    canvas: &mut impl Canvas,
+) -> Result<(), RenderError> {
+    replay_filtered(scene, frame, region, fonts, canvas, |_| true)
+}
+
+pub fn replay_filtered(
+    scene: &Scene,
+    frame: Frame,
+    region: damage::PixelRegion,
+    fonts: &mut FontCache,
+    canvas: &mut impl Canvas,
+    includes: impl Fn(usize) -> bool,
+) -> Result<(), RenderError> {
     fonts.prepare(scene);
     canvas.transform(Affine::IDENTITY);
     canvas.fill(
-        &kurbo::Rect::new(
-            0.0,
-            0.0,
-            frame.extent.width as f64,
-            frame.extent.height as f64,
-        )
-        .to_path(0.1),
+        &kurbo::Rect::new(0.0, 0.0, region.width as f64, region.height as f64).to_path(0.1),
         color(frame.background),
     );
-    let scale = Affine::scale(frame.scale);
-    for command in scene.commands() {
+    let scale =
+        Affine::translate((-(region.x as f64), -(region.y as f64))) * Affine::scale(frame.scale);
+    for (index, command) in scene.commands().iter().enumerate() {
+        if !matches!(command, Command::PushClip { .. } | Command::PopClip) && !includes(index) {
+            continue;
+        }
         match command {
             Command::Image {
                 image,

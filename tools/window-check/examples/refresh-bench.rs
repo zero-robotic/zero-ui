@@ -28,10 +28,10 @@ impl TextService for TextCounter {
         self.inner.layout(r)
     }
 }
-struct Model {
-    kind: &'static str,
-    value: u64,
-    families: Vec<String>,
+pub(crate) struct Model {
+    pub(crate) kind: &'static str,
+    pub(crate) value: u64,
+    pub(crate) families: Vec<String>,
 }
 impl ViewApplication for Model {
     type Message = ();
@@ -49,7 +49,7 @@ impl ViewApplication for Model {
                 self.families.clone(),
                 TypeRole::Caption,
             );
-            if i == 0 && self.kind == "color" {
+            if (i == 0 && self.kind == "color") || self.kind == "full_damage" {
                 label.color = if self.value.is_multiple_of(2) {
                     Color::WHITE
                 } else {
@@ -124,6 +124,7 @@ fn percentile(v: &mut [f64], q: f64) -> f64 {
     v.sort_by(f64::total_cmp);
     v[((v.len() - 1) as f64 * q) as usize]
 }
+#[cfg(feature = "cpu")]
 fn main() {
     let samples: usize = std::env::args()
         .nth(1)
@@ -131,7 +132,7 @@ fn main() {
         .unwrap_or(100);
     assert!(samples > 0);
     println!(
-        "scenario,samples,p50_us,p95_us,update_us,draw_us,cpu_us,view_us,reconcile_us,layout_us,input_us,animation_us,scene_us,view_calls,layout_passes,animation_calls,shape_calls,coalesced,checksum"
+        "scenario,samples,p50_us,p95_us,update_us,draw_us,cpu_us,view_us,reconcile_us,layout_us,input_us,animation_us,scene_us,view_calls,layout_passes,animation_calls,shape_calls,coalesced,checksum,last_rasterized_pixels,total_pixels"
     );
     for kind in [
         "local_text",
@@ -221,7 +222,7 @@ fn main() {
         let n = samples as f64;
         let stage = |p| stats.phase(p).total.as_secs_f64() * 1e6 / n;
         println!(
-            "{kind},{samples},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{},{checksum:016x}",
+            "{kind},{samples},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{},{checksum:016x},{},{}",
             percentile(&mut totals, 0.5),
             percentile(&mut totals, 0.95),
             update / n,
@@ -237,7 +238,9 @@ fn main() {
             stats.layouts,
             stats.phase(RefreshPhase::Animation).calls,
             calls.get(),
-            stats.coalesced_rebuilds
+            stats.coalesced_rebuilds,
+            renderer.damage_stats().rasterized_pixels,
+            renderer.damage_stats().total_pixels
         );
     }
 }

@@ -10,6 +10,9 @@ impl Tree {
         for (&id, node) in &mut self.nodes {
             let frame = node.widget.animate(elapsed);
             self.dirty = self.dirty.max(frame.invalidation);
+            if frame.invalidation != zui_api::widget::Invalidation::None {
+                self.paint_dirty.insert(id);
+            }
             update.invalidation = update.invalidation.max(frame.invalidation);
             if let Some(deadline) = frame.next_frame {
                 if deadline <= elapsed {

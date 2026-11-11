@@ -1,79 +1,107 @@
 use crate::CpuRenderer;
-use zui_paint::{Frame, PixelBuffer, RenderError, RenderLimits, Scene};
+use zui_paint::{DamageConfig, DamageStats, Frame, PixelBuffer, RenderError, RenderLimits, Scene};
+use zui_vello::damage::{DamagePlan, DamageTracker, PixelRegion};
 
-/// CPU presentation target retaining one validated scene and one pixel buffer.
-///
-/// The output is borrowed read-only, so a cache hit cannot expose caller-modified
-/// pixels. Scene commands and all frame parameters must match exactly. This is
-/// whole-frame reuse, not dirty-region rendering; changed frames render normally.
-/// Use `CpuRenderer` directly when the caller owns a mutable output buffer or
-/// retaining an additional scene is undesirable.
 pub struct RetainedCpuRenderer {
     renderer: CpuRenderer,
     limits: RenderLimits,
+    config: DamageConfig,
     pixels: Option<PixelBuffer>,
-    previous: Option<(Frame, Scene)>,
-    reused: bool,
+    scratch: Option<PixelBuffer>,
+    damage: DamageTracker,
 }
+
 impl Default for RetainedCpuRenderer {
     fn default() -> Self {
         Self::new(RenderLimits::default())
     }
 }
+
 impl RetainedCpuRenderer {
     pub fn new(limits: RenderLimits) -> Self {
+        Self::with_damage_config(limits, DamageConfig::default())
+    }
+    pub fn with_damage_config(limits: RenderLimits, config: DamageConfig) -> Self {
         Self {
             renderer: CpuRenderer::new(limits),
             limits,
+            config,
             pixels: None,
-            previous: None,
-            reused: false,
+            scratch: None,
+            damage: DamageTracker::new(config),
         }
     }
-    /// Whether the last successful render reused its pixels without rasterizing.
-    /// Reset to false on errors and explicit invalidation.
     pub fn reused_frame(&self) -> bool {
-        self.reused
+        self.damage.stats().reused_frame
     }
-    /// Drop the retained scene key; the next render must rasterize again.
+    pub fn damage_stats(&self) -> DamageStats {
+        self.damage.stats()
+    }
     pub fn invalidate(&mut self) {
-        self.previous = None;
-        self.reused = false;
+        self.damage.invalidate();
     }
     pub fn render(&mut self, scene: &Scene, frame: Frame) -> Result<&PixelBuffer, RenderError> {
-        self.reused = false;
-        if self
-            .previous
-            .as_ref()
-            .is_some_and(|(old_frame, old_scene)| {
-                old_frame.extent == frame.extent
-                    && old_frame.scale == frame.scale
-                    && old_frame.background == frame.background
-                    && old_scene.commands() == scene.commands()
-            })
-        {
-            // Only successful renders install a key; resources are immutable.
-            self.reused = true;
-        } else {
-            // Invalidate before any fallible work, including a partially failed
-            // replay. A later retry must never reuse possibly modified pixels.
-            self.previous = None;
-            zui_vello::dimensions(frame, self.limits)?;
-            scene.validate(self.limits)?;
-            if !self
-                .pixels
-                .as_ref()
-                .is_some_and(|p| p.extent() == frame.extent)
-            {
-                self.pixels = Some(PixelBuffer::new(frame.extent, self.limits)?);
-            }
-            self.renderer.render_into(
-                scene,
-                frame,
-                self.pixels.as_mut().expect("allocated target"),
-            )?;
-            self.previous = Some((frame, scene.clone()));
+        if let Err(error) = self.update(scene, frame) {
+            self.invalidate();
+            return Err(error);
         }
         Ok(self.pixels.as_ref().expect("successful render has target"))
+    }
+    fn update(&mut self, scene: &Scene, frame: Frame) -> Result<(), RenderError> {
+        zui_vello::dimensions(frame, self.limits)?;
+        scene.validate(self.limits)?;
+        let bytes = frame.extent.rgba_len().ok_or(RenderError::TargetTooLarge)?;
+        let cache_pixels = bytes.saturating_mul(2) <= self.config.max_pixel_bytes;
+        if !cache_pixels {
+            self.damage.invalidate();
+            self.scratch = None;
+        }
+        let plan = if cache_pixels {
+            self.damage.plan(scene, frame)?
+        } else {
+            DamagePlan::full(frame)
+        };
+        if self
+            .pixels
+            .as_ref()
+            .is_none_or(|pixels| pixels.extent() != frame.extent)
+        {
+            self.scratch = None;
+            self.pixels = Some(PixelBuffer::new(frame.extent, self.limits)?);
+        }
+        for region in &plan.regions {
+            if *region == PixelRegion::full(frame) {
+                self.renderer
+                    .render_into(scene, frame, self.pixels.as_mut().unwrap())?;
+            } else {
+                let extent = zui_types::Extent::new(region.width, region.height);
+                if self
+                    .scratch
+                    .as_ref()
+                    .is_none_or(|pixels| pixels.extent() != extent)
+                {
+                    self.scratch = Some(PixelBuffer::new(extent, self.limits)?);
+                }
+                let scratch = self.scratch.as_mut().unwrap();
+                self.renderer
+                    .render_region_into(scene, frame, *region, scratch, Some(&plan))?;
+                let target = self.pixels.as_mut().unwrap();
+                let stride = target.stride();
+                for (row, source) in scratch.pixels().chunks_exact(scratch.stride()).enumerate() {
+                    let start = (region.y as usize + row) * stride + region.x as usize * 4;
+                    let destination = &mut target.pixels_mut()[start..start + source.len()];
+                    if destination != source {
+                        destination.copy_from_slice(source);
+                    }
+                }
+            }
+        }
+        let scratch_bytes = self
+            .scratch
+            .as_ref()
+            .map_or(0, |pixels| pixels.pixels().len());
+        self.damage
+            .commit(plan, frame, bytes.saturating_add(scratch_bytes));
+        Ok(())
     }
 }

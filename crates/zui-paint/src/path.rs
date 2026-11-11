@@ -22,6 +22,11 @@ impl Path {
     pub fn elements(&self) -> &[PathElement] {
         &self.elements
     }
+    pub(crate) fn storage_bytes(&self) -> usize {
+        self.elements
+            .capacity()
+            .saturating_mul(core::mem::size_of::<PathElement>())
+    }
     pub fn move_to(&mut self, point: Point) {
         self.elements.push(PathElement::MoveTo(point));
     }
