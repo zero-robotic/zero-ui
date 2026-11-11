@@ -70,7 +70,11 @@ pub struct TextInputStyle {
 impl TextInputStyle {
     pub fn from_theme(theme: &Theme) -> Self {
         Self {
-            background: theme.color(ColorRole::Surface),
+            background: theme.color(if theme.controls().min_height > 0 {
+                ColorRole::Background
+            } else {
+                ColorRole::Surface
+            }),
             foreground: theme.color(ColorRole::Text),
             border: theme.color(ColorRole::Border),
             focus_border: theme.color(ColorRole::Accent),

@@ -223,8 +223,9 @@ impl Widget for CheckBox {
         let y = bounds.origin.y + ((bounds.size.height - size) / 2.0).max(0.0);
         painter.with_clip(Path::rectangle(bounds), |painter| {
             let selected = self.properties.state != CheckState::Unchecked;
-            painter.fill_rect(
-                Rect::new(x, y, size, size),
+            painter.fill(
+                Path::rounded_rectangle(Rect::new(x, y, size, size), size * 0.15)
+                    .expect("valid checkbox bounds"),
                 if selected {
                     colors.selected_background
                 } else {
@@ -232,7 +233,11 @@ impl Widget for CheckBox {
                 },
             );
             painter.stroke(
-                Path::rectangle(Rect::new(x + 0.5, y + 0.5, size - 1.0, size - 1.0)),
+                Path::rounded_rectangle(
+                    Rect::new(x + 0.5, y + 0.5, size - 1.0, size - 1.0),
+                    size * 0.15,
+                )
+                .expect("valid checkbox border"),
                 colors.border,
                 1.0,
             );

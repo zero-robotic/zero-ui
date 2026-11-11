@@ -11,6 +11,8 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ALLOWED = {
+    "zui-opengl": {"zui-types", "zui-api", "zui-paint", "zui-core", "zui-layout", "zui-text", "zui-render-cpu"},
+    "zui-opengl-example": {"zui-opengl", "zui-app", "zui-api", "zui-types", "zui-platform", "zui-paint", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-render-cpu"},
     "zui-controls-example": {"zui-core", "zui-app", "zui-api", "zui-types", "zui-platform", "zui-paint", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-clipboard"},
     "zui-dashboard-example": {"zui-core", "zui-app", "zui-api", "zui-types", "zui-platform", "zui-paint", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-clipboard", "zui-charts", "zui-dashboard"},
 

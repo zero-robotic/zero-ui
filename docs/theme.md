@@ -8,6 +8,7 @@
 - `TypeRole`：Caption、Body、Heading、Display，对应字号和相对行高。
 - `Space`：None、Xs、Sm、Md、Lg、Xl，对应逻辑间距。
 - `Theme::dark()`、`light()` 和 `dashboard()`：三套配色，共享默认字号与间距。
+- `Theme::desktop_dark()`、`desktop_light()`：参考 Blender 控件的中性灰桌面主题，蓝色强调色、4px 圆角、26px 控件最小高度与紧凑间距；控件展厅默认使用这组主题。输入框使用页面底色，与面板和按钮区分；选中背景使用不透明混色，主操作与勾选标记使用白色前景。
 
 主题是应用拥有的普通值，无全局主题管理器。构建 View 时读取当前主题，将语义变量转为普通属性，再通过现有 `Tree::reconcile` 更新。主题改变不会自动修改已经构建的 View；应用必须重建描述并提交协调。
 
@@ -43,8 +44,10 @@ let view = Container::new(View::new(text))
 ```sh
 cargo run -p zui-render-check --locked -- cpu artifacts/theme-light.png theme-light
 cargo run -p zui-render-check --locked -- cpu artifacts/theme-dashboard.png theme-dashboard
+cargo run -p zui-render-check --locked -- cpu artifacts/desktop-dark.png desktop-dark
+cargo run -p zui-render-check --locked -- cpu artifacts/desktop-light.png desktop-light
 ```
 
 测试验证配色切换后像素改变、字形和节点身份保留、无额外排版调用；字号和间距修改触发重新布局。CPU/GPU 执行同一验证路径。
 
-当前仅交付基础变量与显式解析。圆角、边框宽度、动效时长、控件悬停/按下/禁用状态映射、系统主题跟随、主题过渡动画和可访问性对比度验收仍待实现。Dashboard 配色不意味着已实现辉光、滤镜或完整大屏组件。
+`ControlMetrics` 提供控件/面板圆角、最小高度与水平内边距，可通过 `set_controls` 局部覆盖。控件层负责悬停、按下、禁用与焦点状态映射；桌面主题已有文字和选中态对比度、分数缩放及 Retina 渲染检查。系统主题跟随、主题过渡动画和完整可访问性验收仍待实现。Dashboard 配色不意味着已实现辉光、滤镜或完整大屏组件。

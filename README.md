@@ -119,3 +119,5 @@ cargo test -p zui-render-check --all-features --locked -- --ignored --nocapture
 P1/P2 完整清单、可编辑表格与专用选择器：[控件清单](docs/controls-catalog.md)。
 
 已有控件增强的接口、示例与剩余缺项见 [控件增强](docs/advanced-controls.md)。
+
+原生 OpenGL 控件：`cargo run -p zui-opengl-example -- cpu`；GPU 合成使用 `--features gpu -- gpu`。业务可直接编写 shader 和 GL draw calls，接入方式与生命周期约定见 [OpenGlView](docs/opengl-view.md)。

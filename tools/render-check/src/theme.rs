@@ -97,6 +97,8 @@ pub fn desktop_preview(theme: &Theme) -> Result<Scene, Box<dyn std::error::Error
         ActionId(4),
     );
     nodes.expanded.insert(TreeItemId(1));
+    let mut disabled = ButtonView::themed(theme, "不可用", families.clone(), ActionId(5));
+    disabled.disabled = true;
     let left = GroupBoxView::themed(theme, "设备设置", families.clone())
         .build(
             column([
@@ -115,6 +117,7 @@ pub fn desktop_preview(theme: &Theme) -> Result<Scene, Box<dyn std::error::Error
                 ])
                 .style(|s| s.gap = Size::new(8.0, 0.0))
                 .build(),
+                View::new(disabled),
             ])
             .style(|s| s.gap = Size::new(0.0, 12.0))
             .build(),
@@ -125,7 +128,41 @@ pub fn desktop_preview(theme: &Theme) -> Result<Scene, Box<dyn std::error::Error
             ..Default::default()
         });
     let right = GroupBoxView::themed(theme, "设备列表", families.clone())
-        .build(nodes.build()?)
+        .build(
+            column([
+                nodes.build()?,
+                View::new(CheckBoxView::themed(
+                    theme,
+                    "启用自动采集",
+                    families.clone(),
+                    CheckState::Checked,
+                    ActionId(6),
+                )),
+                row([
+                    View::new(SliderView::themed(
+                        theme,
+                        NumericRange::new(0.0, 100.0, 1.0)?,
+                        65.0,
+                        ActionId(7),
+                    )),
+                    View::new(SwitchView::themed(theme, true, ActionId(8))),
+                ])
+                .style(|s| s.gap = Size::new(12.0, 0.0))
+                .build(),
+                View::new(SegmentedControlView::themed(
+                    theme,
+                    vec![
+                        SegmentOption::new(SegmentId(1), "实时"),
+                        SegmentOption::new(SegmentId(2), "历史"),
+                    ],
+                    families.clone(),
+                    Some(SegmentId(1)),
+                    ActionId(9),
+                )),
+            ])
+            .style(|s| s.gap = Size::new(0.0, 12.0))
+            .build(),
+        )
         .styled(zui_api::layout::LayoutStyle {
             kind: zui_api::layout::LayoutKind::Column,
             grow: 1.0,
@@ -141,7 +178,7 @@ pub fn desktop_preview(theme: &Theme) -> Result<Scene, Box<dyn std::error::Error
         )),
         View::new(TextView::themed(
             theme,
-            "清晰层级 · 柔和选中 · 统一逻辑尺寸",
+            "Blender 风格 · 中性灰阶 · 紧凑控件",
             families,
             TypeRole::Caption,
         )),

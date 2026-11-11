@@ -61,8 +61,16 @@ impl SwitchStyle {
                 ..normal
             },
             focus_ring: theme.color(ColorRole::Text),
-            width: 48.0,
-            height: 26.0,
+            width: if theme.controls().min_height > 0 {
+                36.0
+            } else {
+                48.0
+            },
+            height: if theme.controls().min_height > 0 {
+                20.0
+            } else {
+                26.0
+            },
             inset: 3.0,
         }
     }

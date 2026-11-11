@@ -181,9 +181,9 @@ impl Theme {
     fn desktop(light: bool) -> Self {
         let mut theme = if light { Self::light() } else { Self::dark() };
         theme.controls = ControlMetrics {
-            radius: 6,
-            panel_radius: 8,
-            min_height: 28,
+            radius: 4,
+            panel_radius: 4,
+            min_height: 26,
             padding_x: 8,
         };
         theme.typography = [
@@ -204,23 +204,41 @@ impl Theme {
                 line_height: 1.2,
             },
         ];
-        theme.spacing = [0.0, 4.0, 8.0, 12.0, 16.0, 24.0];
-        theme.set_color(
+        theme.spacing = [0.0, 3.0, 6.0, 10.0, 16.0, 24.0];
+        let surfaces = if light {
+            [
+                Color::rgb(218, 218, 218),
+                Color::rgb(235, 235, 235),
+                Color::rgb(248, 248, 248),
+                Color::rgb(32, 32, 32),
+                Color::rgb(88, 88, 88),
+                Color::rgb(158, 158, 158),
+            ]
+        } else {
+            [
+                Color::rgb(37, 37, 37),
+                Color::rgb(48, 48, 48),
+                Color::rgb(76, 76, 76),
+                Color::rgb(230, 230, 230),
+                Color::rgb(190, 190, 190),
+                Color::rgb(29, 29, 29),
+            ]
+        };
+        for (role, color) in [
+            ColorRole::Background,
+            ColorRole::Surface,
+            ColorRole::SurfaceRaised,
+            ColorRole::Text,
+            ColorRole::TextMuted,
             ColorRole::Border,
-            if light {
-                Color::rgb(213, 219, 227)
-            } else {
-                Color::rgb(54, 63, 76)
-            },
-        );
-        theme.set_color(
-            ColorRole::Accent,
-            if light {
-                Color::rgb(49, 104, 210)
-            } else {
-                Color::rgb(124, 164, 238)
-            },
-        );
+        ]
+        .into_iter()
+        .zip(surfaces)
+        {
+            theme.set_color(role, color);
+        }
+        theme.set_color(ColorRole::Accent, Color::rgb(67, 111, 174));
+        theme.set_color(ColorRole::OnAccent, Color::WHITE);
         theme
     }
     pub fn controls(&self) -> ControlMetrics {
@@ -236,7 +254,7 @@ impl Theme {
         }
         let base = self.color(ColorRole::Surface);
         let accent = self.color(ColorRole::Accent);
-        let blend = |a: u8, b: u8| ((u16::from(a) * 4 + u16::from(b)) / 5) as u8;
+        let blend = |a: u8, b: u8| ((u16::from(a) * 3 + u16::from(b) * 2) / 5) as u8;
         Color::rgb(
             blend(base.r, accent.r),
             blend(base.g, accent.g),

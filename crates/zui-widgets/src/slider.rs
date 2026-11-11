@@ -54,7 +54,11 @@ impl SliderStyle {
                 ..normal
             },
             focus_ring: theme.color(ColorRole::Accent),
-            thumb_size: 20.0,
+            thumb_size: if theme.controls().min_height > 0 {
+                14.0
+            } else {
+                20.0
+            },
             track_thickness: 4.0,
             natural_width: 200.0,
         }
@@ -239,16 +243,28 @@ impl Widget for Slider {
         let x = t.center(p);
         let thickness = (p.style.track_thickness as f64).min(t.thumb);
         painter.with_clip(Path::rectangle(context.content_bounds), |painter| {
-            painter.fill_rect(
-                Rect::new(t.start, t.y - thickness / 2.0, t.length, thickness),
+            painter.fill(
+                Path::rounded_rectangle(
+                    Rect::new(t.start, t.y - thickness / 2.0, t.length, thickness),
+                    thickness / 2.0,
+                )
+                .expect("valid slider track"),
                 colors.track,
             );
-            painter.fill_rect(
-                Rect::new(t.start, t.y - thickness / 2.0, x - t.start, thickness),
+            painter.fill(
+                Path::rounded_rectangle(
+                    Rect::new(t.start, t.y - thickness / 2.0, x - t.start, thickness),
+                    thickness / 2.0,
+                )
+                .expect("valid slider fill"),
                 colors.fill,
             );
-            painter.fill_rect(
-                Rect::new(x - t.thumb / 2.0, t.y - t.thumb / 2.0, t.thumb, t.thumb),
+            painter.fill(
+                Path::rounded_rectangle(
+                    Rect::new(x - t.thumb / 2.0, t.y - t.thumb / 2.0, t.thumb, t.thumb),
+                    3.0,
+                )
+                .expect("valid slider thumb"),
                 colors.thumb,
             );
         });

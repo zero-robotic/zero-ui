@@ -1,0 +1,29 @@
+[package]
+name = "zui-opengl-example"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = ["cpu"]
+cpu = ["zui-app/cpu"]
+gpu = ["zui-app/gpu"]
+
+[dependencies]
+zui-opengl.workspace = true
+zui-app.workspace = true
+zui-api.workspace = true
+zui-types.workspace = true
+zui-platform.workspace = true
+zui-paint.workspace = true
+zui-layout.workspace = true
+zui-text.workspace = true
+zui-theme.workspace = true
+zui-widgets.workspace = true
+zui-render-cpu.workspace = true
+png.workspace = true
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

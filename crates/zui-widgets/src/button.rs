@@ -76,7 +76,7 @@ impl ButtonStyle {
         };
         style.pressed = ButtonColors {
             background: theme.selection_background(),
-            ..style.normal
+            foreground: theme.selection_foreground(),
         };
         style.border = theme.color(ColorRole::Border);
         style

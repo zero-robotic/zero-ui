@@ -10,6 +10,7 @@ rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+zui-opengl = { path = "crates/zui-opengl" }
 zui-image = { path = "crates/zui-image" }
 zui-dashboard = { path = "crates/zui-dashboard" }
 zui-charts = { path = "crates/zui-charts" }

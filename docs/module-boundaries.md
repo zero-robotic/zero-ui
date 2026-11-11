@@ -64,6 +64,7 @@
 | `zui-vello` | 渲染适配层内部共享的 Vello 命令转换 | types、paint |
 | `zui-render-cpu` | Vello CPU 适配及其资源管理 | types、paint、vello |
 | `zui-render-gpu` | Vello GPU 适配及其资源管理 | types、paint、vello |
+| `zui-opengl` | 可选桌面 OpenGL 控件、私有上下文/FBO 与图像回读适配 | types、api、paint（测试可使用 core、layout、text、render-cpu） |
 | `zui-backend-winit` | 桌面平台服务实现 | types、paint、platform |
 | `zui-backend-linux` | 嵌入式 Linux 平台服务实现 | types、paint、platform |
 | `zui-core` | 节点生命周期、事件路由、焦点、失效与帧调度 | types、api、paint、platform、theme、animation |
@@ -224,3 +225,5 @@ FilePicker 仅接收目录条目并发出导航、打开、保存请求，不访
 ## 已有控件增强边界
 
 ComboBox、树加载/移动、页签关闭/重排/拖出均发出不透明 Action，由应用确认模型修改。TreeView 和 DataGrid 复用 VirtualList；DataGrid 自定义单元格通过 View 工厂注入，编辑草稿使用应用拥有的 TextInputDraft。HSV 转换与绘制位于可移植控件层，不调用屏幕采集。此次未修改平台层或引入反向依赖；拖出请求不等于多窗口实现。实际进展与未完成项见 [控件增强](advanced-controls.md)。
+
+`zui-opengl` 是应用显式选用的桌面扩展，不由标准控件或核心重导出。它实现公共 Widget 契约并将 GL 结果转换成 ImageResource；普通绘制后端只处理图像，不识别 OpenGlView。裸 OpenGL 接口通过该扩展的 glow 重导出，原生上下文仍保持私有。FFI/unsafe 仅限此扩展和演示 GL 业务代码，其他 crate 继续禁止 unsafe。

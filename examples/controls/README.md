@@ -7,6 +7,8 @@ cargo run -p zui-controls-example --no-default-features --features gpu -- gpu
 
 默认 1100×800 窗口，向下滚动查看全部展示区。Tab/Shift+Tab 切换焦点，选择控件可用方向键，Escape 退出。支持 `--smoke-ms 1600` 自动退出。
 
+默认桌面主题参考 Blender 的中性灰控件风格：紧凑尺寸、小圆角、蓝色强调、内凹输入底色；明暗主题共享尺寸，切换时保持布局稳定。
+
 ## 展示及联动
 
 - Button 切换整个展厅的明暗主题；CheckBox 控制说明显示；RadioGroup 改变模式说明。
