@@ -210,6 +210,71 @@ fn pagination_is_bounded_and_breadcrumb_current_item_does_not_navigate() {
         Some(&BreadcrumbSelected { id: 1 })
     );
 }
+
+#[cfg(feature = "cpu")]
+#[test]
+fn pagination_current_page_is_accented_but_cannot_be_activated() {
+    use zui_paint::{Frame, OffscreenRenderer};
+    use zui_types::Extent;
+    for theme in [
+        Theme::desktop_dark(),
+        Theme::desktop_light(),
+        Theme::dashboard(),
+    ] {
+        let (mut text, families) = text();
+        for page in [1, 2, 3] {
+            let mut tree = Tree::from_view(
+                PaginationView::themed(&theme, page, 3, families.clone(), ActionId(4))
+                    .build()
+                    .unwrap(),
+                Default::default(),
+            )
+            .unwrap();
+            layout(&mut tree, &mut text);
+            let children = tree.children(tree.root()).unwrap().to_vec();
+            let current = children[page as usize + 1];
+            assert!(tree.request_focus(Some(current)).is_err());
+            let bounds = tree.layout_box(current).unwrap().bounds;
+            assert!(
+                click(
+                    &mut tree,
+                    bounds.origin.x + bounds.size.width / 2.0,
+                    bounds.origin.y + bounds.size.height / 2.0
+                )
+                .actions
+                .is_empty()
+            );
+            for scale in [1_u32, 2] {
+                let pixels = zui_render_cpu::CpuRenderer::default()
+                    .render(
+                        &tree.scene().unwrap(),
+                        Frame {
+                            extent: Extent::new(640 * scale, 480 * scale),
+                            scale: f64::from(scale),
+                            background: Color::BLACK,
+                        },
+                    )
+                    .unwrap();
+                for (index, child) in children.iter().enumerate() {
+                    let bounds = tree.layout_box(*child).unwrap().bounds;
+                    let horizontal = bounds.origin.x + bounds.size.width / 2.0;
+                    let vertical = bounds.origin.y + 3.0;
+                    let offset = (vertical * f64::from(scale)) as usize * pixels.stride()
+                        + (horizontal * f64::from(scale)) as usize * 4;
+                    let expected = theme.color(if index == page as usize + 1 {
+                        zui_theme::ColorRole::Accent
+                    } else {
+                        zui_theme::ColorRole::SurfaceRaised
+                    });
+                    assert_eq!(
+                        &pixels.pixels()[offset..offset + 4],
+                        &[expected.r, expected.g, expected.b, expected.a]
+                    );
+                }
+            }
+        }
+    }
+}
 #[test]
 fn toast_expires_without_focus_scope_and_revision_restarts_timer() {
     let (mut text, f) = text();

@@ -17,6 +17,80 @@ struct Fixture {
     view: SegmentedControlView,
     width: f32,
 }
+
+#[cfg(feature = "cpu")]
+#[test]
+fn joined_segments_round_only_outer_corners_and_draw_each_seam_once() {
+    verify_joined(&mut zui_render_cpu::CpuRenderer::default());
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "requires a real GPU adapter"]
+fn joined_segments_round_only_outer_corners_and_draw_each_seam_once_gpu() {
+    verify_joined(
+        &mut pollster::block_on(zui_render_gpu::GpuRenderer::new(Default::default())).unwrap(),
+    );
+}
+
+fn verify_joined(renderer: &mut dyn OffscreenRenderer) {
+    for theme in [
+        Theme::desktop_dark(),
+        Theme::desktop_light(),
+        Theme::dashboard(),
+    ] {
+        let mut fixture = Fixture::new();
+        fixture.width = 316.0;
+        fixture.view.style = zui_widgets::SegmentedStyle::from_theme(&theme);
+        fixture.view.style.gap = 0.0;
+        fixture.view.style.radius = 8.0;
+        for option in &mut fixture.view.options {
+            option.label.clear();
+            option.disabled = false;
+        }
+        fixture.update();
+        for disabled in [false, true] {
+            fixture.view.disabled = disabled;
+            fixture.update();
+            let colors = if disabled {
+                fixture.view.style.disabled
+            } else {
+                fixture.view.style.normal
+            };
+            for scale in [1_u32, 2] {
+                let background = Color::rgb(217, 17, 217);
+                let pixels = renderer
+                    .render(
+                        &fixture.tree.scene().unwrap(),
+                        Frame {
+                            extent: Extent::new(320 * scale, 100 * scale),
+                            scale: f64::from(scale),
+                            background,
+                        },
+                    )
+                    .unwrap();
+                for (horizontal, vertical, expected) in [
+                    (8, 8, background),
+                    (307, 8, background),
+                    (107, 10, colors.selected_background),
+                    (108, 10, colors.border),
+                    (109, 10, colors.background),
+                    (207, 10, colors.background),
+                    (208, 10, colors.border),
+                    (209, 10, colors.background),
+                ] {
+                    let offset = (vertical * scale) as usize * pixels.stride()
+                        + (horizontal * scale * 4) as usize;
+                    assert_eq!(
+                        &pixels.pixels()[offset..offset + 4],
+                        &[expected.r, expected.g, expected.b, expected.a],
+                        "pixel ({horizontal}, {vertical}), scale {scale}, disabled {disabled}"
+                    );
+                }
+            }
+        }
+    }
+}
 impl Fixture {
     fn new() -> Self {
         static FONT: OnceLock<Arc<[u8]>> = OnceLock::new();
@@ -149,6 +223,16 @@ fn segment_requests_are_controlled_and_hit_testing_excludes_gaps_padding_and_dis
     assert!(!f.update());
     assert!(f.click(last).actions.is_empty());
 }
+
+#[test]
+fn changing_only_corner_radius_repaints_without_relayout() {
+    let mut fixture = Fixture::new();
+    let before = fixture.tree.scene().unwrap();
+    fixture.view.style.radius = 13.0;
+    assert!(!fixture.update());
+    let after = fixture.tree.scene().unwrap();
+    assert_ne!(before.commands(), after.commands());
+}
 #[test]
 fn keyboard_reorder_and_disabled_updates_keep_one_focus_owner_and_cancel_stale_gestures() {
     let mut f = Fixture::new();
@@ -221,13 +305,16 @@ fn label_wrapping_common_height_empty_and_invalid_configuration_are_explicit() {
         16.0
     );
     assert!(!f.input(key(Key::Tab, true)).handled);
-    for variant in 0..4 {
+    for variant in 0..7 {
         let mut bad = Fixture::new();
         match variant {
             0 => bad.view.options[1].id = SegmentId(10),
             1 => bad.view.selected = Some(SegmentId(999)),
             2 => bad.view.style.padding_x = f32::INFINITY,
-            _ => bad.view.style.gap = -1.0,
+            3 => bad.view.style.gap = -1.0,
+            4 => bad.view.style.radius = -1.0,
+            5 => bad.view.style.radius = f32::NAN,
+            _ => bad.view.style.radius = f32::INFINITY,
         }
         bad.tree
             .reconcile(description(&bad.view, bad.width))

@@ -1,4 +1,5 @@
 //! Controlled single-choice segments with one focus stop and equal-width cells.
+use crate::appearance::{Surface, VisualState, padded};
 use crate::{
     Text, TextView,
     choice::{ChoiceItem, ChoiceState},
@@ -64,6 +65,7 @@ pub struct SegmentedStyle {
     pub padding_x: f32,
     pub padding_y: f32,
     pub gap: f32,
+    pub radius: f32,
     pub min_height: f32,
 }
 impl SegmentedStyle {
@@ -104,6 +106,7 @@ impl SegmentedStyle {
                 8.0
             },
             gap: 2.0,
+            radius: f32::from(theme.controls().radius),
             min_height: if theme.controls().min_height > 0 {
                 f32::from(theme.controls().min_height)
             } else {
@@ -147,7 +150,7 @@ impl SegmentedControlView {
     fn validate(&self, id: NodeId) -> Result<(), LayoutError> {
         let s = self.style;
         let mut ids = BTreeSet::new();
-        if [s.padding_x, s.padding_y, s.gap, s.min_height]
+        if [s.padding_x, s.padding_y, s.gap, s.min_height, s.radius]
             .iter()
             .any(|v| !v.is_finite() || *v < 0.0)
             || !(s.padding_x * 2.0).is_finite()
@@ -213,6 +216,8 @@ impl ViewSpec for SegmentedControlView {
             || self.style.padding_y != old.style.padding_y
             || self.style.gap != old.style.gap
             || self.style.min_height != old.style.min_height
+            || !self.style.radius.is_finite()
+            || self.style.radius < 0.0
             || self
                 .selected
                 .is_some_and(|id| !self.options.iter().any(|option| option.id == id));
@@ -286,19 +291,12 @@ impl SegmentedControl {
     }
     fn colors(&self, option: &SegmentOption) -> SegmentColors {
         let style = self.properties.style;
-        if self.properties.disabled || option.disabled {
-            style.disabled
-        } else if (self.choice.interaction.mouse
-            && self.choice.pressed == Some(option.id)
-            && self.choice.hovered == Some(option.id))
-            || (self.choice.interaction.space && self.choice.active == Some(option.id))
-        {
-            style.pressed
-        } else if self.choice.hovered == Some(option.id) {
-            style.hovered
-        } else {
-            style.normal
-        }
+        VisualState::from_choice(
+            &self.choice,
+            option.id,
+            self.properties.disabled || option.disabled,
+        )
+        .resolve(style.normal, style.hovered, style.pressed, style.disabled)
     }
 }
 impl Widget for SegmentedControl {
@@ -413,7 +411,24 @@ impl Widget for SegmentedControl {
     }
     fn paint(&self, context: PaintContext, painter: &mut Painter<'_>) {
         let style = self.properties.style;
-        painter.with_clip(Path::rectangle(context.content_bounds), |painter| {
+        let joined = self.joined || style.gap == 0.0;
+        let group = Surface {
+            bounds: Rect::new(
+                context.content_bounds.origin.x,
+                context.content_bounds.origin.y,
+                self.slots
+                    .last()
+                    .map_or(0.0, |slot| slot.origin.x + slot.size.width),
+                context.content_bounds.size.height,
+            ),
+            radius: f64::from(style.radius),
+        };
+        let clip = if joined {
+            group.path()
+        } else {
+            Path::rectangle(context.content_bounds)
+        };
+        painter.with_clip(clip, |painter| {
             for ((option, text), slot) in self
                 .properties
                 .options
@@ -429,32 +444,22 @@ impl Widget for SegmentedControl {
                 );
                 let colors = self.colors(option);
                 let selected = self.properties.selected == Some(option.id);
-                painter.fill_rect(
-                    rect,
+                let surface = Surface {
+                    bounds: rect,
+                    radius: if joined { 0.0 } else { f64::from(style.radius) },
+                };
+                surface.fill(
+                    painter,
                     if selected {
                         colors.selected_background
                     } else {
                         colors.background
                     },
                 );
-                if !self.joined && rect.size.width >= 1.0 && rect.size.height >= 1.0 {
-                    painter.stroke(
-                        Path::rectangle(Rect::new(
-                            rect.origin.x + 0.5,
-                            rect.origin.y + 0.5,
-                            rect.size.width - 1.0,
-                            rect.size.height - 1.0,
-                        )),
-                        colors.border,
-                        1.0,
-                    );
+                if !joined {
+                    surface.outline(painter, colors.border, 1.0, 0.5);
                 }
-                let label = Rect::new(
-                    rect.origin.x + style.padding_x as f64,
-                    rect.origin.y + style.padding_y as f64,
-                    (rect.size.width - style.padding_x as f64 * 2.0).max(0.0),
-                    (rect.size.height - style.padding_y as f64 * 2.0).max(0.0),
-                );
+                let label = padded(rect, f64::from(style.padding_x), f64::from(style.padding_y));
                 painter.with_clip(Path::rectangle(label), |painter| {
                     let centered = Rect::new(
                         label.origin.x,
@@ -476,62 +481,26 @@ impl Widget for SegmentedControl {
                         },
                     );
                 });
-                if self.choice.interaction.focused
-                    && self.choice.interaction.focus_visible
-                    && !self.properties.disabled
-                    && !option.disabled
-                    && self.choice.active == Some(option.id)
-                    && rect.size.width > 6.0
-                    && rect.size.height > 6.0
-                {
-                    painter.stroke(
-                        Path::rectangle(Rect::new(
-                            rect.origin.x + 3.0,
-                            rect.origin.y + 3.0,
-                            rect.size.width - 6.0,
-                            rect.size.height - 6.0,
-                        )),
-                        style.focus_ring,
-                        1.0,
-                    );
-                }
+                surface.focus(
+                    painter,
+                    VisualState::from_choice(
+                        &self.choice,
+                        option.id,
+                        self.properties.disabled || option.disabled,
+                    ),
+                    style.focus_ring,
+                );
             }
-            if self.joined
-                && let Some(last) = self.slots.last()
-            {
-                let width = last.origin.x + last.size.width;
-                let height = context.content_bounds.size.height;
-                let color = if self.properties.disabled {
-                    style.disabled.border
-                } else {
-                    style.normal.border
-                };
-                if width >= 1.0 && height >= 1.0 {
-                    painter.stroke(
-                        Path::rectangle(Rect::new(
-                            context.content_bounds.origin.x + 0.5,
-                            context.content_bounds.origin.y + 0.5,
-                            width - 1.0,
-                            height - 1.0,
-                        )),
-                        color,
-                        1.0,
-                    );
-                    // Each shared boundary is drawn once, after all cell backgrounds.
-                    for slot in self.slots.iter().skip(1) {
-                        if slot.origin.x >= 1.0 && slot.origin.x < width - 1.0 {
-                            painter.fill_rect(
-                                Rect::new(
-                                    context.content_bounds.origin.x + slot.origin.x,
-                                    context.content_bounds.origin.y + 1.0,
-                                    1.0,
-                                    (height - 2.0).max(0.0),
-                                ),
-                                color,
-                            );
-                        }
-                    }
-                }
+            if joined {
+                group.joined_border(
+                    painter,
+                    if self.properties.disabled {
+                        style.disabled.border
+                    } else {
+                        style.normal.border
+                    },
+                    &self.slots,
+                );
             }
         });
     }

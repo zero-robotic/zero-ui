@@ -130,9 +130,18 @@ impl PaginationView {
         if self.page_count == 0 || self.page == 0 || self.page > self.page_count {
             return Err(NavigationError::InvalidPage);
         }
-        let make = |page: u64, label: String, disabled: bool| {
+        let make = |page: u64, label: String, disabled: bool, selected: bool| {
             let mut button =
                 ButtonView::themed(&self.theme, label, self.families.clone(), self.action);
+            button.style = if selected {
+                let mut style = crate::ButtonStyle::primary(&self.theme);
+                if !self.disabled {
+                    style.disabled = style.normal;
+                }
+                style
+            } else {
+                crate::ButtonStyle::secondary(&self.theme)
+            };
             button.disabled = self.disabled || disabled;
             View::new(ActionButtonView {
                 button,
@@ -154,27 +163,44 @@ impl PaginationView {
             .min(self.page_count.saturating_sub(4).max(1));
         let end = start.saturating_add(4).min(self.page_count);
         let mut views = alloc::vec![
-            make(1, "首页".into(), self.page == 1).keyed("first"),
+            make(1, "首页".into(), self.page == 1, false).keyed("first"),
             make(
                 self.page.saturating_sub(1).max(1),
                 "上一页".into(),
-                self.page == 1
+                self.page == 1,
+                false
             )
             .keyed("previous")
         ];
         for page in start..=end {
-            views.push(make(page, alloc::format!("{page}"), page == self.page).keyed(page));
+            views.push(
+                make(
+                    page,
+                    alloc::format!("{page}"),
+                    page == self.page,
+                    page == self.page,
+                )
+                .keyed(page),
+            );
         }
         views.push(
             make(
                 self.page.saturating_add(1).min(self.page_count),
                 "下一页".into(),
                 self.page == self.page_count,
+                false,
             )
             .keyed("next"),
         );
-        views
-            .push(make(self.page_count, "末页".into(), self.page == self.page_count).keyed("last"));
+        views.push(
+            make(
+                self.page_count,
+                "末页".into(),
+                self.page == self.page_count,
+                false,
+            )
+            .keyed("last"),
+        );
         Ok(row(views)
             .style(|s| {
                 s.wrap = true;

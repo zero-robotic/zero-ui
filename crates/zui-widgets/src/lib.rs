@@ -29,6 +29,7 @@ pub use checkbox::{
 mod container;
 mod disclosure;
 pub use disclosure::{DisclosureChanged, DisclosureView};
+mod appearance;
 mod interaction;
 mod numeric;
 pub use numeric::{InvalidNumericRange, NumericRange};

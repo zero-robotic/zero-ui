@@ -1,3 +1,4 @@
+use crate::appearance::{Surface, VisualState};
 use crate::{Text, TextView, interaction::Interaction};
 use alloc::{string::String, vec::Vec};
 use zui_api::{
@@ -169,15 +170,12 @@ impl ViewSpec for CheckBoxView {
 impl CheckBox {
     fn colors(&self) -> CheckBoxColors {
         let style = self.properties.style;
-        if !self.enabled() {
-            style.disabled
-        } else if self.interaction.space || (self.interaction.mouse && self.interaction.hovered) {
-            style.pressed
-        } else if self.interaction.hovered {
-            style.hovered
-        } else {
-            style.normal
-        }
+        VisualState::from_interaction(self.interaction, self.properties.disabled).resolve(
+            style.normal,
+            style.hovered,
+            style.pressed,
+            style.disabled,
+        )
     }
 }
 impl Widget for CheckBox {
@@ -223,23 +221,18 @@ impl Widget for CheckBox {
         let y = bounds.origin.y + ((bounds.size.height - size) / 2.0).max(0.0);
         painter.with_clip(Path::rectangle(bounds), |painter| {
             let selected = self.properties.state != CheckState::Unchecked;
-            painter.fill(
-                Path::rounded_rectangle(Rect::new(x, y, size, size), size * 0.15)
-                    .expect("valid checkbox bounds"),
+            Surface {
+                bounds: Rect::new(x, y, size, size),
+                radius: size * 0.15,
+            }
+            .paint(
+                painter,
                 if selected {
                     colors.selected_background
                 } else {
                     colors.background
                 },
-            );
-            painter.stroke(
-                Path::rounded_rectangle(
-                    Rect::new(x + 0.5, y + 0.5, size - 1.0, size - 1.0),
-                    size * 0.15,
-                )
-                .expect("valid checkbox border"),
                 colors.border,
-                1.0,
             );
             match self.properties.state {
                 CheckState::Checked => {
@@ -270,23 +263,15 @@ impl Widget for CheckBox {
                 |painter| self.text.paint_color(context, painter, colors.text),
             );
         });
-        if self.interaction.focused
-            && self.interaction.focus_visible
-            && self.enabled()
-            && context.size.width > 4.0
-            && context.size.height > 4.0
-        {
-            painter.stroke(
-                Path::rectangle(Rect::new(
-                    1.0,
-                    1.0,
-                    context.size.width - 2.0,
-                    context.size.height - 2.0,
-                )),
-                self.properties.style.focus_ring,
-                2.0,
-            );
+        Surface {
+            bounds: Rect::new(0.0, 0.0, context.size.width, context.size.height),
+            radius: 0.0,
         }
+        .focus(
+            painter,
+            VisualState::from_interaction(self.interaction, self.properties.disabled),
+            self.properties.style.focus_ring,
+        );
     }
     fn event(&mut self, context: EventContext, event: &WidgetEvent) -> EventResponse {
         let enabled = self.enabled();

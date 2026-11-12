@@ -1,4 +1,5 @@
 use crate::NumericRange;
+use crate::appearance::{Surface, VisualState};
 use zui_api::{
     action::{ActionId, WidgetAction},
     event::*,
@@ -232,15 +233,18 @@ impl Widget for Slider {
     }
     fn paint(&self, context: PaintContext, painter: &mut Painter<'_>) {
         let p = self.properties;
-        let colors = if p.disabled {
-            p.style.disabled
-        } else if self.drag.is_some() {
-            p.style.pressed
-        } else if self.hovered {
-            p.style.hovered
-        } else {
-            p.style.normal
+        let state = VisualState {
+            disabled: p.disabled,
+            pressed: self.drag.is_some(),
+            hovered: self.hovered,
+            focus_visible: self.focused && self.focus_visible && !p.disabled,
         };
+        let colors = state.resolve(
+            p.style.normal,
+            p.style.hovered,
+            p.style.pressed,
+            p.style.disabled,
+        );
         let t = Track::new(context.content_bounds, p.style);
         let x = t.center(p);
         let thickness = (p.style.track_thickness as f64).min(t.thumb);
@@ -270,23 +274,11 @@ impl Widget for Slider {
                 colors.thumb,
             );
         });
-        if self.focused
-            && self.focus_visible
-            && self.enabled()
-            && context.size.width > 2.0
-            && context.size.height > 2.0
-        {
-            painter.stroke(
-                Path::rectangle(Rect::new(
-                    1.0,
-                    1.0,
-                    context.size.width - 2.0,
-                    context.size.height - 2.0,
-                )),
-                p.style.focus_ring,
-                1.0,
-            );
+        Surface {
+            bounds: Rect::new(0.0, 0.0, context.size.width, context.size.height),
+            radius: 0.0,
         }
+        .focus(painter, state, p.style.focus_ring);
     }
     fn event(&mut self, context: EventContext, event: &WidgetEvent) -> EventResponse {
         let before = (self.focused, self.focus_visible, self.hovered, self.drag);

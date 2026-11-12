@@ -1,3 +1,4 @@
+use crate::appearance::{Surface, VisualState};
 use crate::interaction::Interaction;
 use crate::{Text, TextView};
 use alloc::{string::String, vec::Vec};
@@ -186,15 +187,12 @@ impl Button {
     }
     fn colors(&self) -> ButtonColors {
         let style = self.properties.style;
-        if self.properties.disabled {
-            style.disabled
-        } else if self.state.space || (self.state.mouse && self.state.hovered) {
-            style.pressed
-        } else if self.state.hovered {
-            style.hovered
-        } else {
-            style.normal
-        }
+        VisualState::from_interaction(self.state, self.properties.disabled).resolve(
+            style.normal,
+            style.hovered,
+            style.pressed,
+            style.disabled,
+        )
     }
     fn activate(&self, response: &mut EventResponse) {
         response
@@ -249,57 +247,18 @@ impl Widget for Button {
     fn paint(&self, mut context: PaintContext, painter: &mut Painter<'_>) {
         let colors = self.colors();
         let metrics = self.properties.style.metrics;
-        painter.fill(
-            Path::rounded_rectangle(
-                Rect::new(0.0, 0.0, context.size.width, context.size.height),
-                f64::from(metrics.radius),
-            )
-            .expect("valid button bounds"),
-            colors.background,
+        let surface = Surface {
+            bounds: Rect::new(0.0, 0.0, context.size.width, context.size.height),
+            radius: f64::from(metrics.radius),
+        };
+        surface.paint(painter, colors.background, self.properties.style.border);
+        context.content_bounds =
+            crate::appearance::padded(context.content_bounds, f64::from(metrics.padding_x), 0.0);
+        surface.focus(
+            painter,
+            VisualState::from_interaction(self.state, self.properties.disabled),
+            self.properties.style.focus_ring,
         );
-        if self.properties.style.border.a > 0
-            && context.size.width > 1.0
-            && context.size.height > 1.0
-        {
-            painter.stroke(
-                Path::rounded_rectangle(
-                    Rect::new(
-                        0.5,
-                        0.5,
-                        context.size.width - 1.0,
-                        context.size.height - 1.0,
-                    ),
-                    f64::from(metrics.radius),
-                )
-                .expect("valid border"),
-                self.properties.style.border,
-                1.0,
-            );
-        }
-        let padding = f64::from(metrics.padding_x).min(context.content_bounds.size.width / 2.0);
-        context.content_bounds.origin.x += padding;
-        context.content_bounds.size.width -= 2.0 * padding;
-        if self.state.focused
-            && self.state.focus_visible
-            && self.enabled()
-            && context.size.width > 4.0
-            && context.size.height > 4.0
-        {
-            painter.stroke(
-                Path::rounded_rectangle(
-                    Rect::new(
-                        1.0,
-                        1.0,
-                        context.size.width - 2.0,
-                        context.size.height - 2.0,
-                    ),
-                    f64::from(metrics.radius.saturating_sub(1)),
-                )
-                .expect("valid focus ring"),
-                self.properties.style.focus_ring,
-                2.0,
-            );
-        }
         if let Some(icon) = &self.properties.trailing_icon {
             let bounds = context.content_bounds;
             let side = (self.properties.text_style.font_size as f64)

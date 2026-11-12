@@ -1,4 +1,5 @@
 //! Single-line editor. Local draft/history are distinct from external View snapshots.
+use crate::appearance::Surface;
 mod caret;
 mod composition;
 mod draft;
@@ -239,13 +240,10 @@ impl TextInput {
         }
     }
     fn text_bounds(&self, bounds: Rect) -> Rect {
-        let x = f64::from(self.properties.style.padding_x).min(bounds.size.width / 2.0);
-        let y = f64::from(self.properties.style.padding_y).min(bounds.size.height / 2.0);
-        Rect::new(
-            bounds.origin.x + x,
-            bounds.origin.y + y,
-            (bounds.size.width - 2.0 * x).max(0.0),
-            (bounds.size.height - 2.0 * y).max(0.0),
+        crate::appearance::padded(
+            bounds,
+            f64::from(self.properties.style.padding_x),
+            f64::from(self.properties.style.padding_y),
         )
     }
     fn text_origin(&self, mut context: PaintContext, height: f64) -> Point {
@@ -841,36 +839,21 @@ impl Widget for TextInput {
     }
     fn paint(&self, context: PaintContext, painter: &mut Painter<'_>) {
         let s = self.properties.style;
-        painter.fill(
-            Path::rounded_rectangle(
-                Rect::new(0.0, 0.0, context.size.width, context.size.height),
-                f64::from(s.metrics.radius),
-            )
-            .expect("valid input bounds"),
-            s.background,
-        );
-        if context.size.width > 2.0 && context.size.height > 2.0 {
-            painter.stroke(
-                Path::rounded_rectangle(
-                    Rect::new(
-                        0.5,
-                        0.5,
-                        context.size.width - 1.0,
-                        context.size.height - 1.0,
-                    ),
-                    f64::from(s.metrics.radius),
-                )
-                .expect("valid input border"),
-                if self.properties.invalid {
-                    s.invalid_border
-                } else if self.focused && self.enabled() {
-                    s.focus_border
-                } else {
-                    s.border
-                },
-                1.0,
-            );
+        Surface {
+            bounds: Rect::new(0.0, 0.0, context.size.width, context.size.height),
+            radius: f64::from(s.metrics.radius),
         }
+        .paint(
+            painter,
+            s.background,
+            if self.properties.invalid {
+                s.invalid_border
+            } else if self.focused && self.enabled() {
+                s.focus_border
+            } else {
+                s.border
+            },
+        );
         if self.text() == Some("")
             && self.composition.is_none()
             && let Some(hint) = &self.hint

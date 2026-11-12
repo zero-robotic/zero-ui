@@ -1,4 +1,5 @@
 //! A controlled selection group with one runtime focus owner.
+use crate::appearance::{Surface, VisualState};
 use crate::{
     Text, TextView,
     choice::{ChoiceItem, ChoiceState},
@@ -370,19 +371,9 @@ impl Widget for RadioGroup {
                 .zip(&self.rows)
             {
                 let disabled = self.properties.disabled || option.disabled;
-                let colors = if disabled {
-                    style.disabled
-                } else if (self.choice.interaction.mouse
-                    && self.choice.pressed == Some(option.id)
-                    && self.choice.hovered == Some(option.id))
-                    || (self.choice.interaction.space && self.choice.active == Some(option.id))
-                {
-                    style.pressed
-                } else if self.choice.hovered == Some(option.id) {
-                    style.hovered
-                } else {
-                    style.normal
-                };
+                let state = VisualState::from_choice(&self.choice, option.id, disabled);
+                let colors =
+                    state.resolve(style.normal, style.hovered, style.pressed, style.disabled);
                 let row = Rect::new(
                     context.content_bounds.origin.x + row.origin.x,
                     context.content_bounds.origin.y + row.origin.y,
@@ -394,15 +385,16 @@ impl Widget for RadioGroup {
                     row.origin.x + diameter / 2.0,
                     row.origin.y + row.size.height / 2.0,
                 );
-                painter.fill(
-                    Path::circle(center, diameter / 2.0).expect("validated radio geometry"),
-                    colors.background,
-                );
-                painter.stroke(
-                    Path::circle(center, (diameter - 1.0) / 2.0).expect("validated radio geometry"),
-                    colors.border,
-                    1.0,
-                );
+                Surface {
+                    bounds: Rect::new(
+                        center.x - diameter / 2.0,
+                        center.y - diameter / 2.0,
+                        diameter,
+                        diameter,
+                    ),
+                    radius: diameter / 2.0,
+                }
+                .paint(painter, colors.background, colors.border);
                 if self.properties.selected == Some(option.id) {
                     painter.fill(
                         Path::circle(center, diameter * 0.23).expect("validated radio geometry"),
@@ -425,23 +417,11 @@ impl Widget for RadioGroup {
                         colors.text,
                     )
                 });
-                if self.choice.interaction.focused
-                    && self.choice.interaction.focus_visible
-                    && !disabled
-                    && self.choice.active == Some(option.id)
-                    && row.size.width > 2.0
-                {
-                    painter.stroke(
-                        Path::rectangle(Rect::new(
-                            row.origin.x + 1.0,
-                            row.origin.y + 1.0,
-                            row.size.width - 2.0,
-                            row.size.height - 2.0,
-                        )),
-                        style.focus_ring,
-                        1.0,
-                    );
+                Surface {
+                    bounds: row,
+                    radius: 0.0,
                 }
+                .focus(painter, state, style.focus_ring);
             }
         });
     }

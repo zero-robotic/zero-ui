@@ -1,4 +1,5 @@
 //! Controlled boolean switch; labels compose through ordinary layout containers.
+use crate::appearance::{Surface, VisualState};
 use crate::interaction::Interaction;
 use core::time::Duration;
 use zui_api::{
@@ -171,15 +172,12 @@ impl Switch {
     }
     fn colors(&self) -> SwitchColors {
         let style = self.properties.style;
-        if self.properties.disabled {
-            style.disabled
-        } else if self.interaction.space || (self.interaction.mouse && self.interaction.hovered) {
-            style.pressed
-        } else if self.interaction.hovered {
-            style.hovered
-        } else {
-            style.normal
-        }
+        VisualState::from_interaction(self.interaction, self.properties.disabled).resolve(
+            style.normal,
+            style.hovered,
+            style.pressed,
+            style.disabled,
+        )
     }
 }
 impl Widget for Switch {
@@ -249,23 +247,18 @@ impl Widget for Switch {
         let y = bounds.origin.y + ((bounds.size.height - height) / 2.0).max(0.0);
         let colors = self.colors();
         painter.with_clip(Path::rectangle(bounds), |painter| {
-            painter.fill(
-                Path::rounded_rectangle(Rect::new(x, y, width, height), height / 2.0)
-                    .expect("validated switch geometry"),
+            Surface {
+                bounds: Rect::new(x, y, width, height),
+                radius: height / 2.0,
+            }
+            .paint(
+                painter,
                 if self.properties.checked {
                     colors.on_track
                 } else {
                     colors.off_track
                 },
-            );
-            painter.stroke(
-                Path::rounded_rectangle(
-                    Rect::new(x + 0.5, y + 0.5, width - 1.0, height - 1.0),
-                    (height - 1.0) / 2.0,
-                )
-                .expect("validated switch geometry"),
                 colors.border,
-                1.0,
             );
             let diameter = height - 2.0 * inset;
             painter.fill(
@@ -283,23 +276,15 @@ impl Widget for Switch {
                 },
             );
         });
-        if self.interaction.focused
-            && self.interaction.focus_visible
-            && self.enabled()
-            && context.size.width > 4.0
-            && context.size.height > 4.0
-        {
-            painter.stroke(
-                Path::rectangle(Rect::new(
-                    1.0,
-                    1.0,
-                    context.size.width - 2.0,
-                    context.size.height - 2.0,
-                )),
-                style.focus_ring,
-                2.0,
-            );
+        Surface {
+            bounds: Rect::new(0.0, 0.0, context.size.width, context.size.height),
+            radius: 0.0,
         }
+        .focus(
+            painter,
+            VisualState::from_interaction(self.interaction, self.properties.disabled),
+            self.properties.style.focus_ring,
+        );
     }
     fn event(&mut self, context: EventContext, event: &WidgetEvent) -> EventResponse {
         let (mut response, activated) =
