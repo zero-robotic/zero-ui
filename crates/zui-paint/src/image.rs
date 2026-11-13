@@ -90,7 +90,7 @@ impl ImageResource {
     }
     fn validated(extent: Extent, bytes: Arc<[u8]>) -> Result<Self, ImageError> {
         let id = NEXT_IMAGE_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .map_err(|_| ImageError::IdentityExhausted)?;

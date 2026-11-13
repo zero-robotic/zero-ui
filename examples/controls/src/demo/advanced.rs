@@ -299,8 +299,10 @@ mod tests {
     use super::*;
     #[test]
     fn enhanced_gallery_applies_control_requests_and_layouts_popup() {
-        let mut state = State::default();
-        state.anchor = Some(Rect::new(24.0, 80.0, 300.0, 40.0));
+        let mut state = State {
+            anchor: Some(Rect::new(24.0, 80.0, 300.0, 40.0)),
+            ..Default::default()
+        };
         state.apply(Message::Combo(ComboBoxEvent::Open));
         assert!(state.open);
         state.apply(Message::Combo(ComboBoxEvent::SelectionChanged(

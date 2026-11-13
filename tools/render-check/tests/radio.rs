@@ -504,7 +504,9 @@ fn mouse_hides_row_focus_and_keyboard_restores_it() {
             .unwrap();
         pixels
             .pixels()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .any(|p| p[0] > 80 && p[1] == 0 && p[2] > 80)
     };
     let point = f.center(0);

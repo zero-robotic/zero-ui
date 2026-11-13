@@ -27,7 +27,7 @@ impl FontResource {
             return Err(RenderError::InvalidFont);
         }
         let id = NEXT_FONT_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .map_err(|_| RenderError::InvalidFont)?;

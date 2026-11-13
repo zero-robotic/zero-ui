@@ -64,7 +64,14 @@ fn verify_scales(renderer: &mut impl OffscreenRenderer) {
                 &[background.r, background.g, background.b, 255]
             );
             assert_eq!(at(24.0, 92.0), &[surface.r, surface.g, surface.b, 255]);
-            assert!(pixels.pixels().chunks_exact(4).all(|p| p[3] == 255));
+            assert!(
+                pixels
+                    .pixels()
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|pixel| pixel[3] == 255)
+            );
         }
     }
 }

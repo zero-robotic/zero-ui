@@ -197,13 +197,16 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> WidgetHost<M, L, T> {
         self.profiler.finish(RefreshPhase::Animation, started);
         let update = result?;
         self.next_frame = update.next_frame;
-        for event in actions {
+        self.dispatch_actions(actions, action);
+        Ok(update.invalidation != Invalidation::None)
+    }
+    fn dispatch_actions(&mut self, events: Vec<ActionEvent>, action: &mut WindowAction) {
+        for event in events {
             if let Some(message) = self.model.map_action_with_tree(&event, &self.tree) {
                 let response = self.model.message(message);
                 self.apply(response, action);
             }
         }
-        Ok(update.invalidation != Invalidation::None)
     }
     fn refresh_ime(&mut self, metrics: WindowMetrics) -> Result<(), TreeError> {
         if !metrics.drawable()
@@ -390,12 +393,7 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> Application for Widget
                     let result = result?;
                     handled = result.handled;
                     action.redraw |= result.invalidation != Invalidation::None;
-                    for event in result.actions {
-                        if let Some(message) = self.model.map_action_with_tree(&event, &self.tree) {
-                            let response = self.model.message(message);
-                            self.apply(response, &mut action);
-                        }
-                    }
+                    self.dispatch_actions(result.actions, &mut action);
                 }
             }
         }

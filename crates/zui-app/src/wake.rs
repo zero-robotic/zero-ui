@@ -50,12 +50,7 @@ fn earliest(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
 }
 
 fn take_due(deadline: &mut Option<Duration>, now: Duration) -> bool {
-    if deadline.is_some_and(|value| value <= now) {
-        *deadline = None;
-        true
-    } else {
-        false
-    }
+    deadline.take_if(|value| *value <= now).is_some()
 }
 
 #[cfg(test)]

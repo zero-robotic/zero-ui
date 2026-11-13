@@ -304,31 +304,31 @@ impl Widget for TreeWidget {
         if let Some(rect) = self
             .drop_target
             .and_then(|id| self.list.item_rect(ListItemId(id.0), c.content_bounds))
+            && rect.size.width > 4.0
+            && rect.size.height > 4.0
         {
-            if rect.size.width > 4.0 && rect.size.height > 4.0 {
-                let color = self.properties.list.style.focus_ring;
-                p.with_clip(Path::rectangle(c.content_bounds), |p| {
-                    p.stroke(
-                        Path::rectangle(Rect::new(
-                            rect.origin.x + 1.0,
-                            rect.origin.y + 1.0,
-                            rect.size.width - 2.0,
-                            rect.size.height - 2.0,
-                        )),
-                        color,
-                        2.0,
-                    );
-                    p.fill(
-                        Path::rectangle(Rect::new(
-                            rect.origin.x + 1.0,
-                            rect.origin.y + 1.0,
-                            3.0,
-                            rect.size.height - 2.0,
-                        )),
-                        color,
-                    );
-                });
-            }
+            let color = self.properties.list.style.focus_ring;
+            p.with_clip(Path::rectangle(c.content_bounds), |p| {
+                p.stroke(
+                    Path::rectangle(Rect::new(
+                        rect.origin.x + 1.0,
+                        rect.origin.y + 1.0,
+                        rect.size.width - 2.0,
+                        rect.size.height - 2.0,
+                    )),
+                    color,
+                    2.0,
+                );
+                p.fill(
+                    Path::rectangle(Rect::new(
+                        rect.origin.x + 1.0,
+                        rect.origin.y + 1.0,
+                        3.0,
+                        rect.size.height - 2.0,
+                    )),
+                    color,
+                );
+            });
         }
     }
     fn event(&mut self, c: EventContext, e: &WidgetEvent) -> EventResponse {
@@ -463,13 +463,13 @@ impl Widget for TreeWidget {
                     }
                 }
                 WidgetEvent::Input(InputEvent::PointerMoved(_)) => {
-                    if let Some(p) = c.local_position {
-                        if self.label_press.is_some_and(|(_, start)| {
-                            (p.x - start.x).abs() + (p.y - start.y).abs() >= 6.0
-                        }) {
-                            self.label_press = None;
-                            self.last_click = None;
-                        }
+                    if let Some(position) = c.local_position
+                        && self.label_press.is_some_and(|(_, start)| {
+                            (position.x - start.x).abs() + (position.y - start.y).abs() >= 6.0
+                        })
+                    {
+                        self.label_press = None;
+                        self.last_click = None;
                     }
                 }
                 WidgetEvent::Input(InputEvent::PointerButton {
