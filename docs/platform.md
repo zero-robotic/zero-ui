@@ -1,10 +1,29 @@
-# 控件窗口应用装配
+# 应用装配、平台与可移植性
+
+[文档索引](README.md) · [模块边界](module-boundaries.md) · [未完成事项](implementation-plan.md)
+
+按架构职责归并的专题参考。设计目标与接口约束分开理解；待办统一维护在实施计划中，各节的验证说明仅覆盖所述范围。
+
+## 章节导航
+
+- [控件窗口应用装配](#widget-application)
+- [MCU 扩展验证](#mcu-portability)
+
+<a id="widget-application"></a>
+
+
+<a id="widget-application--控件窗口应用装配"></a>
+
+## 控件窗口应用装配
 
 `zui-app::WidgetHost<M, L, T>` 将应用状态、持久 Tree、布局服务和文字服务组合为窗口应用。它实现既有 `Application` 契约，可以直接交给 `zui_app::run`，选择 CPU 或 GPU 后端。
 
 装配依赖方向保持单向：`zui-app` 使用 `zui-core` 与公共 API；核心不引用 app。Host 通过 `LayoutEngine` 和 `TextService` 调用服务，不引用 Taffy、Parley 或标准控件。示例在顶层注册字体、创建具体服务并传入，平台后端不知道应用状态或控件类型。
 
-## 状态与帧流程
+
+<a id="widget-application--状态与帧流程"></a>
+
+### 状态与帧流程
 
 应用实现 `ViewApplication`：
 
@@ -20,13 +39,19 @@
 
 初始字体注册应在构造 Host 前完成。Host 拥有服务，当前不暴露可绕过失效流程的任意可变树访问；`model()` 与 `tree()` 提供只读检查。运行时字体注册、外部异步消息和完整应用命令接口仍待后续设计。
 
-## 失败行为
+
+<a id="widget-application--失败行为"></a>
+
+### 失败行为
 
 `Application::draw` 返回 `Result<(), ApplicationError>`，`Application::update` 返回 `Result<WindowAction, ApplicationError>`；原有场景级应用需要分别返回 `Ok(())` 和 `Ok(action)`。输入前的协调/布局失败也通过 update 返回，不能在旧几何上继续派发。Host 只在协调、布局及准备全部成功后替换调用方 Scene。失败时保留调用方旧 Scene，但不代表内部所有控件缓存已经回滚；必须成功重试后才能继续使用新几何。
 
 窗口驱动通过通用的 `PlatformError::Handler` 保留错误来源，不向平台层引入 Tree 或具体应用类型。失败帧不调用 presenter；目前窗口 runner 遇到该错误会结束运行并向调用方返回错误。离线调用 Host 时可以更新模型后重新绘制恢复，测试覆盖该路径。生产应用的错误页面与交互恢复策略尚未接入。
 
-## 运行与验证
+
+<a id="widget-application--运行与验证"></a>
+
+### 运行与验证
 
 ```sh
 # 两条控件窗口路径；点击按钮或 Tab 聚焦后 Space/Enter 激活，Escape 退出。
@@ -41,7 +66,10 @@ cargo run -p zui-window-check --all-features --locked -- cpu --widgets --smoke-m
 
 测试覆盖连续状态更新合并、主题切换保留节点并跳过排版、逻辑宽度变化重新换行、同逻辑尺寸的 DPI 变化、隐藏期间延迟工作、准备失败保留调用方场景及恢复，以及驱动拒绝提交失败帧。实际 CPU/GPU 窗口已验证打开、呈现、自动主题切换和退出；尚未通过自动化操作验证拖动缩放、真实按键、跨屏 DPI 和输入法交互。
 
-## 刷新计时与批量更新
+
+<a id="widget-application--刷新计时与批量更新"></a>
+
+### 刷新计时与批量更新
 
 `host.set_profiling(true)` 启用可选计时；`refresh_metrics()` 读取累计值，`take_refresh_metrics()` 取走并清零，保持启用状态。阶段包括 View、Reconcile、Layout、Input、Animation、Scene、Present，记录调用次数、累计耗时和单次最大耗时。默认关闭，不读取系统时钟。原生驱动自动记录 Present 的渲染与提交 CPU 墙钟耗时，不代表 GPU 完成时间。
 
@@ -49,10 +77,60 @@ cargo run -p zui-window-check --all-features --locked -- cpu --widgets --smoke-m
 
 该 API 适用于已有队列的上层调用方；当前原生 Winit 驱动仍逐条传递事件，不会自动批处理系统输入。批内共用 metrics/elapsed，跨不同窗口尺寸或时间快照的事件应拆批。已有的 View 重建请求合并逻辑继续保留，新增优化针对重复的动画与 IME 收尾，不把已有功能计作新增收益。
 
-CPU 窗口使用 `RetainedCpuRenderer` 保存像素和场景；命令及尺寸/缩放/背景完全不变时复用像素，仍向窗口提交画面。变化帧按损伤区域更新，超出预算或区域阈值时回退整帧绘制，详见 [区域绘制](region-rendering.md)。
+CPU 窗口使用 `RetainedCpuRenderer` 保存像素和场景；命令及尺寸/缩放/背景完全不变时复用像素，仍向窗口提交画面。变化帧按损伤区域更新，超出预算或区域阈值时回退整帧绘制，详见 [区域绘制](rendering.md#region-rendering)。
 
-## 使用实际控件边界定位弹层
+
+<a id="widget-application--使用实际控件边界定位弹层"></a>
+
+### 使用实际控件边界定位弹层
 
 需要从动作来源读取几何时，实现 `ViewApplication::map_action_with_tree(action, tree)`；默认实现继续调用 `map_action`，既有应用无需迁移。该回调只获得只读 Tree，不允许绕过 Host 修改树。`Tree::presented_bounds(action.source)` 返回已经提交、包含祖先偏移及滚动变换的场景坐标边框盒；布局尚未提交时返回错误，结果不会按祖先裁剪区域截断。
 
 Popup 的 Anchor 使用其覆盖层容器局部坐标，不能直接使用控件的父级布局坐标，也不能写死屏幕位置。示例中的普通 Select 和增强 ComboBox 在 Open 动作映射时捕获实际按钮边界，并转换为根覆盖层坐标。窗口 Resized/ScaleChanged 时关闭这些锚定弹层，下次打开重新读取边界；本方案不表示弹层会持续跟踪任意业务布局变化。
+
+<a id="mcu-portability"></a>
+
+
+<a id="mcu-portability--mcu-扩展验证"></a>
+
+## MCU 扩展验证
+
+首期产品仍使用 Vello CPU/GPU。MCU 扩展分开验证可移植库、固件装配与设备运行，避免把 `no_std` 声明或宿主机编译当作 MCU 支持完成。
+
+
+<a id="mcu-portability--可重复的裸机库编译"></a>
+
+### 可重复的裸机库编译
+
+```sh
+rustup target add thumbv7em-none-eabihf
+python3 tools/check-mcu.py
+```
+
+脚本从仓库根目录调用 `cargo build --lib --target ... --no-default-features --locked --offline`，包含代码生成而不仅是类型检查；固定验证以下 12 个 crate：
+
+- 基础契约：types、input、paint、theme、api、platform。
+- 状态与运行时：edit、virtual、core。
+- 控件与组合：widgets、charts、dashboard。
+
+2026-10-28 在当前开发机上，以上库通过 `thumbv7em-none-eabihf`（Cortex-M4F/M7F）检查与构建。无需修改实现，也未引入反向依赖。除 types 等纯基础库外，相关代码依赖 `alloc`；固件仍须提供分配器。
+
+脚本不自动安装目标、不联网解析依赖、不回退宿主目标、不跳过失败库。缺少目标时先安装目标；缺少缓存时先准备锁定版本的依赖。可通过 `--target` 选择脚本列出的其他裸机目标；目前仅上述 Cortex-M 硬浮点目标经过实际验证，其他目标选项不代表已通过。
+
+
+<a id="mcu-portability--证据范围"></a>
+
+### 证据范围
+
+当前结果证明这组库及其实际依赖可为该无操作系统目标生成库产物。它不证明完整应用能链接、启动，或满足设备内存和实时性要求。泛型应用路径仍需固件实例化与最终链接验证。
+
+Vello 渲染器、Parley 文本、Taffy 布局、桌面窗口及应用装配不在本检查集合内；不会为了通过检查将这些完整功能假装纳入 MCU 配置。无 GPU 嵌入式 Linux 的 Vello CPU 路径是另一条验证路线。
+
+后续需要完成：
+
+1. MCU 装配示例：启动代码、链接脚本、分配器和 panic 策略，形成可链接固件。
+2. 在公共绘制、布局和文字契约下实现受限能力适配；由装配层注入，底层不引用具体应用或控件。
+3. 显示刷新、输入、时钟等设备适配，以及硬件或模拟器运行验收。
+4. 量化 RAM/Flash、峰值分配、帧缓冲策略、绘制与输入延迟，并明确哪些控件和效果可用。
+
+这些工作完成前，项目只声明“保留 MCU 扩展能力，指定可移植库已通过裸机编译”。

@@ -1,6 +1,6 @@
 //! Optional native OpenGL widget. GL renders into a private FBO, then ZUI
 //! composites immutable pixels using its normal CPU/GPU painting pipeline.
-//! See `docs/opengl-view.md` for threading, alpha and scheduling contracts.
+//! See `docs/rendering.md#opengl-view` for threading, alpha and scheduling contracts.
 mod native;
 mod renderer;
 #[cfg(test)]

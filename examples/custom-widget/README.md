@@ -4,7 +4,7 @@
 
 控件提供固有测量和局部坐标绘制，数值必须是 0 到 1 之间的有限数。更改数值只需要 `Invalidation::Paint`。实例由上层创建并插入 `zui-core::Tree`；核心通过公共契约调用，不需要添加 Meter 分支或注册表。
 
-`MeterView` 提供独立的声明式属性描述，构造时校验数值，分别实现 `ViewSpec::build` 和 `update`。应用可用 `View::new(MeterView::new(value, foreground, background)?)` 生成描述，再设置 Key 和布局样式，通过 `Tree::reconcile` 更新。重新生成描述不会重新创建已有兼容控件，详见 [View 协调规则](../../docs/view-reconciliation.md)。
+`MeterView` 提供独立的声明式属性描述，构造时校验数值，分别实现 `ViewSpec::build` 和 `update`。应用可用 `View::new(MeterView::new(value, foreground, background)?)` 生成描述，再设置 Key 和布局样式，通过 `Tree::reconcile` 更新。重新生成描述不会重新创建已有兼容控件，详见 [View 协调规则](../../docs/runtime.md#view-reconciliation)。
 
 上层完整装配与验证位于 `tools/render-check/tests/custom_widget.rs`，包含真实像素断言和跳过重新布局的检查：
 

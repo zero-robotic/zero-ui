@@ -42,7 +42,7 @@
 
 例如，复选框报告“请求选中”，应用决定是否接受。核心可以搬运不透明操作载荷，但不得解析复选框或应用的具体载荷类型；渲染器只绘制路径和字形，不识别“复选框”。新增科技感仪表也遵循同一规则。
 
-焦点所有权与焦点提示可见性分离：core 通过通用 `FocusVisibleChanged` 通知输入模式，widgets 决定是否描边；输入框编辑反馈仍由控件自身处理。paint 和 renderer 不感知焦点或控件类型。规则见 [控件焦点反馈](focus-feedback.md)。
+焦点所有权与焦点提示可见性分离：core 通过通用 `FocusVisibleChanged` 通知输入模式，widgets 决定是否描边；输入框编辑反馈仍由控件自身处理。paint 和 renderer 不感知焦点或控件类型。规则见 [控件焦点反馈](appearance.md#focus-feedback)。
 
 ## 3. 模块职责与允许依赖
 
@@ -111,7 +111,7 @@ flowchart TD
 
 动画通过公共 Widget::animate 契约接收上层提供的经过时间。核心合并失效与最早期限，装配层区分业务定时器、动画与呈现重试；平台只处理统一期限，不知道光标或控件动画类型。光标相位与显示规则属于输入控件内部，不能在核心或平台增加输入框特判。
 
-子内容平移与裁剪通过公共 Widget::child_viewport 契约表达，核心统一转换绘制、命中、事件和 IME 坐标。滚动范围、滚轮策略和滚动条属于控件职责；核心不导入 ScrollView，也不通过控件类型判断是否应用偏移。详见 [子内容视口](child-viewport.md)。
+子内容平移与裁剪通过公共 Widget::child_viewport 契约表达，核心统一转换绘制、命中、事件和 IME 坐标。滚动范围、滚轮策略和滚动条属于控件职责；核心不导入 ScrollView，也不通过控件类型判断是否应用偏移。详见 [子内容视口](runtime.md#child-viewport)。
 
 输入值定义在 `zui-input`，平台与公共 UI 契约共同依赖它。平台可重导出这些类型保持使用入口稳定，但不反向依赖 Widget 契约；UI 也不必导入原生窗口服务才能处理键盘或指针值。窗口生命周期事件仍属于 `zui-platform`。
 
@@ -160,7 +160,7 @@ flowchart TD
 
 ## 7. 每次实现的边界审查
 
-子树命令缓存属于 `zui-core`；缓存只保存普通 Scene，按通用失效契约更新。区域比较与保守绘制边界属于 CPU/GPU 共享的 `zui-vello` 适配层；像素缓冲与纹理分别由对应渲染器持有。`zui-paint` 仅提供缓存策略/统计值和不可变绘制描述，不访问控件树。原生呈现自动使用区域复用，平台继续只理解像素或表面，不识别控件。详见 [区域绘制](region-rendering.md)。
+子树命令缓存属于 `zui-core`；缓存只保存普通 Scene，按通用失效契约更新。区域比较与保守绘制边界属于 CPU/GPU 共享的 `zui-vello` 适配层；像素缓冲与纹理分别由对应渲染器持有。`zui-paint` 仅提供缓存策略/统计值和不可变绘制描述，不访问控件树。原生呈现自动使用区域复用，平台继续只理解像素或表面，不识别控件。详见 [区域绘制](rendering.md#region-rendering)。
 
 每个新增模块明确其职责、拥有的数据及生命周期、公开能力和允许依赖；按共同变化的原因组织代码，而不是按文件大小机械拆分。仅被一个模块使用的辅助实现保留在该模块内部，禁止建立没有明确职责的公共工具集合。
 
@@ -197,7 +197,7 @@ ViewApplication 的 take_focus_request 只读访问核心 Tree 并返回 ViewFoc
 
 ## 图表模块落地
 
-图表与大屏已合并为单一 `zui-extras` crate，后续大屏组件继续放入其内部模块；`charts` 与 `dashboard` 是可选 feature 而非独立 crate，迁移与启用方式见 [可选扩展组件](extras.md)。同 crate 内仍禁止图表反向依赖大屏组合。
+图表与大屏已合并为单一 `zui-extras` crate，后续大屏组件继续放入其内部模块；`charts` 与 `dashboard` 是可选 feature 而非独立 crate，迁移与启用方式见 [可选扩展组件](visualization.md#extras)。同 crate 内仍禁止图表反向依赖大屏组合。
 
 zui-extras::charts 仅依赖 zui-api、zui-types、zui-paint、zui-theme。数据校验与值域映射位于模块内部，图表通过公共 Widget/Painter 契约实现。render-check 是上层装配与验证入口；核心、渲染适配和标准控件不反向引用图表。该边界已加入自动依赖检查。
 
@@ -231,10 +231,10 @@ TreeView 将应用的层级数据展平为带缩进的 ListBox，并转换选择
 
 DataGrid、Form、分组与页面组件、日期时间、颜色和文件选择器均在 widgets 层实现，复用既有布局、输入、主题、绘制及 Action 契约。DataGrid 的排序、值校验和接受提交由应用负责；表单不识别业务字段类型；Toast 使用通用动画时间，不建立线程或全局通知服务。
 
-FilePicker 仅接收目录条目并发出导航、打开、保存请求，不访问文件系统，也不调用平台原生对话框。应用或独立适配层负责枚举目录、权限、路径解析、异步 I/O 和最终操作。TimePicker 不读取系统时间，颜色选择不依赖渲染器。所有控件联动仍为 Action → 应用状态 → View，底层模块不感知这些控件或示例。详见 [完整控件清单](controls-catalog.md)。
+FilePicker 仅接收目录条目并发出导航、打开、保存请求，不访问文件系统，也不调用平台原生对话框。应用或独立适配层负责枚举目录、权限、路径解析、异步 I/O 和最终操作。TimePicker 不读取系统时间，颜色选择不依赖渲染器。所有控件联动仍为 Action → 应用状态 → View，底层模块不感知这些控件或示例。详见 [完整控件清单](advanced-widgets.md#controls-catalog)。
 
 ## 已有控件增强边界
 
-ComboBox、树加载/移动、页签关闭/重排/拖出均发出不透明 Action，由应用确认模型修改。TreeView 和 DataGrid 复用 VirtualList；DataGrid 自定义单元格通过 View 工厂注入，编辑草稿使用应用拥有的 TextInputDraft。HSV 转换与绘制位于可移植控件层，不调用屏幕采集。此次未修改平台层或引入反向依赖；拖出请求不等于多窗口实现。实际进展与未完成项见 [控件增强](advanced-controls.md)。
+ComboBox、树加载/移动、页签关闭/重排/拖出均发出不透明 Action，由应用确认模型修改。TreeView 和 DataGrid 复用 VirtualList；DataGrid 自定义单元格通过 View 工厂注入，编辑草稿使用应用拥有的 TextInputDraft。HSV 转换与绘制位于可移植控件层，不调用屏幕采集。此次未修改平台层或引入反向依赖；拖出请求不等于多窗口实现。实际进展与未完成项见 [控件增强](advanced-widgets.md#advanced-controls)。
 
 `zui-opengl` 是应用显式选用的桌面扩展，不由标准控件或核心重导出。它实现公共 Widget 契约并将 GL 结果转换成 ImageResource；普通绘制后端只处理图像，不识别 OpenGlView。裸 OpenGL 接口通过该扩展的 glow 重导出，原生上下文仍保持私有。FFI/unsafe 仅限此扩展和演示 GL 业务代码，其他 crate 继续禁止 unsafe。

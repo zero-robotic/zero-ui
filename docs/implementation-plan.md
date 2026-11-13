@@ -56,7 +56,7 @@
 - [ ] 嵌入式 Linux 显示与输入后端，以及无 GPU 设备装配。
 - [ ] 通用后台业务消息与窗口唤醒的协作机制，避免各功能自行轮询。
 
-参见 [事件契约](events.md)、[输入法](ime.md)、[控件增强](advanced-controls.md) 与 [可移植性](mcu-portability.md)。
+参见 [事件契约](runtime.md#events)、[输入法](text.md#ime)、[控件增强](advanced-widgets.md#advanced-controls) 与 [可移植性](platform.md#mcu-portability)。
 
 ### 3.2 布局、虚拟化与资源管理
 
@@ -67,7 +67,7 @@
 - [ ] 未声明导航元数据时，对任意虚拟行可聚焦性的自动推断策略，需有明确工作量上限。
 - [ ] 多列/二维虚拟化及其焦点、选择、滚动协调。
 
-参见 [布局设计](layout-design.md)、[虚拟列表](virtual-list.md) 与 [编辑状态](editing.md)。
+参见 [布局设计](layout.md#layout-design)、[虚拟列表](layout.md#virtual-list) 与 [编辑状态](text.md#editing)。
 
 ### 3.3 文本、图片与绘制扩展
 
@@ -78,7 +78,7 @@
 - [ ] 通用圆弧路径等剩余绘制扩展；新增公共图元需覆盖双后端一致性与非法输入。
 - [ ] 字体整形临时分配、渲染内部缓存及图片上传资源的峰值预算与回收策略。
 
-参见 [文字服务](text-design.md)、[文本输入](text-input.md)、[图片](images.md) 与 [Canvas](canvas.md)。
+参见 [文字服务](text.md#text-design)、[文本输入](text.md#text-input)、[图片](rendering.md#images) 与 [Canvas](rendering.md#canvas)。
 
 ### 3.4 标准控件
 
@@ -97,7 +97,7 @@
 | Scroll | 长按轨道连续翻页、自动隐藏及悬停动画 |
 | 弹层 | 锚点持续跟踪与自动目标管理，减少应用手动维护定位 |
 
-触摸和无障碍按公共能力统一推进，不在每个控件重复列项。完整控件目录仍需逐项验收，不能把存在同名 View 或请求事件视为全部交付。参见 [控件目录](controls-catalog.md)、[增强边界](advanced-controls.md) 与各控件专页。
+触摸和无障碍按公共能力统一推进，不在每个控件重复列项。完整控件目录仍需逐项验收，不能把存在同名 View 或请求事件视为全部交付。参见 [控件目录](advanced-widgets.md#controls-catalog)、[增强边界](advanced-widgets.md#advanced-controls) 与各控件专页。
 
 ### 3.5 主题、动画、图表与大屏
 
@@ -108,7 +108,7 @@
 - [ ] 指标数字动画与交互、面板发光/动画和多边形内容裁剪。
 - [ ] 大屏效果档位、低配降级、真实数据接入与长时运行资源控制。
 
-参见 [主题](theme.md)、[动画](animation.md)、[图表](charts.md)、[大屏](dashboard.md) 与 [可选扩展](extras.md)。
+参见 [主题](appearance.md#theme)、[动画](runtime.md#animation)、[图表](visualization.md#charts)、[大屏](visualization.md#dashboard) 与 [可选扩展](visualization.md#extras)。
 
 ## 4. 待验收范围
 
