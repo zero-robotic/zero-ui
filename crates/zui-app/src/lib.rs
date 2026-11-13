@@ -22,10 +22,31 @@ use zui_platform::{
 };
 use zui_types::Color;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Backend {
     Cpu,
+    #[default]
     Gpu,
+}
+
+impl Backend {
+    pub fn from_args(
+        args: &mut std::iter::Peekable<impl Iterator<Item = String>>,
+    ) -> Result<Self, &'static str> {
+        match args.peek().map(String::as_str) {
+            None => Ok(Self::default()),
+            Some(option) if option.starts_with("--") => Ok(Self::default()),
+            Some("cpu") => {
+                args.next();
+                Ok(Self::Cpu)
+            }
+            Some("gpu") => {
+                args.next();
+                Ok(Self::Gpu)
+            }
+            Some(_) => Err("expected cpu or gpu"),
+        }
+    }
 }
 
 /// Scene-level application contract. `WidgetHost` assembles declarative controls

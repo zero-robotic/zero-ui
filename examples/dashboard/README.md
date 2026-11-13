@@ -1,9 +1,12 @@
 # 大屏组件展示
 
 ```sh
+cargo run -p zui-dashboard-example
 cargo run -p zui-dashboard-example -- cpu
-cargo run -p zui-dashboard-example --no-default-features --features gpu -- gpu
+cargo run -p zui-dashboard-example --no-default-features --features cpu -- cpu
 ```
+
+省略后端默认 GPU；默认构建同时支持显式 CPU。最后一条命令仅编译 CPU 后端。不指定后端也可直接传入 `--smoke-ms 1600`。
 
 展示目前实现的全部大屏组件：`DashboardPanel` 科技感切角面板、`MetricCard` 指标卡、`Sparkline` 趋势图，配合传统控件演示联动。数据均为本地模拟数据。
 

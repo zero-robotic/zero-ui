@@ -1,9 +1,12 @@
 # 传统控件展厅
 
 ```sh
+cargo run -p zui-controls-example
 cargo run -p zui-controls-example -- cpu
-cargo run -p zui-controls-example --no-default-features --features gpu -- gpu
+cargo run -p zui-controls-example --no-default-features --features cpu -- cpu
 ```
+
+省略后端默认 GPU；默认构建同时支持显式 CPU。最后一条命令仅编译 CPU 后端。不指定后端也可直接传入 `--smoke-ms 1600` 等选项。
 
 默认 1100×800 窗口，向下滚动查看全部展示区。Tab/Shift+Tab 切换焦点，选择控件可用方向键，Escape 退出。支持 `--smoke-ms 1600` 自动退出。
 

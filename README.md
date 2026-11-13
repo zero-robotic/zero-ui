@@ -12,9 +12,19 @@
 
 使用 Rust 1.95 或更新版本；当前开发验证环境为 1.98.1。依赖使用提交的 `Cargo.lock`。
 
+运行入口不指定后端时默认使用 GPU，显式传入 `cpu` 可切换 CPU。默认构建包含两种后端；仅需 CPU、且不希望引入 GPU 依赖时，使用 `--no-default-features --features cpu -- cpu`。GPU 初始化失败会报错，不自动回退 CPU。
+
+```sh
+cargo run -p zui-controls-example
+cargo run -p zui-controls-example -- cpu
+cargo run -p zui-controls-example -- --smoke-ms 1600
+cargo run -p zui-dashboard-example
+cargo run -p zui-render-check
+```
+
 ```sh
 # CPU 路径不依赖 wgpu，也不要求 GPU 或窗口系统。
-cargo run -p zui-render-check --locked -- cpu artifacts/cpu.png
+cargo run -p zui-render-check --no-default-features --features cpu --locked -- cpu artifacts/cpu.png
 
 # GPU 预览使用真实 GPU，失败时报告错误，不静默改用 CPU。
 cargo run -p zui-render-check --no-default-features --features gpu --locked -- gpu artifacts/gpu.png

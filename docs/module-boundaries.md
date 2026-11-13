@@ -203,7 +203,7 @@ zui-extras::charts 仅依赖 zui-api、zui-types、zui-paint、zui-theme。数�
 
 ## 大屏组合模块落地
 
-`tools/window-check` 的 `gpu-bench` 可选特性直接装配 GPU 渲染器、wgpu 与 pollster，仅用于无窗口性能测量；默认构建与 CPU-only 构建不引入这些依赖。GPU 时间戳位于渲染适配层的默认关闭 `profiling` 特性中，不进入 core、paint 或控件契约。
+`tools/window-check` 的 `gpu-bench` 可选特性直接装配 GPU 渲染器、wgpu 与 pollster，仅用于无窗口性能测量。默认构建通过应用装配层启用 GPU/CPU 两种后端，但不启用基准专用依赖边及时间戳插桩；CPU-only 构建不引入 GPU 依赖。GPU 时间戳位于渲染适配层的默认关闭 `profiling` 特性中，不进入 core、paint 或控件契约。
 
 zui-extras::dashboard 依赖 zui-api、zui-types、zui-paint、zui-theme、zui-widgets 和 zui-extras::charts，组合现有 View，并通过公共 Painter 绘制装饰，不直接引用核心或渲染后端。指标格式和业务含义由应用输入；组件不承担采样、网络或刷新调度。依赖策略已覆盖该模块及 render-check 的验证入口。
 

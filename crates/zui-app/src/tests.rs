@@ -364,3 +364,31 @@ fn animation_wakes_do_not_consume_business_timers_and_hidden_windows_stop_animat
     assert_eq!(driver.application.business_wakes, 1);
     assert_eq!(driver.application.animation_calls, 1);
 }
+#[test]
+fn backend_defaults_to_gpu_without_consuming_options() {
+    assert_eq!(crate::Backend::default(), crate::Backend::Gpu);
+    for arguments in [vec![], vec!["--smoke-ms", "1600"], vec!["--widgets"]] {
+        let expected: Vec<String> = arguments.into_iter().map(String::from).collect();
+        let mut args = expected.clone().into_iter().peekable();
+        assert_eq!(
+            crate::Backend::from_args(&mut args),
+            Ok(crate::Backend::Gpu)
+        );
+        assert_eq!(args.collect::<Vec<_>>(), expected);
+    }
+}
+
+#[test]
+fn explicit_backend_consumes_only_the_selector() {
+    for (name, backend) in [("cpu", crate::Backend::Cpu), ("gpu", crate::Backend::Gpu)] {
+        let mut args = [name, "--smoke-ms", "1600"]
+            .map(String::from)
+            .into_iter()
+            .peekable();
+        assert_eq!(crate::Backend::from_args(&mut args), Ok(backend));
+        assert_eq!(args.collect::<Vec<_>>(), ["--smoke-ms", "1600"]);
+    }
+    let mut args = [String::from("invalid")].into_iter().peekable();
+    assert!(crate::Backend::from_args(&mut args).is_err());
+    assert_eq!(args.next().as_deref(), Some("invalid"));
+}

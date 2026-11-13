@@ -4,12 +4,8 @@ use zui_platform::WindowConfig;
 use zui_types::Size;
 mod demo;
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut args = std::env::args().skip(1);
-    let backend = match args.next().as_deref().unwrap_or("cpu") {
-        "cpu" => Backend::Cpu,
-        "gpu" => Backend::Gpu,
-        _ => return Err("expected cpu or gpu".into()),
-    };
+    let mut args = std::env::args().skip(1).peekable();
+    let backend = Backend::from_args(&mut args)?;
     let mut smoke = None;
     let mut config = WindowConfig {
         title: "ZUI · 传统控件展厅".into(),

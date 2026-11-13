@@ -131,12 +131,8 @@ impl ViewApplication for Demo {
     }
 }
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut args = std::env::args().skip(1);
-    let backend = match args.next().as_deref().unwrap_or("cpu") {
-        "cpu" => Backend::Cpu,
-        "gpu" => Backend::Gpu,
-        _ => return Err("expected cpu or gpu".into()),
-    };
+    let mut args = std::env::args().skip(1).peekable();
+    let backend = Backend::from_args(&mut args)?;
     let mut smoke = None;
     let mut snapshot = None;
     while let Some(arg) = args.next() {

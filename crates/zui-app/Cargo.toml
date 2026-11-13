@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-default = ["cpu"]
+default = ["gpu", "cpu"]
 cpu = ["dep:zui-render-cpu", "zui-backend-winit/software"]
 gpu = ["dep:zui-render-gpu", "dep:pollster"]
 clipboard = ["dep:arboard"]

@@ -12,12 +12,8 @@ mod tabs;
 mod widgets;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut args = std::env::args().skip(1);
-    let backend = match args.next().as_deref().unwrap_or("cpu") {
-        "cpu" => Backend::Cpu,
-        "gpu" => Backend::Gpu,
-        other => return Err(format!("unknown backend {other:?}; expected cpu or gpu").into()),
-    };
+    let mut args = std::env::args().skip(1).peekable();
+    let backend = Backend::from_args(&mut args)?;
     let mut smoke = None;
     let mut widgets = false;
     let mut tabs = false;

@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 
 [features]
-default = ["cpu"]
+default = ["gpu", "cpu"]
 cpu = ["dep:zui-render-cpu"]
 gpu = ["dep:zui-render-gpu", "dep:pollster"]
 

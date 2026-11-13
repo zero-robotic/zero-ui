@@ -1,5 +1,7 @@
 # 应用装配、平台与可移植性
 
+窗口示例默认选择 GPU，省略后端时也可直接传入窗口选项；传入 `cpu` 显式使用 CPU。默认构建启用两种后端，纯 CPU 构建使用 `--no-default-features --features cpu` 并显式传入 `cpu`。未编译的后端或 GPU 初始化失败会报告错误，不静默回退。
+
 [文档索引](README.md) · [模块边界](module-boundaries.md) · [未完成事项](implementation-plan.md)
 
 按架构职责归并的专题参考。设计目标与接口约束分开理解；待办统一维护在实施计划中，各节的验证说明仅覆盖所述范围。

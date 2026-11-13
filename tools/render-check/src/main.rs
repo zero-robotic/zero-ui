@@ -4,7 +4,7 @@ use zui_types::{Color, Extent};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args().skip(1);
-    let backend = args.next().unwrap_or_else(|| "cpu".into());
+    let backend = args.next().unwrap_or_else(|| "gpu".into());
     let output = PathBuf::from(
         args.next()
             .unwrap_or_else(|| format!("artifacts/{backend}.png")),
