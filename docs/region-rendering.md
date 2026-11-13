@@ -26,7 +26,7 @@ CPU 窗口默认使用 `RetainedCpuRenderer`。它保留输出 PixelBuffer，局
 
 GPU 的 `render_to_view()` 默认保留一张 GPU 纹理。局部区域在 GPU 临时纹理中绘制，并复制到保留纹理的对应位置；最后通过无混合的纹理复制绘制到本次获得的目标。该路径不回读 CPU，也不假设交换链目标保留上一帧。多个区域按队列顺序提交，避免 Vello 的共享工作缓冲在提交前被后续区域覆盖。
 
-GPU 时间戳与端到端渲染帧时间补测见 [GPU 性能报告](performance/gpu-regions/README.md)。`zui-render-gpu/profiling` 是默认关闭的诊断特性；启用后可调用 `set_gpu_timing_enabled(true)`，在 `render_to_view` 后通过 `take_gpu_time()` 等待并读取提交区间总时长。每次最多累积 64 次渲染提交，须逐帧读取；读取后计数归零。不支持时间戳的设备返回错误，不伪造 CPU 计时为 GPU 时间。标记通道有额外开销，因此端到端计时必须关闭插桩，GPU 区间不能解释成纯着色器执行时间。
+`zui-render-gpu/profiling` 是默认关闭的诊断特性；启用后可调用 `set_gpu_timing_enabled(true)`，在 `render_to_view` 后通过 `take_gpu_time()` 等待并读取提交区间总时长。每次最多累积 64 次渲染提交，须逐帧读取；读取后计数归零。不支持时间戳的设备返回错误，不伪造 CPU 计时为 GPU 时间。标记通道有额外开销，因此端到端计时必须关闭插桩，GPU 区间不能解释成纯着色器执行时间。
 
 `GpuRenderer::render()` 是完整离屏绘制；`render_retained()` 使用与原生窗口相同的缓存更新路径，并仅为测试/截图回读。系统要求重新呈现时仍会把完整保留纹理复制到新目标；“没有重新栅格化”不等于“没有呈现”。
 
@@ -57,4 +57,4 @@ cargo test -p zui-render-gpu --locked -- --ignored
 python3 tools/check-dependencies.py
 ```
 
-GPU 命令要求可用的真实图形适配器。验证覆盖子树绘制次数、旧 Scene 独立性、零预算、不可见变化、透明叠加、路径裁剪、描边、移动/删除、字形与图像、1/1.25/1.5/2 倍缩放，以及保留 GPU 纹理向全新呈现目标的复制。性能结果见 [区域重绘测量](performance/regions/README.md)。
+GPU 命令要求可用的真实图形适配器。验证覆盖子树绘制次数、旧 Scene 独立性、零预算、不可见变化、透明叠加、路径裁剪、描边、移动/删除、字形与图像、1/1.25/1.5/2 倍缩放，以及保留 GPU 纹理向全新呈现目标的复制。

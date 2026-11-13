@@ -49,9 +49,7 @@ cargo run -p zui-window-check --all-features --locked -- cpu --widgets --smoke-m
 
 该 API 适用于已有队列的上层调用方；当前原生 Winit 驱动仍逐条传递事件，不会自动批处理系统输入。批内共用 metrics/elapsed，跨不同窗口尺寸或时间快照的事件应拆批。已有的 View 重建请求合并逻辑继续保留，新增优化针对重复的动画与 IME 收尾，不把已有功能计作新增收益。
 
-计时、基准复现、优化范围和实测数据见 [刷新性能报告](performance/refresh/README.md)。
-
-CPU 窗口使用 `RetainedCpuRenderer` 保存一帧像素和场景；命令及尺寸/缩放/背景完全不变时复用像素，仍向窗口提交画面。变化帧完整重绘；本轮开销和收益见 [CPU 整帧复用报告](performance/retained-cpu/README.md)。
+CPU 窗口使用 `RetainedCpuRenderer` 保存像素和场景；命令及尺寸/缩放/背景完全不变时复用像素，仍向窗口提交画面。变化帧按损伤区域更新，超出预算或区域阈值时回退整帧绘制，详见 [区域绘制](region-rendering.md)。
 
 ## 使用实际控件边界定位弹层
 

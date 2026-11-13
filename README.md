@@ -63,7 +63,6 @@ cargo test -p zui-render-check --all-features --locked -- --ignored --nocapture
 
 ## 设计与进度
 
-- [分阶段实现与验证记录](docs/implementation-plan.md)
 - [Stepper 数值步进器](docs/stepper.md)
 - [图片资源与显示进度](docs/images.md)
 - [Canvas 便捷自定义绘制](docs/canvas.md)
