@@ -59,11 +59,11 @@ Escape 或外部指针按下产生 `PopupDismissed { reason }`，应用决定何
 - `MenuView`：菜单项、禁用态、勾选标记、快捷键文字以及子菜单。
 - `MenuBarView`：顶层按钮发出 `MenuEvent::Open(id)`，应用选择对应菜单描述。
 - `ContextMenuRegion`：包装内容，右键发出区域局部位置；放在根层时可直接作为根坐标。Shift+F10 也可请求菜单。
-- `MenuEvent::OpenPath(path)` 请求打开子菜单；Right 打开，Left 返回，Enter/Space 执行。应用持有 open_path；子菜单沿路径生成独立弹出层。路径上每层验证 ID，最多 16 层。
+- `MenuEvent::OpenPath(path)` 请求打开子菜单；Right 打开，Left 返回，Enter/Space 执行。应用持有 open_path；所有层处于同一焦点作用域，内部复用列表行为，父层仍可接收鼠标输入。路径上每层验证 ID，最多 16 层。
 - `MenuEvent::Selected(id)` 表示执行命令；关闭和业务执行由应用处理。
 - `MenuShortcut` 与 `resolve_shortcut()` 解析启用命令，忽略按键重复与禁用分支。应用决定快捷键相对文本编辑器和模态窗口的优先级；不在底层注册全局快捷键。
 
-菜单当前使用列表行，已增加分隔条目和当前活动层悬停展开；尚不包含跨层悬停切换和原生系统菜单。子菜单仍可通过键盘及点击完整操作。
+菜单支持跨层悬停切换，不包含原生系统菜单。`MenuView.behavior` 默认悬停延迟 180ms、朝向已打开子菜单时容错 350ms、键盘操作后鼠标抖动阈值 4 个逻辑像素。详细规则见 [菜单悬停容错](menu-hover.md)。点击与键盘打开不等待悬停延迟。
 
 ## Dialog / MessageBox
 

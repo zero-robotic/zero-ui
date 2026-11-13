@@ -338,7 +338,14 @@ fn menu_hover_opens_submenu_and_separator_never_activates() {
     let result = tree
         .dispatch_input(InputEvent::PointerMoved(Point::new(30.0, 70.0)))
         .unwrap();
-    assert!(result.actions.iter().any(|a| a.action.payload::<MenuEvent>() == Some(&MenuEvent::OpenPath(vec![MenuId(1)]))));
+    assert!(result.actions.is_empty());
+    let mut actions = Vec::new();
+    tree.advance_animations_with_actions(std::time::Duration::ZERO, &mut actions)
+        .unwrap();
+    assert!(actions.is_empty());
+    tree.advance_animations_with_actions(menu.behavior.hover_delay, &mut actions)
+        .unwrap();
+    assert!(actions.iter().any(|a| a.action.payload::<MenuEvent>() == Some(&MenuEvent::OpenPath(vec![MenuId(1)]))));
 }
 
 #[test]

@@ -296,6 +296,17 @@ impl ListBox {
     pub fn active_item(&self) -> Option<ListItemId> {
         self.choice.active
     }
+    pub(crate) fn restore_active_item(&mut self, id: ListItemId) {
+        if self
+            .properties
+            .items
+            .iter()
+            .any(|item| item.id == id && !item.disabled)
+        {
+            self.choice.active = Some(id);
+            self.reveal_active();
+        }
+    }
     pub fn scroll_offset(&self) -> f64 {
         self.offset
     }

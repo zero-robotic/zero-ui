@@ -29,3 +29,7 @@ TextInputView 的 caret_blink_interval 默认 500 ms，表示亮/暗各阶段的
 测试覆盖节点期限合并与移除、非法期限、时间跳跃与重置、三种唤醒来源的独立性、隐藏窗口取消，以及真实输入框和 Host 的期限衔接。CPU 像素测试验证亮/暗画面差异、输入后恢复、无重排与候选位置稳定。
 
 当前没有动画曲线、属性插值库、布局过渡编排或大屏特效组件；上述能力可复用此调度契约继续建设。本阶段未进行真实桌面闪烁与系统节能行为验收，也未重跑 GPU 绘制测试。
+
+## 定时控件动作补充
+
+菜单等需要在到期后通知应用的控件，可使用 `Widget::animate_with_actions` 与 `Tree::advance_animations_with_actions`。视觉推进接口仍保持原样；窗口宿主通过 `Application::animate_action` 保留定时动作产生的重绘、退出和业务唤醒意图。详见 [菜单悬停容错](menu-hover.md)。

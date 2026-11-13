@@ -176,16 +176,33 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> WidgetHost<M, L, T> {
         }
         Ok(())
     }
-    fn advance(&mut self, metrics: WindowMetrics, elapsed: Duration) -> Result<bool, TreeError> {
+    fn advance(
+        &mut self,
+        metrics: WindowMetrics,
+        elapsed: Duration,
+        action: &mut WindowAction,
+    ) -> Result<bool, TreeError> {
         self.next_frame = None;
         if !metrics.drawable() {
             return Ok(false);
         }
         let started = self.profiler.start();
-        let result = self.tree.advance_animations(elapsed);
+        let mut actions = Vec::new();
+        let result = if self.rebuild {
+            self.tree.advance_animations(elapsed)
+        } else {
+            self.tree
+                .advance_animations_with_actions(elapsed, &mut actions)
+        };
         self.profiler.finish(RefreshPhase::Animation, started);
         let update = result?;
         self.next_frame = update.next_frame;
+        for event in actions {
+            if let Some(message) = self.model.map_action_with_tree(&event, &self.tree) {
+                let response = self.model.message(message);
+                self.apply(response, action);
+            }
+        }
         Ok(update.invalidation != Invalidation::None)
     }
     fn refresh_ime(&mut self, metrics: WindowMetrics) -> Result<(), TreeError> {
@@ -251,10 +268,14 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> Application for Widget
                 pending = true;
             } else {
                 if pending {
-                    merged.redraw |= self.advance(metrics, elapsed)?;
+                    let animated = self.advance(metrics, elapsed, &mut merged)?;
+                    merged.redraw |= animated;
                     merged.redraw |= self.rebuild || self.tree.invalidation() != Invalidation::None;
                     self.refresh_ime(metrics)?;
                     pending = false;
+                    if merged.exit {
+                        break;
+                    }
                 }
                 let window = self.update(event, metrics, elapsed)?;
                 self.apply(
@@ -270,7 +291,8 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> Application for Widget
             }
         }
         if pending {
-            merged.redraw |= self.advance(metrics, elapsed)?;
+            let animated = self.advance(metrics, elapsed, &mut merged)?;
+            merged.redraw |= animated;
             merged.redraw |= self.rebuild || self.tree.invalidation() != Invalidation::None;
             self.refresh_ime(metrics)?;
         }
@@ -284,12 +306,22 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> Application for Widget
         metrics: WindowMetrics,
         elapsed: Duration,
     ) -> Result<bool, ApplicationError> {
+        Ok(self.animate_action(metrics, elapsed)?.redraw)
+    }
+    fn animate_action(
+        &mut self,
+        metrics: WindowMetrics,
+        elapsed: Duration,
+    ) -> Result<WindowAction, ApplicationError> {
         if metrics.drawable() {
             self.prepare(metrics)?;
         }
-        let animated = self.advance(metrics, elapsed)?;
+        let mut action = WindowAction::default();
+        let animated = self.advance(metrics, elapsed, &mut action)?;
         self.refresh_ime(metrics)?;
-        Ok(metrics.drawable() && (animated || self.tree.invalidation() != Invalidation::None))
+        action.redraw |= metrics.drawable()
+            && (animated || self.rebuild || self.tree.invalidation() != Invalidation::None);
+        Ok(action)
     }
     fn connected(&mut self, window: &dyn NativeWindow) {
         self.ime = None;
@@ -371,7 +403,8 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> Application for Widget
             let response = self.model.update(event, metrics, elapsed);
             self.apply(response, &mut action);
         }
-        action.redraw |= self.advance(metrics, elapsed)?;
+        let animated = self.advance(metrics, elapsed, &mut action)?;
+        action.redraw |= animated;
         action.redraw |=
             self.rebuild || metrics_changed || self.tree.invalidation() != Invalidation::None;
         self.refresh_ime(metrics)?;
@@ -389,7 +422,11 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> Application for Widget
             return Ok(());
         }
         self.prepare(metrics)?;
-        self.advance(metrics, elapsed)?;
+        let started = self.profiler.start();
+        let result = self.tree.advance_animations(elapsed);
+        self.profiler.finish(RefreshPhase::Animation, started);
+        let update = result?;
+        self.next_frame = update.next_frame;
         if self.tree.invalidation() == Invalidation::Layout {
             self.prepare(metrics)?;
         }

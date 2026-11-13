@@ -76,6 +76,16 @@ pub trait Application {
     fn ime_request(&self) -> Option<ImeRequest> {
         None
     }
+    fn animate_action(
+        &mut self,
+        metrics: WindowMetrics,
+        elapsed: Duration,
+    ) -> Result<WindowAction, ApplicationError> {
+        Ok(WindowAction {
+            redraw: self.animate(metrics, elapsed)?,
+            ..Default::default()
+        })
+    }
     fn connected(&mut self, _window: &dyn NativeWindow) {}
     fn update(
         &mut self,
@@ -249,8 +259,15 @@ impl<A: Application> WindowHandler for Driver<A> {
         };
         action.redraw |= retry;
         if animation && metrics.drawable() && !action.exit {
-            match self.application.animate(metrics, elapsed) {
-                Ok(redraw) => action.redraw |= redraw,
+            match self.application.animate_action(metrics, elapsed) {
+                Ok(animated) => {
+                    action.redraw |= animated.redraw;
+                    action.exit |= animated.exit;
+                    action.wake_at = match (action.wake_at, animated.wake_at) {
+                        (Some(first), Some(second)) => Some(first.min(second)),
+                        (first, second) => first.or(second),
+                    };
+                }
                 Err(error) => {
                     self.sync_ime(false)?;
                     return Err(PlatformError::Handler(error));

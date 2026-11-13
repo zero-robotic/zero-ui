@@ -131,6 +131,13 @@ pub trait Widget: Any {
     fn animate(&mut self, _elapsed: Duration) -> AnimationUpdate {
         AnimationUpdate::default()
     }
+    fn animate_with_actions(
+        &mut self,
+        elapsed: Duration,
+        _actions: &mut alloc::vec::Vec<crate::action::WidgetAction>,
+    ) -> AnimationUpdate {
+        self.animate(elapsed)
+    }
     fn text_input(&self, _context: PaintContext) -> Option<TextInputState> {
         None
     }

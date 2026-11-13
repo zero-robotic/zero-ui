@@ -91,8 +91,8 @@ mod dialog;
 pub use dialog::{DialogResult, DialogView, MessageBoxView};
 mod menu;
 pub use menu::{
-    ContextMenuRegion, ContextMenuRequested, MenuBarView, MenuError, MenuEvent, MenuId, MenuItem,
-    MenuShortcut, MenuView,
+    ContextMenuRegion, ContextMenuRequested, MenuBarView, MenuBehavior, MenuError, MenuEvent,
+    MenuId, MenuItem, MenuShortcut, MenuView,
 };
 mod tooltip;
 pub use tooltip::{Tooltip, TooltipAnchor, TooltipView};
