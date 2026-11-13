@@ -1,4 +1,4 @@
-//! Desktop text clipboard adapter. No widget, runtime, or renderer dependencies.
+//! Optional desktop text clipboard adapter implementing the portable contract.
 use zui_api::clipboard::{Clipboard, ClipboardError};
 
 /// Lazily connects on first use and retains the connection for clipboard ownership.
@@ -30,5 +30,16 @@ impl Clipboard for NativeClipboard {
         self.connection()?
             .set_text(text)
             .map_err(|_| ClipboardError::WriteFailed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn construction_does_not_connect_to_system_clipboard() {
+        let clipboard = NativeClipboard::default();
+        assert!(clipboard.inner.is_none());
     }
 }

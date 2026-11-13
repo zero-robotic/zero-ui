@@ -13,7 +13,7 @@ gpu = ["zui-app/gpu"]
 
 [dependencies]
 zui-extras = { workspace = true, features = ["dashboard"] }
-zui-app.workspace = true
+zui-app = { workspace = true, features = ["clipboard"] }
 zui-api.workspace = true
 zui-types.workspace = true
 zui-platform.workspace = true
@@ -22,7 +22,6 @@ zui-layout.workspace = true
 zui-text.workspace = true
 zui-theme.workspace = true
 zui-widgets.workspace = true
-zui-clipboard.workspace = true
 
 [lints]
 workspace = true

@@ -12,6 +12,9 @@ jobs:
       - run: cargo fetch --locked
       - run: cargo fmt --all --check
       - run: python3 tools/check-dependencies.py
+      - run: cargo check -p zui-app --no-default-features --locked
+      - run: cargo test -p zui-app --no-default-features --features clipboard --lib clipboard --locked
+      - run: cargo check -p zui-app --no-default-features --features clipboard-wayland --locked
       - run: cargo check -p zui-extras --no-default-features --locked
       - run: cargo test -p zui-extras --no-default-features --features charts --locked
       - run: cargo test -p zui-extras --no-default-features --features dashboard --locked

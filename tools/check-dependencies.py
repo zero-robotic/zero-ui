@@ -13,21 +13,18 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 ALLOWED = {
     "zui-opengl": {"zui-types", "zui-api", "zui-paint", "zui-core", "zui-layout", "zui-text", "zui-render-cpu"},
     "zui-opengl-example": {"zui-opengl", "zui-app", "zui-api", "zui-types", "zui-platform", "zui-paint", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-render-cpu"},
-    "zui-controls-example": {"zui-core", "zui-app", "zui-api", "zui-types", "zui-platform", "zui-paint", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-clipboard"},
-    "zui-dashboard-example": {"zui-core", "zui-app", "zui-api", "zui-types", "zui-platform", "zui-paint", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-clipboard", "zui-extras"},
+    "zui-controls-example": {"zui-core", "zui-app", "zui-api", "zui-types", "zui-platform", "zui-paint", "zui-layout", "zui-text", "zui-theme", "zui-widgets"},
+    "zui-dashboard-example": {"zui-core", "zui-app", "zui-api", "zui-types", "zui-platform", "zui-paint", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-extras"},
 
     "zui-types": set(),
     "zui-image": {"zui-types", "zui-paint"},
     "zui-extras": {"zui-paint", "zui-api", "zui-types", "zui-theme", "zui-widgets"},
     "zui-theme": {"zui-types"},
     "zui-input": {"zui-types"},
-    "zui-edit": set(),
-    "zui-virtual": set(),
-    "zui-clipboard": {"zui-api"},
     "zui-api": {"zui-types", "zui-paint", "zui-theme", "zui-input"},
     "zui-layout": {"zui-types", "zui-api"},
     "zui-text": {"zui-types", "zui-api", "zui-paint"},
-    "zui-widgets": {"zui-types", "zui-api", "zui-paint", "zui-theme", "zui-animation", "zui-edit", "zui-virtual"},
+    "zui-widgets": {"zui-types", "zui-api", "zui-paint", "zui-theme", "zui-animation"},
     "zui-core": {"zui-types", "zui-api", "zui-paint", "zui-platform", "zui-theme", "zui-animation"},
     "zui-paint": {"zui-types"},
     "zui-vello": {"zui-types", "zui-paint"},
@@ -40,7 +37,7 @@ ALLOWED = {
         "zui-types", "zui-paint", "zui-platform", "zui-backend-winit",
         "zui-render-cpu", "zui-render-gpu",
     },
-    "zui-window-check": {"zui-render-cpu", "zui-render-gpu", "zui-image", "zui-extras", "zui-core", "zui-types", "zui-paint", "zui-platform", "zui-app", "zui-api", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-clipboard"},
+    "zui-window-check": {"zui-render-cpu", "zui-render-gpu", "zui-image", "zui-extras", "zui-core", "zui-types", "zui-paint", "zui-platform", "zui-app", "zui-api", "zui-layout", "zui-text", "zui-theme", "zui-widgets"},
     "zui-render-check": {"zui-image", "zui-extras", "zui-types", "zui-paint", "zui-api", "zui-layout", "zui-core", "zui-text", "zui-widgets", "zui-theme", "zui-render-cpu", "zui-render-gpu", "zui-custom-widget-example"},
     "zui-custom-widget-example": {"zui-api", "zui-paint", "zui-types"},
 }
@@ -105,6 +102,21 @@ def main():
         selected = {line.split()[0] for line in tree.splitlines() if line.strip()}
         for dependency in selected & forbidden:
             failures.append(f"zui-extras {features or 'empty'} unexpectedly depends on {dependency}")
+    for features, clipboard_expected in (
+        ([], False),
+        (["--features", "cpu"], False),
+        (["--features", "gpu"], False),
+        (["--features", "clipboard"], True),
+        (["--features", "clipboard-wayland"], True),
+    ):
+        tree = subprocess.check_output([
+            "cargo", "tree", "--offline", "--locked", "-p", "zui-app",
+            "--no-default-features", *features,
+            "--edges", "normal,build", "--prefix", "none", "--format", "{p}",
+        ], cwd=ROOT, text=True)
+        selected = {line.split()[0] for line in tree.splitlines() if line.strip()}
+        if ("arboard" in selected) != clipboard_expected:
+            failures.append(f"zui-app {features or 'empty'} has unexpected clipboard dependencies")
     if failures:
         print("\n".join(failures), file=sys.stderr)
         return 1

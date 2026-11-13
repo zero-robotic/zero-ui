@@ -76,7 +76,7 @@ let caret = result.geometry.caret(position, 1.0)?;
 - `cursor_at(Point)` 返回光标位置。坐标为排版原点下的逻辑单位；控件负责按内容原点和滚动变换换算，例如文字向左滚动 s 时，命中坐标为局部 x 减内容原点再加 s。非有限值或无法表示为底层 f32 的坐标返回 InvalidPoint。
 - `caret(position, width)` 返回逻辑矩形；宽度必须有限且非负，零宽用于几何查询。无效字节位置或完整字素内部位置被拒绝，不静默当成字符索引。
 - `selection_rects(anchor, focus)` 支持正反选择，返回跨行或跨双向文字片段的多个矩形。相同逻辑偏移的两种亲和性不构成文本选择。
-- `move_visual(position, Left/Right)` 按排版视觉顺序移动，处理双向文字和软换行亲和性；不能用 zui-edit 的逻辑前后字素移动代替。
+- `move_visual(position, Left/Right)` 按排版视觉顺序移动，处理双向文字和软换行亲和性；不能用 zui_widgets::edit 的逻辑前后字素移动代替。
 
 交互适配器使用 unicode-segmentation 1.13.3 校验完整扩展字素边界。字体回退造成底层 run 切开字素时，命中通过相邻完整字素的光标几何选取最近边界，视觉移动跳过内部边界；异常几何返回错误，不允许产生可用于拆分字素的编辑位置。此保护分支不等于已完成所有回退字体组合的覆盖测试。
 

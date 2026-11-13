@@ -4,10 +4,10 @@ mod navigation;
 pub use navigation::VirtualListNavigate;
 mod sizes;
 use super::*;
+use crate::virtualization::{Alignment, ExtentIndex, Window};
 use alloc::{rc::Rc, vec::Vec};
 use sizes::RowSizes;
 use zui_api::widget::{ChildLayout, LayoutTag};
-use zui_virtual::{Alignment, ExtentIndex, Window};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct IndexRequest {
@@ -21,7 +21,7 @@ struct ListProperties {
     sizes: RowSizes,
     preserve_anchor: bool,
     gap: f64,
-    index_limits: zui_virtual::Limits,
+    index_limits: crate::virtualization::Limits,
     overscan: usize,
     max_realized: usize,
     request: Option<IndexRequest>,
@@ -99,7 +99,7 @@ impl VirtualListView {
         self
     }
     /// Limits for the independent dimension index, separate from UI node limits.
-    pub fn index_limits(mut self, limits: zui_virtual::Limits) -> Self {
+    pub fn index_limits(mut self, limits: crate::virtualization::Limits) -> Self {
         self.properties.index_limits = limits;
         self
     }
@@ -224,7 +224,10 @@ impl VirtualList {
     /// Explicit maintenance; never invoked on every frame. The runtime owner must
     /// request Layout invalidation when calling this through Tree::update_widget.
     /// No measured heights are evicted. Returns released index-buffer bytes.
-    pub fn compact_index(&mut self, max_scratch_bytes: usize) -> Result<usize, zui_virtual::Error> {
+    pub fn compact_index(
+        &mut self,
+        max_scratch_bytes: usize,
+    ) -> Result<usize, crate::virtualization::Error> {
         match &mut self.index {
             Some(index) => index.compact(max_scratch_bytes),
             None => Ok(0),
@@ -303,8 +306,10 @@ impl Widget for VirtualList {
                     .sizes
                     .build_index(self.properties.gap, self.properties.index_limits)
                     .map_err(|error| match error {
-                        zui_virtual::Error::BudgetExceeded
-                        | zui_virtual::Error::AllocationFailed => LayoutError::BudgetExceeded,
+                        crate::virtualization::Error::BudgetExceeded
+                        | crate::virtualization::Error::AllocationFailed => {
+                            LayoutError::BudgetExceeded
+                        }
                         _ => LayoutError::InvalidStyle(id),
                     })?,
             )

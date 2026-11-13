@@ -1,5 +1,5 @@
 use unicode_segmentation::UnicodeSegmentation;
-use zui_edit::{EditError, EditLimits, Movement, Selection, TextBuffer};
+use zui_widgets::edit::{EditError, EditLimits, Movement, Selection, TextBuffer};
 fn buffer(text: &str) -> TextBuffer {
     TextBuffer::new(text, EditLimits::default()).unwrap()
 }

@@ -1,7 +1,5 @@
 //! Axis-independent extent indexing for virtual lists and table rows/columns.
 //! No widgets, IDs, layout engine, renderer, platform or application dependency.
-#![no_std]
-extern crate alloc;
 mod index;
 mod sparse;
 use core::{fmt, ops::Range};

@@ -1,4 +1,4 @@
-use zui_virtual::{Alignment, Error, ExtentIndex, Limits};
+use zui_widgets::virtualization::{Alignment, Error, ExtentIndex, Limits};
 fn close(a: f64, b: f64) {
     assert!((a - b).abs() < 1e-7, "{a} != {b}");
 }
@@ -213,7 +213,7 @@ fn anchors_preserve_visible_item_when_preceding_heights_change() {
     let anchor = index.anchor(53.0, 40.0).unwrap().unwrap();
     assert_eq!(
         anchor,
-        zui_virtual::Anchor {
+        zui_widgets::virtualization::Anchor {
             index: 2,
             within: 5.0
         }
@@ -225,7 +225,7 @@ fn anchors_preserve_visible_item_when_preceding_heights_change() {
     let gap = index.anchor(77.0, 40.0).unwrap().unwrap();
     assert_eq!(
         gap,
-        zui_virtual::Anchor {
+        zui_widgets::virtualization::Anchor {
             index: 2,
             within: -1.0
         }

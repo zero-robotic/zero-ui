@@ -4,18 +4,26 @@
 
 ## 模块与所有权
 
+原 `zui-clipboard` crate 已合入 `zui-app`，不再保留兼容包装。`zui-app` 默认不启用原生剪贴板；工作区应用需要显式配置：
+
+```toml
+zui-app = { workspace = true, features = ["clipboard"] }
+```
+
+原 `zui-clipboard/wayland` 改为 `zui-app/clipboard-wayland`，会自动启用 `clipboard`。仅使用 CPU 或 GPU feature 不会引入 arboard。原生连接仍为懒加载，单元测试不访问系统剪贴板。
+
 `zui-api::clipboard::Clipboard` 定义 read_text(max_bytes)、write_text 和框架错误类型，不包含平台句柄。`EventServices` 在单次事件路由中借用该服务；核心只转交服务，不解释剪贴板内容，也不识别输入框。既有 Widget::event 实现仍可使用，需服务的控件实现 event_with_services。直接焦点/捕获通知不携带服务。
 
 `Tree::dispatch_input_with_services` 支持显式注入；普通 dispatch_input 使用 UnavailableClipboard，未配置时报告 Unavailable，不伪装成成功。WidgetHost 通过 with_clipboard 持有注入实例。控件不保存服务引用，不通过全局单例查找平台能力。
 
-`zui-clipboard::NativeClipboard` 是独立桌面适配器，仅依赖公共 API 与锁定的 arboard 3.6.1；核心、控件、平台契约与渲染器均不依赖它。首次使用时连接，随后保留实例，构造本身不访问剪贴板。桌面窗口示例显式注入：
+`zui_app::clipboard::NativeClipboard` 是 zui-app 中由 `clipboard` feature 启用的桌面适配器，实现仅使用公共 API 与锁定的 arboard 3.6.1；核心、控件、平台契约与渲染器均不依赖它。首次使用时连接，随后保留实例，构造本身不访问剪贴板。桌面窗口示例显式注入：
 
 ```rust
 let host = WidgetHost::new(model, layout, text, limits)?
-    .with_clipboard(zui_clipboard::NativeClipboard::default());
+    .with_clipboard(zui_app::clipboard::NativeClipboard::default());
 ```
 
-arboard 默认图像功能已关闭，本阶段只处理 UTF-8 文本。Linux 默认使用 X11，原生 Wayland 数据控制可通过 zui-clipboard 的 wayland feature 启用，仍取决于合成器支持；本轮仅验证 macOS 编译。Linux 的剪贴板内容所有权可能随实例销毁而丢失，因此不能每次操作后立即丢弃连接。详见 [arboard 3.6.1 文档](https://docs.rs/arboard/3.6.1/arboard/struct.Clipboard.html) 与 [功能配置](https://docs.rs/crate/arboard/3.6.1/features)。无桌面服务的嵌入式配置可不链接此适配器，按应用需要注入替代实现。
+arboard 默认图像功能已关闭，本阶段只处理 UTF-8 文本。Linux 默认使用 X11，原生 Wayland 数据控制可通过 zui-app 的 `clipboard-wayland` feature 启用，仍取决于合成器支持；本轮仅验证 macOS 编译。Linux 的剪贴板内容所有权可能随实例销毁而丢失，因此不能每次操作后立即丢弃连接。详见 [arboard 3.6.1 文档](https://docs.rs/arboard/3.6.1/arboard/struct.Clipboard.html) 与 [功能配置](https://docs.rs/crate/arboard/3.6.1/features)。无桌面服务的嵌入式配置可不链接此适配器，按应用需要注入替代实现。
 
 ## 编辑语义
 

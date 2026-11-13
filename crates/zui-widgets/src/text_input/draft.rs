@@ -13,14 +13,14 @@ pub struct TextInputDraft(Rc<RefCell<Slot>>);
 /// metadata, model copies, layout and renderer resources. Count shared handles once.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TextInputDraftMemory {
-    pub edit: Option<zui_edit::EditMemoryUsage>,
+    pub edit: Option<crate::edit::EditMemoryUsage>,
     pub external_text_capacity_bytes: usize,
 }
 impl TextInputDraftMemory {
     pub fn allocated_bytes(self) -> usize {
         self.external_text_capacity_bytes.saturating_add(
             self.edit
-                .map_or(0, zui_edit::EditMemoryUsage::allocated_bytes),
+                .map_or(0, crate::edit::EditMemoryUsage::allocated_bytes),
         )
     }
 }

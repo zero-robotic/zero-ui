@@ -6,6 +6,7 @@ mod draft;
 mod draft_cache;
 mod mask;
 use crate::TextView;
+use crate::edit::{EditError, EditLimits, Movement, Selection, TextBuffer};
 use alloc::{
     string::{String, ToString},
     vec::Vec,
@@ -32,7 +33,6 @@ use zui_api::{
         TextInputState, Widget,
     },
 };
-use zui_edit::{EditError, EditLimits, Movement, Selection, TextBuffer};
 use zui_paint::{Painter, Path};
 use zui_theme::{ColorRole, Theme, TypeRole};
 use zui_types::{Affine, Color, NodeId, Point, Rect, Size};

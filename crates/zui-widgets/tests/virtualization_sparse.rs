@@ -1,4 +1,4 @@
-use zui_virtual::{Alignment, Error, ExtentIndex, Limits};
+use zui_widgets::virtualization::{Alignment, Error, ExtentIndex, Limits};
 
 #[test]
 fn million_estimates_need_no_initial_buffer_and_updates_obey_budget() {

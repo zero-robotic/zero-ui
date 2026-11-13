@@ -3903,6 +3903,7 @@ dependencies = [
 name = "zui-app"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "pollster",
  "raw-window-handle",
  "zui-api",
@@ -3928,20 +3929,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "zui-clipboard"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "zui-api",
-]
-
-[[package]]
 name = "zui-controls-example"
 version = "0.1.0"
 dependencies = [
  "zui-api",
  "zui-app",
- "zui-clipboard",
  "zui-core",
  "zui-layout",
  "zui-paint",
@@ -3976,7 +3968,6 @@ version = "0.1.0"
 dependencies = [
  "zui-api",
  "zui-app",
- "zui-clipboard",
  "zui-core",
  "zui-extras",
  "zui-layout",
@@ -3986,13 +3977,6 @@ dependencies = [
  "zui-theme",
  "zui-types",
  "zui-widgets",
-]
-
-[[package]]
-name = "zui-edit"
-version = "0.1.0"
-dependencies = [
- "unicode-segmentation",
 ]
 
 [[package]]
@@ -4161,20 +4145,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "zui-virtual"
-version = "0.1.0"
-
-[[package]]
 name = "zui-widgets"
 version = "0.1.0"
 dependencies = [
  "unicode-segmentation",
  "zui-api",
- "zui-edit",
  "zui-paint",
  "zui-theme",
  "zui-types",
- "zui-virtual",
 ]
 
 [[package]]
@@ -4186,7 +4164,6 @@ dependencies = [
  "wgpu",
  "zui-api",
  "zui-app",
- "zui-clipboard",
  "zui-core",
  "zui-extras",
  "zui-image",

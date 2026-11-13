@@ -1,5 +1,5 @@
 //! Default-filled intervals are implicit. Only update paths allocate arena nodes.
-use crate::{
+use super::{
     Error, Limits,
     index::{total, validate_extent, validate_total},
 };

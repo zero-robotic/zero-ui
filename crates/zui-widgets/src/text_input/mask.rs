@@ -6,7 +6,7 @@ pub(super) struct Mask {
 }
 impl Mask {
     pub fn new(text: &str) -> Self {
-        let offsets: Vec<_> = zui_edit::grapheme_boundaries(text).collect();
+        let offsets: Vec<_> = crate::edit::grapheme_boundaries(text).collect();
         let text = "•".repeat(offsets.len().saturating_sub(1));
         Self { text, offsets }
     }

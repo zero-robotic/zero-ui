@@ -1,9 +1,9 @@
 //! Temporary display snapshot; never mutates committed text or edit history.
 use super::{TextInputError, single_line};
+use crate::edit::{EditError, Selection, TextBuffer};
 use alloc::string::String;
 use core::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
-use zui_edit::{EditError, Selection, TextBuffer};
 
 pub(super) struct Composition {
     pub text: String,

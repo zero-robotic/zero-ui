@@ -1,6 +1,6 @@
 //! Immutable size descriptions; index rebuilding is separate from scrolling.
+use crate::virtualization::{Error, ExtentIndex, Limits};
 use alloc::{rc::Rc, vec::Vec};
-use zui_virtual::{Error, ExtentIndex, Limits};
 
 #[derive(Clone)]
 pub(super) enum RowSizes {

@@ -2,6 +2,8 @@
 #![no_std]
 extern crate alloc;
 mod accordion;
+pub mod edit;
+pub mod virtualization;
 pub use accordion::{
     AccordionChanged, AccordionError, AccordionExpansion, AccordionId, AccordionItem, AccordionView,
 };
@@ -39,6 +41,7 @@ mod scroll;
 mod scrollbar;
 mod slider;
 mod switch;
+pub use crate::virtualization::{Alignment as ScrollAlignment, Limits as VirtualIndexLimits};
 pub use progress::{
     ProgressAnimation, ProgressBar, ProgressBarStyle, ProgressBarView, ProgressDirection,
     ProgressValue,
@@ -49,7 +52,6 @@ pub use scroll::{
 };
 pub use slider::{Slider, SliderChanged, SliderColors, SliderStyle, SliderView};
 pub use switch::{Switch, SwitchChanged, SwitchColors, SwitchStyle, SwitchView};
-pub use zui_virtual::{Alignment as ScrollAlignment, Limits as VirtualIndexLimits};
 mod radio;
 mod segmented;
 pub use button::{Button, ButtonActivated, ButtonColors, ButtonStyle, ButtonView};

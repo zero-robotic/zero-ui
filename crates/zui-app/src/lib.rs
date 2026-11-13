@@ -1,4 +1,6 @@
 //! Top-level platform and renderer assembly.
+#[cfg(feature = "clipboard")]
+pub mod clipboard;
 mod ime;
 mod refresh;
 pub use refresh::{PhaseTiming, RefreshMetrics, RefreshPhase};

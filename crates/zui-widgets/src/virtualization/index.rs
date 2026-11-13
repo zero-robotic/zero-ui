@@ -1,4 +1,4 @@
-use crate::{Error, Limits};
+use super::{Error, Limits};
 use alloc::vec::Vec;
 
 #[derive(Clone, Copy)]

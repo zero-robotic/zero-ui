@@ -157,7 +157,7 @@ Stack 已实现共享内容区域、独立水平/垂直对齐、自然尺寸及�
 
 纵向 ScrollView 已接入公共布局溢出范围与子视口契约，支持自动内容高度、滚轮/键盘与边界冒泡。覆盖式滚动条和横向/双向随后已接入，惯性仍未完成，详见 [ScrollView](scroll.md)；固定行高虚拟化由独立 VirtualList 提供。
 
-虚拟化的尺寸索引基础已由独立 zui-virtual 提供，包含固定/可变尺寸范围查询、索引定位与更新后的锚点恢复，详见 [虚拟化范围索引](virtualization.md)。它不创建或布局节点；控件层已组合该索引与通用子项协调实现 [VirtualList：固定、显式与自动行高](virtual-list.md)，只布局可见/预加载片段，并转换到局部坐标。大范围索引使用 f64 不代表布局算法能够准确处理同等绝对范围；显式可变行高与自动行高测量现已接入，虚拟焦点导航仍未接入。
+虚拟化的尺寸索引基础已由zui-widgets 内部的 zui_widgets::virtualization 模块 提供，包含固定/可变尺寸范围查询、索引定位与更新后的锚点恢复，详见 [虚拟化范围索引](virtualization.md)。它不创建或布局节点；控件层已组合该索引与通用子项协调实现 [VirtualList：固定、显式与自动行高](virtual-list.md)，只布局可见/预加载片段，并转换到局部坐标。大范围索引使用 f64 不代表布局算法能够准确处理同等绝对范围；显式可变行高与自动行高测量现已接入，虚拟焦点导航仍未接入。
 
 
 尺寸契约新增 Dimension::MinContent / MaxContent，可用于 width、height、basis。MinContent 请求尽可能采用软换行机会的自然尺寸，MaxContent 请求不采用软换行的自然尺寸；其他轴仍遵循所属 Flex/Grid 算法，不保证收缩到绘制边缘。当前 min_width/max_width/min_height/max_height 不接受这两个值，适配器返回 InvalidStyle，不能静默当作 Auto。滚动内容使用单列弹性网格配合 MaxContent，先确定自然宽度再计算内容高度，避免 Flex 初步基准测量保留额外纵向空间。横向/双向滚动已接入，详见 ScrollView 文档。

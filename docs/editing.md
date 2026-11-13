@@ -1,17 +1,19 @@
 # Unicode 编辑状态
 
-状态：`zui-edit` 已实现与界面无关的文本、选择区、逻辑字素移动及有限撤销历史。已由 TextInput 接入可见编辑；编辑模块自身不处理系统输入法、剪贴板或可视光标。
+状态：`zui_widgets::edit` 已实现与界面无关的文本、选择区、逻辑字素移动及有限撤销历史。已由 TextInput 接入可见编辑；编辑模块自身不处理系统输入法、剪贴板或可视光标。
 
 ## 模块边界
 
-`zui-edit` 使用 `no_std + alloc`，只依赖固定版本 `unicode-segmentation 1.13.3`，不依赖其他 ZUI crate、输入设备、字体、控件或渲染后端。它负责已提交文本的编辑规则；上层负责将键盘/IME/剪贴板行为转换成编辑操作。第三方分段类型不出现在公共接口中。
+原 `zui-edit` crate 已合入 `zui-widgets`，公开入口改为 `zui_widgets::edit`，原有算法测试迁至 `crates/zui-widgets/tests/editing.rs`。无需额外 feature；该算法也是文本输入控件的基础能力。
+
+`zui_widgets::edit` 使用 `no_std + alloc`，只依赖固定版本 `unicode-segmentation 1.13.3`，算法模块不引用输入设备、字体、具体控件或渲染后端；其宿主 crate 为 zui-widgets。它负责已提交文本的编辑规则；上层负责将键盘/IME/剪贴板行为转换成编辑操作。第三方分段类型不出现在公共接口中。
 
 布局服务负责坐标命中、字形簇与字节偏移映射、双向文字的视觉顺序和选择区域几何。编辑模块只处理逻辑文本顺序，不得反向查询布局或控件树。后续输入框和多行编辑器可依赖此模块，但不能把窗口事件和控件状态移入其中。
 
 ## 公共入口
 
 ```rust
-use zui_edit::{EditLimits, Movement, TextBuffer};
+use zui_widgets::edit::{EditLimits, Movement, TextBuffer};
 
 let mut buffer = TextBuffer::new("中文👩🏽‍💻", EditLimits::default())?;
 buffer.move_cursor(Movement::PreviousGrapheme, true);
@@ -53,8 +55,8 @@ EditLimits 分别限制当前文本字节数、撤销和重做合计的字符串
 ## 验证与后续
 
 ```sh
-cargo test -p zui-edit --locked
-cargo clippy -p zui-edit --all-targets --locked -- -D warnings
+cargo test -p zui-widgets --test editing --locked
+cargo clippy -p zui-widgets --all-targets --locked
 ```
 
 六项回归测试覆盖中文、组合重音、带肤色的 ZWJ emoji、旗帜、CRLF 与印度文字字素；反向选择、折叠、替换、字符合并、无效偏移、预算失败原子性、历史淘汰和分支重做。边界组合测试遍历多个文本的选择端点与插入片段，逐次验证光标合法性及撤销/重做恢复。

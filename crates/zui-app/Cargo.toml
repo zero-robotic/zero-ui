@@ -9,8 +9,11 @@ license.workspace = true
 default = ["cpu"]
 cpu = ["dep:zui-render-cpu", "zui-backend-winit/software"]
 gpu = ["dep:zui-render-gpu", "dep:pollster"]
+clipboard = ["dep:arboard"]
+clipboard-wayland = ["clipboard", "arboard/wayland-data-control"]
 
 [dependencies]
+arboard = { workspace = true, optional = true }
 zui-types.workspace = true
 zui-api.workspace = true
 zui-core.workspace = true

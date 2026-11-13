@@ -1,6 +1,4 @@
 //! Logical Unicode editing, independent of widgets, input devices and shaping.
-#![no_std]
-extern crate alloc;
 use alloc::{
     collections::VecDeque,
     string::{String, ToString},

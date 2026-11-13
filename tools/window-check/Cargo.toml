@@ -20,11 +20,10 @@ pollster = { workspace = true, optional = true }
 zui-render-cpu = { workspace = true, optional = true }
 zui-image = { workspace = true, features = ["worker"] }
 png.workspace = true
-zui-clipboard.workspace = true
 zui-types.workspace = true
 zui-paint.workspace = true
 zui-platform.workspace = true
-zui-app.workspace = true
+zui-app = { workspace = true, features = ["clipboard"] }
 zui-api.workspace = true
 zui-layout.workspace = true
 zui-text.workspace = true

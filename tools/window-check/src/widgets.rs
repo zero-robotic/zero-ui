@@ -43,7 +43,7 @@ pub fn run(
         text,
         Default::default(),
     )?
-    .with_clipboard(zui_clipboard::NativeClipboard::default());
+    .with_clipboard(zui_app::clipboard::NativeClipboard::default());
     Ok(zui_app::run(config, backend, host)?)
 }
 struct Demo {

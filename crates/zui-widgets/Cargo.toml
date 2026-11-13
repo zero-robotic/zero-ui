@@ -10,8 +10,6 @@ zui-types.workspace = true
 zui-api.workspace = true
 zui-paint.workspace = true
 zui-theme.workspace = true
-zui-edit.workspace = true
-zui-virtual.workspace = true
 unicode-segmentation.workspace = true
 
 [lints]

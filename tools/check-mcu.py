@@ -9,7 +9,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # are deliberately outside the current portable-library contract.
 PACKAGES = (
     "zui-types", "zui-input", "zui-paint", "zui-theme", "zui-api",
-    "zui-platform", "zui-edit", "zui-virtual", "zui-core",
+    "zui-platform", "zui-core",
     "zui-widgets", "zui-extras",
 )
 

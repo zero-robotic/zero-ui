@@ -1,8 +1,10 @@
 # 虚拟化范围索引
 
-`zui-virtual` 提供与轴向无关的 ExtentIndex，用于列表行、表格行或列的尺寸索引。它是 `no_std + alloc` 的独立模块，不依赖控件、NodeId、布局引擎、渲染器或平台。该模块只交付范围与定位算法；控件层已组合它实现 [VirtualList：固定、显式与自动行高](virtual-list.md)，索引本身仍不创建节点。
+`zui_widgets::virtualization` 提供与轴向无关的 ExtentIndex，用于列表行、表格行或列的尺寸索引。它是 `no_std + alloc` 的独立模块，不依赖控件、NodeId、布局引擎、渲染器或平台。该模块只交付范围与定位算法；控件层已组合它实现 [VirtualList：固定、显式与自动行高](virtual-list.md)，索引本身仍不创建节点。
 
 ## 数据与查询
+
+原 `zui-virtual` crate 已合入 `zui-widgets`，公开入口改为 `zui_widgets::virtualization`，无需额外 feature。`ScrollAlignment` 与 `VirtualIndexLimits` 的既有重导出保持不变；原有测试迁至 `crates/zui-widgets/tests/virtualization_index.rs` 和 `virtualization_sparse.rs`。
 
 - `ExtentIndex::fixed(count, extent, gap, limits)` 表达固定尺寸项目，不分配逐项索引。
 - `ExtentIndex::variable(&extents, gap, limits)` 构建可变尺寸的聚合树，建立成本与存储均为 O(N)。`update(index, extent)` 在 O(log N) 内更新路径，不累积重复加减浮点差值。
@@ -13,7 +15,7 @@
 固定尺寸索引的单项定位为 O(1)，可变尺寸为 O(log N)。三种存储使用相同公共行为；固定尺寸实例不允许单项更新，需要改变统一尺寸时重新构造，或显式改为可变尺寸实例。
 
 ```rust
-use zui_virtual::{Alignment, ExtentIndex, Limits};
+use zui_widgets::virtualization::{Alignment, ExtentIndex, Limits};
 
 let index = ExtentIndex::fixed(10_000, 30.0, 2.0, Limits::default())?;
 let window = index.window(0.0, 240.0, 2)?;

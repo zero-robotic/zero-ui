@@ -46,14 +46,16 @@
 
 ## 3. 模块职责与允许依赖
 
+`zui-edit`、`zui-virtual`、`zui-clipboard` 已取消独立 crate：前两者分别归入 `zui-widgets::edit`、`zui-widgets::virtualization`，后者归入 `zui-app::clipboard`（可选）。这仅合并包边界，不改变算法与服务职责；编辑和索引模块不能反向导入具体控件、应用或运行时。
+
 下表列出预期内部依赖上限，不要求每个模块使用所有允许项。外部库也必须限制在对应实现模块中。尚未拆分 crate 时，同样遵守模块边界。
 
 | 模块 | 单一职责 | 允许直接依赖的 ZUI 模块 |
 | --- | --- | --- |
 | `zui-types` | 几何、标识符、约束等少量基础值类型 | 无 |
 | `zui-input` | 平台与 UI 共用的键盘、指针、触摸和输入法值类型 | types |
-| `zui-edit` | 已提交文本、逻辑选择区、字素编辑与有限撤销历史 | 无 |
-| `zui-virtual` | 一维项目尺寸索引、可见范围、索引定位和滚动锚点 | 无 |
+| `zui_widgets::edit` | 已提交文本、逻辑选择区、字素编辑与有限撤销历史 | 无 |
+| `zui_widgets::virtualization` | 一维项目尺寸索引、可见范围、索引定位和滚动锚点 | 无 |
 | `zui-paint` | 绘制描述、Painter/Renderer 契约及绘制资源标识 | types |
 | `zui-image` | std 图片解码适配，返回公共图片资源 | types、paint |
 | `zui-theme` | 语义化主题变量与通用样式值 | types |
@@ -62,7 +64,7 @@
 | `zui-platform` | 输入、时间、唤醒和显示服务契约 | types、paint、input |
 | `zui-layout` | Taffy 适配、布局算法与缓存 | types、api |
 | `zui-text` | 文字服务实现、测量、排版与字体缓存 | types、api、paint |
-| `zui-clipboard` | 桌面文本剪贴板服务实现与连接生命周期 | api |
+| `zui_app::clipboard`（可选） | 桌面文本剪贴板服务实现与连接生命周期 | api |
 | `zui-vello` | 渲染适配层内部共享的 Vello 命令转换 | types、paint |
 | `zui-render-cpu` | Vello CPU 适配及其资源管理 | types、paint、vello |
 | `zui-render-gpu` | Vello GPU 适配及其资源管理 | types、paint、vello |
@@ -70,7 +72,7 @@
 | `zui-backend-winit` | 桌面平台服务实现 | types、paint、platform |
 | `zui-backend-linux` | 嵌入式 Linux 平台服务实现 | types、paint、platform |
 | `zui-core` | 节点生命周期、事件路由、焦点、失效与帧调度 | types、api、paint、platform、theme、animation |
-| `zui-widgets` | 标准控件行为及其样式映射 | types、api、paint、theme、animation、edit、virtual |
+| `zui-widgets` | 标准控件行为及其样式映射 | types、api、paint、theme、animation |
 | `zui-extras` | 按 feature 启用的图表与大屏扩展，默认不启用任何组件 | types、api、paint、theme；dashboard 可依赖 widgets |
 | `zui-extras::charts` | 数据映射、图表和仪表控件（内部模块） | types、api、paint、theme |
 | `zui-extras::dashboard` | 大屏组合、面板及装饰控件 | types、api、paint、theme、animation、widgets、charts |
@@ -105,7 +107,7 @@ flowchart TD
 
 标准控件依赖公共 Widget 契约，而不是依赖核心的节点存储实现。渲染器消费绘制描述，不读取控件树；主题不认识 Button 或 Chart；动画模块不认识具体控件，不直接修改控件状态。
 
-剪贴板契约属于公共 API，桌面实现位于独立 zui-clipboard 适配器，由顶层应用注入。核心仅传递事件服务借用，控件负责编辑语义；窗口平台后端不因此引入 Widget 契约依赖。无需桌面剪贴板的应用可完全不链接原生适配器。
+剪贴板契约属于公共 API，桌面实现位于 zui-app 的可选 clipboard 模块，由顶层应用注入。核心仅传递事件服务借用，控件负责编辑语义；窗口平台后端不因此引入 Widget 契约依赖。无需桌面剪贴板的应用可完全不链接原生适配器。
 
 动画通过公共 Widget::animate 契约接收上层提供的经过时间。核心合并失效与最早期限，装配层区分业务定时器、动画与呈现重试；平台只处理统一期限，不知道光标或控件动画类型。光标相位与显示规则属于输入控件内部，不能在核心或平台增加输入框特判。
 
@@ -113,11 +115,11 @@ flowchart TD
 
 输入值定义在 `zui-input`，平台与公共 UI 契约共同依赖它。平台可重导出这些类型保持使用入口稳定，但不反向依赖 Widget 契约；UI 也不必导入原生窗口服务才能处理键盘或指针值。窗口生命周期事件仍属于 `zui-platform`。
 
-`zui-edit` 只管理逻辑文本及编辑历史，不认识键盘、IME、字体、光标绘制或具体输入框。视觉光标几何由文字服务负责，上层控件负责将输入和命中结果转换成编辑操作。允许控件依赖编辑模块，但不得通过编辑模块回调控件或文字引擎来隐式装配服务。
+`zui_widgets::edit` 只管理逻辑文本及编辑历史，不认识键盘、IME、字体、光标绘制或具体输入框。视觉光标几何由文字服务负责，上层控件负责将输入和命中结果转换成编辑操作。允许控件依赖编辑模块，但不得通过编辑模块回调控件或文字引擎来隐式装配服务。
 
-`zui-virtual` 只处理尺寸与逻辑索引，不认识节点、业务 Key、行工厂、滚动控件或布局/渲染库。调用方提供视口与偏移并消费范围结果，数据所有者负责 Key 映射与结构变化；VirtualList 的固定、显式和自动行高已由控件层组合该索引与通用子项契约实现。不得向该模块注入创建控件或操作核心节点的回调。
+`zui_widgets::virtualization` 只处理尺寸与逻辑索引，不认识节点、业务 Key、行工厂、滚动控件或布局/渲染库。调用方提供视口与偏移并消费范围结果，数据所有者负责 Key 映射与结构变化；VirtualList 的固定、显式和自动行高已由控件层组合该索引与通用子项契约实现。不得向该模块注入创建控件或操作核心节点的回调。
 
-布局后的子项生成通过公共 ChildOwnership 与 Widget::child_views 契约表达；核心只执行生成描述的校验、协调和有界布局收敛，不选择列表范围或解释业务数据。具体控件负责返回哪些子项，应用通过稳定 Key 与所有权声明保持结构一致。该通用回调不允许核心导入控件实现或 zui-virtual。
+布局后的子项生成通过公共 ChildOwnership 与 Widget::child_views 契约表达；核心只执行生成描述的校验、协调和有界布局收敛，不选择列表范围或解释业务数据。具体控件负责返回哪些子项，应用通过稳定 Key 与所有权声明保持结构一致。该通用回调不允许核心导入控件实现或 zui_widgets::virtualization。
 
 子项尺寸反馈通过 Widget::children_prepared 和 ChildLayout 值快照表达，核心报告已经验证并准备完成的直接子项布局；控件解释尺寸并返回失效，核心只负责继续有界协调。布局引擎不认识 VirtualList 或尺寸索引，反馈不暴露运行时节点引用，也不让下层布局模块回调具体控件实现。LayoutTag 是上层提供、核心原样传递的关联值，不参与业务 Key 身份匹配；其含义仅由生成子项的所有者解释。
 
@@ -219,7 +221,7 @@ examples/controls 和 examples/dashboard 是顶层应用装配：依赖公开控
 
 Widget 增加默认关闭的 focus_scope 契约。core 只维护通用范围、焦点恢复栈、输入隔离和修饰键快照，不引用 Popup、Menu 或 Dialog。控件使用 Action 请求关闭与执行，应用确认后更新 View。祖先进入/离开通知也通过原有事件契约传递。
 
-zui-edit 提供 Unicode 字素边界迭代，TextInput 使用它建立掩码与原文偏移映射；密码策略和数值校验留在控件层。菜单复用列表交互，数字输入复用文本编辑，弹窗复用 Popup。没有新增反向依赖、渲染器类型或窗口服务。
+zui_widgets::edit 提供 Unicode 字素边界迭代，TextInput 使用它建立掩码与原文偏移映射；密码策略和数值校验留在控件层。菜单复用列表交互，数字输入复用文本编辑，弹窗复用 Popup。没有新增反向依赖、渲染器类型或窗口服务。
 
 ## P1 控件的职责
 
