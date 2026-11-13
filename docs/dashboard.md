@@ -1,6 +1,6 @@
 # 大屏组合模块
 
-zui-dashboard 是 no_std + alloc 上层组合模块，依赖公共 API/类型/Painter/主题、zui-widgets 和 zui-charts，不依赖核心、窗口、布局引擎或渲染实现。基础控件和图表不反向引用大屏组件。当前提供 MetricCardView 指标卡和 DashboardPanelView 切角面板，后续逐步加入更多装饰组合。
+zui-extras::dashboard 是 zui-extras 中由 dashboard feature 按需启用的 no_std + alloc 上层组合模块，依赖公共 API/类型/Painter/主题、zui-widgets 和 zui-extras::charts，不依赖核心、窗口、布局引擎或渲染实现。基础控件和图表不反向引用大屏组件。当前提供 MetricCardView 指标卡和 DashboardPanelView 切角面板，后续逐步加入更多装饰组合。
 
 ## 指标卡
 

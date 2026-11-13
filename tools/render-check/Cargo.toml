@@ -12,8 +12,7 @@ cpu = ["dep:zui-render-cpu"]
 gpu = ["dep:zui-render-gpu", "dep:pollster"]
 
 [dependencies]
-zui-dashboard.workspace = true
-zui-charts.workspace = true
+zui-extras = { workspace = true, features = ["dashboard"] }
 zui-types.workspace = true
 zui-paint.workspace = true
 zui-api.workspace = true

@@ -1,6 +1,4 @@
 //! Portable chart widgets; data and painting never depend on the runtime/backend.
-#![no_std]
-extern crate alloc;
 mod history;
 pub use history::{HistoryError, SparklineHistory};
 mod series;

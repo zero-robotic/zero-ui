@@ -1,4 +1,4 @@
-use crate::{ChartRange, SparklineSeries, series::fraction};
+use super::{ChartRange, SparklineSeries, series::fraction};
 use zui_api::{
     layout::{AvailableSpace, LayoutError},
     view::ViewSpec,

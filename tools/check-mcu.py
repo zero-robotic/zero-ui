@@ -10,7 +10,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 PACKAGES = (
     "zui-types", "zui-input", "zui-paint", "zui-theme", "zui-api",
     "zui-platform", "zui-edit", "zui-virtual", "zui-core",
-    "zui-widgets", "zui-charts", "zui-dashboard",
+    "zui-widgets", "zui-extras",
 )
 
 
@@ -22,7 +22,7 @@ def main():
                         help="installed bare-metal Rust target (default: Cortex-M4F/M7F)")
     args = parser.parse_args()
     command = ["cargo", "build", "--lib", "--target", args.target,
-               "--no-default-features", "--locked", "--offline"]
+               "--no-default-features", "--features", "zui-extras/dashboard", "--locked", "--offline"]
     for package in PACKAGES:
         command.extend(["-p", package])
     # Missing toolchain components or dependencies fail visibly; never fall back

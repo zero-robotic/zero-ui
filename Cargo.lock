@@ -3928,16 +3928,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zui-charts"
-version = "0.1.0"
-dependencies = [
- "zui-api",
- "zui-paint",
- "zui-theme",
- "zui-types",
-]
-
-[[package]]
 name = "zui-clipboard"
 version = "0.1.0"
 dependencies = [
@@ -3981,27 +3971,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "zui-dashboard"
-version = "0.1.0"
-dependencies = [
- "zui-api",
- "zui-charts",
- "zui-paint",
- "zui-theme",
- "zui-types",
- "zui-widgets",
-]
-
-[[package]]
 name = "zui-dashboard-example"
 version = "0.1.0"
 dependencies = [
  "zui-api",
  "zui-app",
- "zui-charts",
  "zui-clipboard",
  "zui-core",
- "zui-dashboard",
+ "zui-extras",
  "zui-layout",
  "zui-paint",
  "zui-platform",
@@ -4016,6 +3993,17 @@ name = "zui-edit"
 version = "0.1.0"
 dependencies = [
  "unicode-segmentation",
+]
+
+[[package]]
+name = "zui-extras"
+version = "0.1.0"
+dependencies = [
+ "zui-api",
+ "zui-paint",
+ "zui-theme",
+ "zui-types",
+ "zui-widgets",
 ]
 
 [[package]]
@@ -4103,10 +4091,9 @@ dependencies = [
  "png",
  "pollster",
  "zui-api",
- "zui-charts",
  "zui-core",
  "zui-custom-widget-example",
- "zui-dashboard",
+ "zui-extras",
  "zui-image",
  "zui-layout",
  "zui-paint",
@@ -4199,10 +4186,9 @@ dependencies = [
  "wgpu",
  "zui-api",
  "zui-app",
- "zui-charts",
  "zui-clipboard",
  "zui-core",
- "zui-dashboard",
+ "zui-extras",
  "zui-image",
  "zui-layout",
  "zui-paint",

@@ -3,7 +3,7 @@ use zui_api::{
     layout::{Dimension, Edges},
     view::View,
 };
-use zui_charts::{SparklineSeries, SparklineView};
+use zui_extras::charts::{SparklineSeries, SparklineView};
 use zui_paint::Scene;
 use zui_theme::{ColorRole, Theme, TypeRole};
 use zui_types::Size;

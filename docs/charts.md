@@ -1,6 +1,6 @@
 # 图表模块与 Sparkline
 
-zui-charts 是独立的 no_std + alloc 模块，依赖 zui-api、zui-types、zui-paint 和 zui-theme；不依赖核心、标准控件、窗口、文字引擎或 Vello。应用将图表作为普通 View 放入容器；CPU/GPU 使用相同 Painter 路径描述。no_std 编译不代表已经完成 MCU 内存、显示驱动或硬件验收。
+zui-extras::charts 是 zui-extras 中由 charts feature 按需启用的 no_std + alloc 模块，依赖 zui-api、zui-types、zui-paint 和 zui-theme；不依赖核心、标准控件、窗口、文字引擎或 Vello。应用将图表作为普通 View 放入容器；CPU/GPU 使用相同 Painter 路径描述。no_std 编译不代表已经完成 MCU 内存、显示驱动或硬件验收。
 
 ## 迷你趋势图
 
@@ -44,7 +44,7 @@ snapshot 首次或数据变更后复制当前有效历史并重算极值，时�
 
 ```sh
 cargo run -p zui-render-check --locked --offline -- cpu artifacts/sparkline-cpu.png sparkline
-cargo test -p zui-charts --locked --offline
+cargo test -p zui-extras --no-default-features --features charts --locked --offline
 cargo test -p zui-render-check --test sparkline --locked --offline
 # 需要可用 GPU
 cargo test -p zui-render-check --features gpu --test sparkline --locked --offline -- --ignored

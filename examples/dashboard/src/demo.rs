@@ -6,8 +6,8 @@ use zui_api::{
     view::View,
 };
 use zui_app::{Backend, ViewAction, ViewApplication, WidgetHost};
-use zui_charts::{ChartRange, SparklineHistory, SparklineSeries, SparklineView};
-use zui_dashboard::{DashboardPanelView, MetricCardView, MetricChange, MetricTone};
+use zui_extras::charts::{ChartRange, SparklineHistory, SparklineSeries, SparklineView};
+use zui_extras::dashboard::{DashboardPanelView, MetricCardView, MetricChange, MetricTone};
 use zui_platform::{
     InputEvent, Key, RunReport, WindowAction, WindowConfig, WindowEvent, WindowMetrics,
 };
@@ -54,7 +54,7 @@ impl Demo {
     fn new(
         families: Vec<String>,
         smoke: Option<Duration>,
-    ) -> Result<Self, zui_charts::HistoryError> {
+    ) -> Result<Self, zui_extras::charts::HistoryError> {
         let mut history = SparklineHistory::new(CAPACITY)?;
         for index in 0..16 {
             history.push(Some(sample(index)))?;

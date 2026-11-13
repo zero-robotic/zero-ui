@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use zui_api::layout::Dimension;
 use zui_api::{layout::Edges, view::View};
-use zui_charts::{SparklineSeries, SparklineView};
-use zui_dashboard::{MetricCardView, MetricChange, MetricTone};
+use zui_extras::charts::{SparklineSeries, SparklineView};
+use zui_extras::dashboard::{MetricCardView, MetricChange, MetricTone};
 use zui_paint::Scene;
 use zui_theme::{Theme, TypeRole};
 use zui_types::Size;

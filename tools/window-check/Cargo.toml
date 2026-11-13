@@ -13,14 +13,13 @@ gpu = ["zui-app/gpu"]
 gpu-bench = ["gpu", "dep:zui-render-gpu", "zui-render-gpu/profiling", "dep:wgpu", "dep:pollster"]
 
 [dependencies]
+zui-extras = { workspace = true, features = ["dashboard"] }
 zui-render-gpu = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 zui-render-cpu = { workspace = true, optional = true }
 zui-image = { workspace = true, features = ["worker"] }
 png.workspace = true
-zui-charts.workspace = true
-zui-dashboard.workspace = true
 zui-clipboard.workspace = true
 zui-types.workspace = true
 zui-paint.workspace = true

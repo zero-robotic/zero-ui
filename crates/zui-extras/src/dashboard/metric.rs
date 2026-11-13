@@ -1,10 +1,10 @@
+use crate::charts::SparklineView;
 use alloc::{string::String, vec::Vec};
 use zui_api::{
     layout::{Align, Dimension, Edges, LayoutStyle},
     text::TextStyle,
     view::{Key, View},
 };
-use zui_charts::SparklineView;
 use zui_theme::{ColorRole, Theme, TypeRole};
 use zui_types::{Color, Size};
 use zui_widgets::{Container, TextView, column, row};

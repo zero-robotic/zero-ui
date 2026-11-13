@@ -3,7 +3,7 @@ use zui_api::{
     view::View,
     widget::Invalidation,
 };
-use zui_charts::{ChartRange, SparklineSeries, SparklineView};
+use zui_extras::charts::{ChartRange, SparklineSeries, SparklineView};
 use zui_paint::{Frame, OffscreenRenderer};
 use zui_theme::Theme;
 use zui_types::{Color, Extent, Size};
@@ -134,7 +134,7 @@ fn sparkline_gaps_area_empty_single_point_and_updates_render_gpu() {
 #[cfg(feature = "cpu")]
 #[test]
 fn bounded_history_snapshots_update_plot_without_changing_old_frames() {
-    let mut history = zui_charts::SparklineHistory::new(2).unwrap();
+    let mut history = zui_extras::charts::SparklineHistory::new(2).unwrap();
     history.extend(&[Some(0.0), Some(0.0)]).unwrap();
     let old = history.snapshot();
     let mut view = SparklineView::themed(&Theme::dashboard(), old.clone());

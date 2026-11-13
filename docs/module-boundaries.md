@@ -71,8 +71,9 @@
 | `zui-backend-linux` | 嵌入式 Linux 平台服务实现 | types、paint、platform |
 | `zui-core` | 节点生命周期、事件路由、焦点、失效与帧调度 | types、api、paint、platform、theme、animation |
 | `zui-widgets` | 标准控件行为及其样式映射 | types、api、paint、theme、animation、edit、virtual |
-| `zui-charts` | 数据映射、图表和仪表控件 | types、api、paint、theme、animation、widgets |
-| `zui-dashboard` | 大屏组合、面板及装饰控件 | types、api、paint、theme、animation、widgets、charts |
+| `zui-extras` | 按 feature 启用的图表与大屏扩展，默认不启用任何组件 | types、api、paint、theme；dashboard 可依赖 widgets |
+| `zui-extras::charts` | 数据映射、图表和仪表控件（内部模块） | types、api、paint、theme |
+| `zui-extras::dashboard` | 大屏组合、面板及装饰控件 | types、api、paint、theme、animation、widgets、charts |
 | `zui-app` | 服务装配、启动、选择后端与配置 | 上述模块，具体实现按需启用 |
 | `zui` | 面向应用的公开入口与重导出 | app 与需要公开的底层模块 |
 
@@ -194,13 +195,15 @@ ViewApplication 的 take_focus_request 只读访问核心 Tree 并返回 ViewFoc
 
 ## 图表模块落地
 
-zui-charts 仅依赖 zui-api、zui-types、zui-paint、zui-theme。数据校验与值域映射位于模块内部，图表通过公共 Widget/Painter 契约实现。render-check 是上层装配与验证入口；核心、渲染适配和标准控件不反向引用图表。该边界已加入自动依赖检查。
+图表与大屏已合并为单一 `zui-extras` crate，后续大屏组件继续放入其内部模块；`charts` 与 `dashboard` 是可选 feature 而非独立 crate，迁移与启用方式见 [可选扩展组件](extras.md)。同 crate 内仍禁止图表反向依赖大屏组合。
+
+zui-extras::charts 仅依赖 zui-api、zui-types、zui-paint、zui-theme。数据校验与值域映射位于模块内部，图表通过公共 Widget/Painter 契约实现。render-check 是上层装配与验证入口；核心、渲染适配和标准控件不反向引用图表。该边界已加入自动依赖检查。
 
 ## 大屏组合模块落地
 
 `tools/window-check` 的 `gpu-bench` 可选特性直接装配 GPU 渲染器、wgpu 与 pollster，仅用于无窗口性能测量；默认构建与 CPU-only 构建不引入这些依赖。GPU 时间戳位于渲染适配层的默认关闭 `profiling` 特性中，不进入 core、paint 或控件契约。
 
-zui-dashboard 依赖 zui-api、zui-types、zui-paint、zui-theme、zui-widgets 和 zui-charts，组合现有 View，并通过公共 Painter 绘制装饰，不直接引用核心或渲染后端。指标格式和业务含义由应用输入；组件不承担采样、网络或刷新调度。依赖策略已覆盖该模块及 render-check 的验证入口。
+zui-extras::dashboard 依赖 zui-api、zui-types、zui-paint、zui-theme、zui-widgets 和 zui-extras::charts，组合现有 View，并通过公共 Painter 绘制装饰，不直接引用核心或渲染后端。指标格式和业务含义由应用输入；组件不承担采样、网络或刷新调度。依赖策略已覆盖该模块及 render-check 的验证入口。
 
 ### 图片解码适配边界
 

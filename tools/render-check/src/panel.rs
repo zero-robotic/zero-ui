@@ -3,8 +3,8 @@ use zui_api::{
     layout::{Dimension, Edges},
     view::View,
 };
-use zui_charts::{SparklineSeries, SparklineView};
-use zui_dashboard::{DashboardPanelView, MetricCardView, MetricChange, MetricTone};
+use zui_extras::charts::{SparklineSeries, SparklineView};
+use zui_extras::dashboard::{DashboardPanelView, MetricCardView, MetricChange, MetricTone};
 use zui_paint::Scene;
 use zui_theme::{Theme, TypeRole};
 use zui_types::Size;

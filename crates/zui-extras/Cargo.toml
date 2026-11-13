@@ -1,0 +1,21 @@
+[package]
+name = "zui-extras"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+charts = ["dep:zui-api", "dep:zui-types", "dep:zui-paint", "dep:zui-theme"]
+dashboard = ["charts", "dep:zui-widgets"]
+
+[dependencies]
+zui-api = { workspace = true, optional = true }
+zui-types = { workspace = true, optional = true }
+zui-paint = { workspace = true, optional = true }
+zui-theme = { workspace = true, optional = true }
+zui-widgets = { workspace = true, optional = true }
+
+[lints]
+workspace = true

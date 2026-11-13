@@ -4,7 +4,7 @@ use zui_api::{
     view::ViewSpec,
     widget::{Invalidation, PaintContext, Widget},
 };
-use zui_dashboard::{DashboardPanelView, PanelStyle};
+use zui_extras::dashboard::{DashboardPanelView, PanelStyle};
 use zui_paint::{Frame, OffscreenRenderer, Painter};
 use zui_theme::Theme;
 use zui_types::{Color, Extent, Point, Rect, Size};

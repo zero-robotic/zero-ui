@@ -1,5 +1,5 @@
 //! Bounded ingestion is separate from immutable render snapshots and scheduling.
-use crate::{MAX_SPARKLINE_SAMPLES, SparklineSeries};
+use super::{MAX_SPARKLINE_SAMPLES, SparklineSeries};
 use alloc::collections::VecDeque;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

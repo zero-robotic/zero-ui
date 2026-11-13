@@ -173,8 +173,7 @@ zui-api               Widget、布局、测量与文字等公共契约
 zui-widgets           标准控件和通用交互行为
 zui-theme             语义化主题变量与通用样式值
 zui-animation         时间推进、插值与动画状态计算
-zui-charts            图表、仪表与数据映射
-zui-dashboard         大屏面板、装饰组合与布局配置
+zui-extras            可选扩展：charts 图表/仪表，dashboard 大屏组合/装饰
 zui-core              节点、事件、焦点、失效与帧调度
 zui-layout            布局规则、Taffy 适配、测量与布局缓存
 zui-paint             绘制描述、Painter/Renderer 契约与资源 ID

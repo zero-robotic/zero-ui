@@ -1,5 +1,7 @@
 # ZUI
 
+图表与大屏组件统一位于可选扩展包 `zui-extras`，按 `charts` / `dashboard` feature 启用，迁移方式与后续扩展边界见 [可选扩展组件](docs/extras.md)。
+
 使用 Rust 实现的 GUI 框架，面向桌面 GPU、无 GPU 嵌入式 Linux，并预留 MCU 扩展边界。
 
 架构约束：上层通过公开契约调用下层，下层不感知上层具体实现；模块按职责和数据所有权划分，保持高内聚、低耦合。依赖白名单和边界审查规则见 [模块分层与依赖约束](docs/module-boundaries.md)。

@@ -12,8 +12,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 zui-opengl = { path = "crates/zui-opengl" }
 zui-image = { path = "crates/zui-image" }
-zui-dashboard = { path = "crates/zui-dashboard" }
-zui-charts = { path = "crates/zui-charts" }
+zui-extras = { path = "crates/zui-extras", default-features = false }
 zui-virtual = { path = "crates/zui-virtual" }
 zui-clipboard = { path = "crates/zui-clipboard" }
 arboard = { version = "=3.6.1", default-features = false }
