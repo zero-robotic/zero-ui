@@ -44,7 +44,7 @@ ZUI 是一个使用 Rust 开发的模块化 GUI 框架。应用通过 View 描�
 
 </details>
 
-以上图片由当前仓库的 CPU 离屏渲染程序生成，不是设计稿或完整窗口截图。[预览资源与复现命令](assets/readme/README.md)。
+[预览资源与复现命令](assets/readme/README.md)。
 
 ## 核心能力
 
@@ -119,17 +119,91 @@ cargo run -p zui-window-check --locked -- --images
 
 ## 架构与文档
 
+### 模块分层
+
 ```mermaid
-flowchart TD
-    App[应用模型与服务装配] --> Core[核心运行时]
-    App --> Widgets[标准控件与可选扩展]
-    App --> Services[布局 · 文字 · 平台 · 渲染适配]
-    Core --> API[公共契约与基础类型]
-    Widgets --> API
-    Services --> API
+flowchart TB
+    Application["应用与示例<br/>Model · View · Message"]
+
+    subgraph UI["界面与装配"]
+        App["zui-app<br/>WidgetHost · 窗口驱动 · 后端选择"]
+        Widgets["zui-widgets<br/>标准控件 · 编辑 · 虚拟化"]
+        Extras["zui-extras<br/>可选图表与大屏"]
+    end
+
+    subgraph Runtime["运行时与服务实现"]
+        Core["zui-core<br/>节点树 · 协调 · 事件 · 失效"]
+        Layout["zui-layout<br/>Taffy 布局适配"]
+        Text["zui-text<br/>Parley 文字适配"]
+        Window["zui-backend-winit<br/>窗口 · 输入 · 软件呈现"]
+    end
+
+    subgraph Render["渲染适配"]
+        GPU["zui-render-gpu<br/>Vello GPU"]
+        CPU["zui-render-cpu<br/>Vello CPU"]
+        Vello["zui-vello<br/>共享命令转换"]
+    end
+
+    subgraph Contracts["公共契约与基础能力"]
+        API["zui-api<br/>Widget · View · 布局与文字契约"]
+        Platform["zui-platform<br/>窗口与显示契约"]
+        Paint["zui-paint<br/>Scene · Painter · 绘制资源"]
+        Theme["zui-theme<br/>主题变量"]
+        Input["zui-input<br/>输入值类型"]
+        Types["zui-types<br/>几何 · 颜色 · 标识符"]
+    end
+
+    Application --> App & Widgets & Extras & Layout & Text
+    Extras -->|dashboard| Widgets
+    App --> Core & Window & GPU & CPU & Platform
+    Core --> API & Paint
+    Widgets --> API & Theme
+    Layout --> API
+    Text --> API & Paint
+    Window --> Platform
+    GPU & CPU --> Vello
+    Vello --> Paint
+    API --> Paint & Input
+    Platform --> Paint & Input
+    Paint & Theme & Input --> Types
+
+    classDef entry fill:#1e3a5f,color:#fff,stroke:#60a5fa
+    classDef ui fill:#143b32,color:#fff,stroke:#34d399
+    classDef service fill:#30304d,color:#fff,stroke:#a78bfa
+    classDef render fill:#493416,color:#fff,stroke:#fbbf24
+    classDef contract fill:#26313d,color:#fff,stroke:#94a3b8
+    class Application entry
+    class App,Widgets,Extras ui
+    class Core,Layout,Text,Window service
+    class GPU,CPU,Vello render
+    class API,Platform,Paint,Theme,Input,Types contract
 ```
 
-箭头表示依赖方向的概览，不是事件流。**下层不识别上层控件或业务类型，渲染器不读取控件树，具体服务由装配层注入。** 精确依赖边以[模块边界](docs/module-boundaries.md)为准。
+实线表示主要静态依赖，省略部分直接基础依赖及测试依赖；feature 控制的后端不要求同时启用。应用创建布局和文字服务，再通过公共契约注入 WidgetHost，核心不直接依赖 Taffy 或 Parley 适配。
+
+| 可选能力 | 接入位置 |
+| --- | --- |
+| `zui-image` | 将编码图片解码为 `zui-paint` 公共资源，可启用后台解码 |
+| `zui-opengl` | 通过公共 Widget / Paint 契约接入原生 OpenGL，不让核心识别 GL 控件 |
+| `zui-app::clipboard` | 由装配层注入剪贴板服务，保持编辑逻辑与平台实现分离 |
+
+### 一次界面更新
+
+```mermaid
+flowchart LR
+    InputEvent["平台输入 / 定时唤醒"] --> Runtime["Host 与核心分发"]
+    Runtime --> Action["控件动作"]
+    Action --> Model["应用消息与模型更新"]
+    Model --> View["View 协调与失效处理"]
+    View --> Prepare["按需布局与文字准备"]
+    Prepare --> Scene["Scene 绘制描述"]
+    Scene --> Renderer["GPU / CPU 渲染"]
+    Renderer --> Present["窗口呈现"]
+```
+
+此图表示运行流程，不是 crate 依赖；局部悬停或动画等更新也可直接请求失效，无需修改业务模型。**下层不识别上层控件或业务类型，渲染器不读取控件树，无变化时不持续重绘。** 完整约束见[模块边界](docs/module-boundaries.md)。
+
+### 文档导航
 
 | 你想做什么 | 从这里开始 |
 | --- | --- |
