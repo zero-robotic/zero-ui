@@ -1,5 +1,8 @@
 //! Parley implementation of ZUI's portable text service.
+mod font_file;
 mod geometry;
+#[cfg(feature = "system-fonts")]
+mod system_fonts;
 use parley::{
     Alignment, AlignmentOptions, FontContext, FontFamily, FontFamilyName, Layout, LayoutContext,
     LineHeight, PositionedLayoutItem, StyleProperty,
@@ -47,6 +50,7 @@ pub struct ParleyText {
     fonts: FontContext,
     context: LayoutContext<()>,
     resources: BTreeMap<(u64, u32), FontResource>,
+    system_fonts: bool,
     font_bytes: usize,
     epoch: u64,
     limits: TextLimits,
@@ -63,10 +67,17 @@ impl ParleyText {
     }
     /// Policy is fixed for the service lifetime, so cached layouts remain valid.
     pub fn new_with_policy(limits: TextLimits, missing_glyph_policy: MissingGlyphPolicy) -> Self {
+        Self::with_font_source(limits, missing_glyph_policy, false)
+    }
+    fn with_font_source(
+        limits: TextLimits,
+        missing_glyph_policy: MissingGlyphPolicy,
+        system_fonts: bool,
+    ) -> Self {
         let fonts = FontContext {
             collection: parley::fontique::Collection::new(parley::fontique::CollectionOptions {
                 shared: false,
-                system_fonts: false,
+                system_fonts,
             }),
             source_cache: Default::default(),
         };
@@ -74,8 +85,9 @@ impl ParleyText {
             fonts,
             context: LayoutContext::new(),
             resources: BTreeMap::new(),
+            system_fonts,
             font_bytes: 0,
-            epoch: 0,
+            epoch: u64::from(system_fonts),
             limits,
             missing_glyph_policy,
         }
@@ -152,7 +164,7 @@ impl ParleyText {
         {
             return Err(TextError::InvalidWidth);
         }
-        if self.resources.is_empty() {
+        if !self.system_fonts && self.resources.is_empty() {
             return Err(TextError::NoFonts);
         }
         for family in &style.families {
@@ -196,11 +208,15 @@ impl ParleyText {
         }
         Ok(layout)
     }
-    fn export(&self, layout: &Layout<()>) -> Result<TextLayout, TextError> {
+    fn export(&mut self, layout: &Layout<()>) -> Result<TextLayout, TextError> {
         let size = Size::new(layout.full_width() as f64, layout.height() as f64);
         let mut runs = Vec::new();
         let mut lines = Vec::new();
         let mut glyph_count = 0_usize;
+        // Stage newly used system faces. A failed export must not consume our
+        // retained-resource budget or publish partially validated resources.
+        let mut pending_resources = BTreeMap::new();
+        let mut font_bytes = self.font_bytes;
         for line in layout.lines() {
             lines.push(TextLine {
                 text_range: line.text_range(),
@@ -216,10 +232,32 @@ impl ParleyText {
                     return Err(TextError::UnsupportedFontSynthesis);
                 }
                 let font = run.font();
-                let resource = self
+                let key = (font.data.id(), font.index);
+                let resource = if let Some(resource) = self
                     .resources
-                    .get(&(font.data.id(), font.index))
-                    .ok_or(TextError::InvalidFont)?;
+                    .get(&key)
+                    .or_else(|| pending_resources.get(&key))
+                {
+                    resource.clone()
+                } else {
+                    if !self.system_fonts {
+                        return Err(TextError::InvalidFont);
+                    }
+                    if self.resources.len() + pending_resources.len() >= self.limits.max_font_faces
+                    {
+                        return Err(TextError::BudgetExceeded);
+                    }
+                    let bytes = font_file::standalone_face(
+                        font.data.data(),
+                        font.index,
+                        self.limits.max_font_bytes.saturating_sub(font_bytes),
+                    )?;
+                    font_bytes += bytes.len();
+                    let resource =
+                        FontResource::new(bytes, 0).map_err(|_| TextError::InvalidFont)?;
+                    pending_resources.insert(key, resource.clone());
+                    resource
+                };
                 let mut glyphs = Vec::new();
                 for glyph in positioned.positioned_glyphs() {
                     if glyph.id == 0 && self.missing_glyph_policy == MissingGlyphPolicy::Reject {
@@ -239,7 +277,7 @@ impl ParleyText {
                     });
                 }
                 runs.push(GlyphRun {
-                    font: resource.clone(),
+                    font: resource,
                     font_size: run.font_size(),
                     glyphs,
                     normalized_coords: run
@@ -250,6 +288,9 @@ impl ParleyText {
                 });
             }
         }
+        self.resources.extend(pending_resources);
+        self.font_bytes = font_bytes;
+        // Lazy materialization does not change font selection or the epoch.
         Ok(TextLayout {
             size,
             first_baseline: layout.first_baseline(),

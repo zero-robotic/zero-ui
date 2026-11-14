@@ -63,7 +63,7 @@ ZUI 是一个使用 Rust 开发的模块化 GUI 框架。应用通过 View 描�
 
 ## 快速开始
 
-需要 **Rust 1.95+** 和 Git。使用仓库提交的 `Cargo.lock`；窗口示例需要可用桌面会话，GPU 路径还需要兼容的图形适配器与驱动。平台原生依赖由所选窗口、剪贴板和渲染后端决定。
+需要 **Rust 1.95+** 和 Git。使用仓库提交的 `Cargo.lock`；窗口示例需要可用桌面会话，GPU 路径还需要兼容的图形适配器与驱动。平台原生依赖由所选窗口、剪贴板和渲染后端决定。桌面示例使用系统字体，中文显示需要已安装中文字体；Linux 构建还需 Fontconfig 开发包（如 `libfontconfig1-dev`）。
 
 ```sh
 git clone https://github.com/zero-robotic/zero-ui.git

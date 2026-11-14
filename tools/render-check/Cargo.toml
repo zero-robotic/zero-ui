@@ -7,6 +7,7 @@ license.workspace = true
 publish = false
 
 [features]
+system-fonts = ["zui-text/system-fonts"]
 default = ["gpu", "cpu"]
 cpu = ["dep:zui-render-cpu"]
 gpu = ["dep:zui-render-gpu", "dep:pollster"]

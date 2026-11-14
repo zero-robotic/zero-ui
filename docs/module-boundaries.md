@@ -238,3 +238,7 @@ FilePicker 仅接收目录条目并发出导航、打开、保存请求，不访
 ComboBox、树加载/移动、页签关闭/重排/拖出均发出不透明 Action，由应用确认模型修改。TreeView 和 DataGrid 复用 VirtualList；DataGrid 自定义单元格通过 View 工厂注入，编辑草稿使用应用拥有的 TextInputDraft。HSV 转换与绘制位于可移植控件层，不调用屏幕采集。此次未修改平台层或引入反向依赖；拖出请求不等于多窗口实现。实际进展与未完成项见 [控件增强](advanced-widgets.md#advanced-controls)。
 
 `zui-opengl` 是应用显式选用的桌面扩展，不由标准控件或核心重导出。它实现公共 Widget 契约并将 GL 结果转换成 ImageResource；普通绘制后端只处理图像，不识别 OpenGlView。裸 OpenGL 接口通过该扩展的 glow 重导出，原生上下文仍保持私有。FFI/unsafe 仅限此扩展和演示 GL 业务代码，其他 crate 继续禁止 unsafe。
+
+## 可选系统字体
+
+`zui-text/system-fonts` 只为具体文本适配器启用 Fontique 的系统发现能力。应用显式构造系统字体服务并解析字体族名称；默认构造仍只接受显式注册字体。系统字体资源通过既有 `TextLayout` / `FontResource` 传递，核心、控件、布局与渲染器不感知系统字体路径或平台 API。服务预算覆盖按需保留的字体资源，不代表底层系统发现与整形缓存的进程内存上限。桌面示例选择系统字体，离屏基准和确定性测试继续选择仓库字体。

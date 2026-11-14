@@ -20,7 +20,7 @@
 cargo run -p minimal --no-default-features --features cpu --locked -- cpu
 ```
 
-替换包名即可运行其他窗口示例。OpenGL 示例即使使用 CPU 合成也需要原生 GL 环境。窗口运行需要桌面会话；示例字体随仓库提供，无需联网下载。
+替换包名即可运行其他窗口示例。OpenGL 示例即使使用 CPU 合成也需要原生 GL 环境。窗口运行需要桌面会话和已安装的字体。桌面示例通过 `zui-text/system-fonts` 发现系统字体，并按文字脚本回退，不嵌入仓库字体；中文内容需要系统有中文字体。Linux 构建需要 Fontconfig 开发包（如 `libfontconfig1-dev`）。
 
 控件展厅、数据大屏和 OpenGL 支持 `--smoke-ms 1600` 自动退出；最小示例只接受可选的 `cpu` / `gpu` 参数，点击窗口关闭按钮退出。
 

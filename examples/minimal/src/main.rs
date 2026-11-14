@@ -1,5 +1,5 @@
 //! Smallest interactive example: state -> view -> action -> state.
-use std::{error::Error, sync::Arc, time::Duration};
+use std::{error::Error, time::Duration};
 use zui_api::{
     action::{ActionEvent, ActionId},
     layout::Edges,
@@ -66,11 +66,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(arg) = args.next() {
         return Err(format!("unknown argument: {arg}; expected optional cpu or gpu").into());
     }
-    // Bundle a font so the example does not depend on installed system fonts.
-    let mut text = zui_text::ParleyText::default();
-    let families = text.register_font(Arc::from(
-        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
-    ))?;
+    // Resolve the system sans-serif family; shaping supplies script fallback.
+    let mut text = zui_text::ParleyText::with_system_fonts(Default::default());
+    let families = text.resolve_families(&[])?;
     let host = WidgetHost::new(
         Counter { count: 0, families },
         zui_layout::TaffyLayout::default(),

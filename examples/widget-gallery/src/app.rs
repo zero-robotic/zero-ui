@@ -5,7 +5,7 @@ mod data_views;
 mod overlays;
 mod views;
 use composition::Extras;
-use std::{error::Error, sync::Arc, time::Duration};
+use std::{error::Error, time::Duration};
 use zui_api::{
     action::{ActionEvent, ActionId},
     layout::{Dimension, Edges},
@@ -29,10 +29,8 @@ pub fn run(
     backend: Backend,
     smoke: Option<Duration>,
 ) -> Result<RunReport, Box<dyn Error>> {
-    let mut text = zui_text::ParleyText::default();
-    let families = text.register_font(Arc::from(
-        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
-    ))?;
+    let mut text = zui_text::ParleyText::with_system_fonts(Default::default());
+    let families = text.resolve_families(&[])?;
     let model = Demo::new(families, smoke);
     let host = WidgetHost::new(
         model,

@@ -5,7 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+system-fonts = ["parley/system", "dep:skrifa"]
+
 [dependencies]
+skrifa = { workspace = true, optional = true }
 zui-types.workspace = true
 zui-api.workspace = true
 zui-paint.workspace = true

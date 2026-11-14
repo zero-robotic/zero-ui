@@ -6,6 +6,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
       - uses: dtolnay/rust-toolchain@1.95.0
       - run: cargo check --workspace --all-targets --all-features --locked
 
@@ -13,12 +14,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev fonts-dejavu-core fonts-noto-cjk
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - run: cargo fetch --locked
       - run: cargo fmt --all --check
       - run: python3 tools/check-dependencies.py
+      - run: cargo test -p zui-text --features system-fonts --locked -- --ignored
+      - run: cargo test -p zui-render-check --no-default-features --features cpu,system-fonts --test system_fonts --locked -- --ignored
       - run: cargo check -p zui-app --no-default-features --locked
       - run: cargo test -p zui-app --no-default-features --features clipboard --lib clipboard --locked
       - run: cargo check -p zui-app --no-default-features --features clipboard-wayland --locked

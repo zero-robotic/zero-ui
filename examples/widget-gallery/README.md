@@ -22,7 +22,7 @@ cargo run -p widget-gallery --no-default-features --features cpu -- cpu
 - Accordion 展示状态摘要和操作提示；VirtualList 展示 1000 条带稳定 Key 的记录。
 - 外层 Scroll 提供完整展厅滚动；Container、row、column、grid、stack 组织布局。Canvas 展示便捷绘制扩展。
 
-示例覆盖基础控件、组合容器、Canvas 和弹出交互。图片在应用启动时生成，无需联网或外部路径；中文字体使用仓库内 OFL 字体。复制粘贴通过原生剪贴板适配器接入。
+示例覆盖基础控件、组合容器、Canvas 和弹出交互。图片在应用启动时生成，无需联网或外部路径；中文字体通过系统字体发现与回退加载，运行程序不嵌入字体。复制粘贴通过原生剪贴板适配器接入。
 
 `main.rs` 负责命令行，`app.rs` 负责共享状态、消息分发和窗口生命周期，`app/views.rs` 负责页面组合与基础控件。功能分组按用途组织：`overlays.rs` 管理菜单/选择/弹窗，`data_views.rs` 展示树/表格/分栏，`composition.rs` 展示容器与控件联动，`catalog.rs` 展示表单和选择器，`advanced.rs` 展示搜索、多选、拖动及延迟加载。跨分组回归测试位于 `app/tests.rs`。控件发出公共 Action，应用映射为 Message、更新状态并重建 View；控件之间不持有彼此引用，下层库不依赖示例。测试覆盖公开动作映射、共享状态与宽窄窗口布局；原生手动交互和各目标设备仍应单独验收。
 

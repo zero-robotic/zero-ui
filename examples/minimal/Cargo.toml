@@ -17,7 +17,7 @@ zui-api.workspace = true
 zui-types.workspace = true
 zui-platform.workspace = true
 zui-layout.workspace = true
-zui-text.workspace = true
+zui-text = { workspace = true, features = ["system-fonts"] }
 zui-theme.workspace = true
 zui-widgets.workspace = true
 

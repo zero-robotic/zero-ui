@@ -1,5 +1,5 @@
 mod triangle;
-use std::{cell::RefCell, error::Error, rc::Rc, sync::Arc, time::Duration};
+use std::{cell::RefCell, error::Error, rc::Rc, time::Duration};
 use zui_api::{
     action::{ActionEvent, ActionId},
     layout::{Dimension, Edges},
@@ -146,10 +146,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             _ => return Err(format!("unknown option: {arg}").into()),
         }
     }
-    let mut text = zui_text::ParleyText::default();
-    let families = text.register_font(Arc::from(
-        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
-    ))?;
+    let mut text = zui_text::ParleyText::with_system_fonts(Default::default());
+    let families = text.resolve_families(&[])?;
     let error = Rc::new(RefCell::new(None));
     let capture = error.clone();
     let mut gl = OpenGlView::new(Size::new(640.0, 300.0), triangle::Triangle::default)

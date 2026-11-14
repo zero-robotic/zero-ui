@@ -11,13 +11,13 @@ cargo run -p minimal --no-default-features --features cpu --locked -- cpu
 
 阅读顺序：
 
-1. `main` 注册仓库内字体，装配布局引擎、文本服务和 `WidgetHost`，启动窗口。
+1. `main` 发现并选择系统字体，装配布局引擎、文本服务和 `WidgetHost`，启动窗口。
 2. `Counter::view` 根据计数构建文字和按钮。
 3. `map_action` 将按钮动作映射为消息。
 4. `message` 修改计数并请求重建 View。
 5. `update` 处理窗口关闭。
 
-字体路径相对于源码；复制到独立项目时需要自行提供字体，并将 workspace 依赖改为对应的路径或版本依赖。
+系统字体由 `zui-text/system-fonts` 可选能力提供；没有中文字体的系统需先安装中文字体。复制到独立项目时将 workspace 依赖改为对应路径或版本，并保留该 feature。
 
 无需窗口的回归测试：
 

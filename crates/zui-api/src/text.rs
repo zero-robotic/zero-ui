@@ -14,7 +14,7 @@ pub enum TextAlign {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextStyle {
-    /// Explicit registered family names, in fallback order.
+    /// Explicit family names available to the text service, in fallback order.
     pub families: Vec<String>,
     pub font_size: f32,
     /// Line-height multiplier relative to the requested font size.
