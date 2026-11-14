@@ -129,7 +129,7 @@ impl State {
         column([
             View::new(TextView::themed(
                 theme,
-                "P1：树与表格共享设备选择；表头排序；拖动分栏",
+                "数据视图：树与表格共享设备选择；表头排序；拖动分栏",
                 f.to_vec(),
                 TypeRole::Body,
             )),

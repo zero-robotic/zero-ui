@@ -11,10 +11,11 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ALLOWED = {
+    "minimal": {"zui-app", "zui-api", "zui-types", "zui-platform", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-core"},
     "zui-opengl": {"zui-types", "zui-api", "zui-paint", "zui-core", "zui-layout", "zui-text", "zui-render-cpu"},
-    "zui-opengl-example": {"zui-opengl", "zui-app", "zui-api", "zui-types", "zui-platform", "zui-paint", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-render-cpu"},
-    "zui-controls-example": {"zui-core", "zui-app", "zui-api", "zui-types", "zui-platform", "zui-paint", "zui-layout", "zui-text", "zui-theme", "zui-widgets"},
-    "zui-dashboard-example": {"zui-core", "zui-app", "zui-api", "zui-types", "zui-platform", "zui-paint", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-extras"},
+    "opengl": {"zui-opengl", "zui-app", "zui-api", "zui-types", "zui-platform", "zui-paint", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-render-cpu"},
+    "widget-gallery": {"zui-core", "zui-app", "zui-api", "zui-types", "zui-platform", "zui-paint", "zui-layout", "zui-text", "zui-theme", "zui-widgets"},
+    "dashboard": {"zui-core", "zui-app", "zui-api", "zui-types", "zui-platform", "zui-paint", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-extras"},
 
     "zui-types": set(),
     "zui-image": {"zui-types", "zui-paint"},
@@ -38,8 +39,8 @@ ALLOWED = {
         "zui-render-cpu", "zui-render-gpu",
     },
     "zui-window-check": {"zui-render-cpu", "zui-render-gpu", "zui-image", "zui-extras", "zui-core", "zui-types", "zui-paint", "zui-platform", "zui-app", "zui-api", "zui-layout", "zui-text", "zui-theme", "zui-widgets"},
-    "zui-render-check": {"zui-image", "zui-extras", "zui-types", "zui-paint", "zui-api", "zui-layout", "zui-core", "zui-text", "zui-widgets", "zui-theme", "zui-render-cpu", "zui-render-gpu", "zui-custom-widget-example"},
-    "zui-custom-widget-example": {"zui-api", "zui-paint", "zui-types"},
+    "zui-render-check": {"zui-image", "zui-extras", "zui-types", "zui-paint", "zui-api", "zui-layout", "zui-core", "zui-text", "zui-widgets", "zui-theme", "zui-render-cpu", "zui-render-gpu", "custom-widget"},
+    "custom-widget": {"zui-api", "zui-paint", "zui-types"},
 }
 
 
@@ -89,7 +90,7 @@ def main():
         ("cpu", {"wgpu", "wgpu-core", "wgpu-hal", "vello_gpu", "zui-render-gpu"}),
         ("gpu", {"vello_cpu", "zui-render-cpu"}),
     ):
-        for application in ("zui-render-check", "zui-window-check", "zui-controls-example", "zui-dashboard-example"):
+        for application in ("minimal", "zui-render-check", "zui-window-check", "widget-gallery", "dashboard"):
             selected = selected_dependencies(application, ["--features", feature])
             for dependency in selected & forbidden:
                 failures.append(f"{application} {feature}-only build unexpectedly depends on {dependency}")

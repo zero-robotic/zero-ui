@@ -482,6 +482,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
+name = "custom-widget"
+version = "0.1.0"
+dependencies = [
+ "zui-api",
+ "zui-paint",
+ "zui-types",
+]
+
+[[package]]
+name = "dashboard"
+version = "0.1.0"
+dependencies = [
+ "zui-api",
+ "zui-app",
+ "zui-core",
+ "zui-extras",
+ "zui-layout",
+ "zui-paint",
+ "zui-platform",
+ "zui-text",
+ "zui-theme",
+ "zui-types",
+ "zui-widgets",
+]
+
+[[package]]
 name = "derive_more"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1497,6 +1523,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "minimal"
+version = "0.1.0"
+dependencies = [
+ "zui-api",
+ "zui-app",
+ "zui-core",
+ "zui-layout",
+ "zui-platform",
+ "zui-text",
+ "zui-theme",
+ "zui-types",
+ "zui-widgets",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1933,6 +1974,24 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "opengl"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "zui-api",
+ "zui-app",
+ "zui-layout",
+ "zui-opengl",
+ "zui-paint",
+ "zui-platform",
+ "zui-render-cpu",
+ "zui-text",
+ "zui-theme",
+ "zui-types",
+ "zui-widgets",
+]
 
 [[package]]
 name = "orbclient"
@@ -3422,6 +3481,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "widget-gallery"
+version = "0.1.0"
+dependencies = [
+ "zui-api",
+ "zui-app",
+ "zui-core",
+ "zui-layout",
+ "zui-paint",
+ "zui-platform",
+ "zui-text",
+ "zui-theme",
+ "zui-types",
+ "zui-widgets",
+]
+
+[[package]]
 name = "winapi-util"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3929,54 +4004,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "zui-controls-example"
-version = "0.1.0"
-dependencies = [
- "zui-api",
- "zui-app",
- "zui-core",
- "zui-layout",
- "zui-paint",
- "zui-platform",
- "zui-text",
- "zui-theme",
- "zui-types",
- "zui-widgets",
-]
-
-[[package]]
 name = "zui-core"
 version = "0.1.0"
 dependencies = [
  "zui-api",
  "zui-paint",
  "zui-types",
-]
-
-[[package]]
-name = "zui-custom-widget-example"
-version = "0.1.0"
-dependencies = [
- "zui-api",
- "zui-paint",
- "zui-types",
-]
-
-[[package]]
-name = "zui-dashboard-example"
-version = "0.1.0"
-dependencies = [
- "zui-api",
- "zui-app",
- "zui-core",
- "zui-extras",
- "zui-layout",
- "zui-paint",
- "zui-platform",
- "zui-text",
- "zui-theme",
- "zui-types",
- "zui-widgets",
 ]
 
 [[package]]
@@ -4034,24 +4067,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zui-opengl-example"
-version = "0.1.0"
-dependencies = [
- "png",
- "zui-api",
- "zui-app",
- "zui-layout",
- "zui-opengl",
- "zui-paint",
- "zui-platform",
- "zui-render-cpu",
- "zui-text",
- "zui-theme",
- "zui-types",
- "zui-widgets",
-]
-
-[[package]]
 name = "zui-paint"
 version = "0.1.0"
 dependencies = [
@@ -4072,11 +4087,11 @@ dependencies = [
 name = "zui-render-check"
 version = "0.1.0"
 dependencies = [
+ "custom-widget",
  "png",
  "pollster",
  "zui-api",
  "zui-core",
- "zui-custom-widget-example",
  "zui-extras",
  "zui-image",
  "zui-layout",

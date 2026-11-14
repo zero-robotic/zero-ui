@@ -1,4 +1,4 @@
-//! P0 gallery state and actions remain in the application layer.
+//! Menu, selection and dialog state and actions remain in the application layer.
 use zui_api::{
     action::{ActionEvent, ActionId},
     layout::{Dimension, Edges},

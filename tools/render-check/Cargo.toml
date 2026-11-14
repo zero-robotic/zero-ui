@@ -28,7 +28,7 @@ png.workspace = true
 
 [dev-dependencies]
 zui-image.workspace = true
-zui-custom-widget-example = { path = "../../examples/custom-widget" }
+custom-widget = { path = "../../examples/custom-widget" }
 
 [lints]
 workspace = true

@@ -215,7 +215,7 @@ zui-image 接收编码字节并返回 zui-paint::ImageResource，仅依赖 types
 
 ## 组件展厅示例的依赖边界
 
-examples/controls 和 examples/dashboard 是顶层应用装配：依赖公开控件、布局、文本、平台和应用接口，自行持有演示状态与采样调度。两者不相互依赖，不引用 tools/window-check，也不被任何框架 crate 引用。zui-core 仅作为示例测试依赖，用于布局/协调验证。依赖门禁同时验证两个示例的 CPU-only 和 GPU-only 传递依赖；联动通过 Action → 应用 Message → 属性更新实现。
+examples/widget-gallery 和 examples/dashboard 是顶层应用装配：依赖公开控件、布局、文本、平台和应用接口，自行持有演示状态与采样调度。两者不相互依赖，不引用 tools/window-check，也不被任何框架 crate 引用。zui-core 仅作为示例测试依赖，用于布局/协调验证。依赖门禁同时验证两个示例的 CPU-only 和 GPU-only 传递依赖；联动通过 Action → 应用 Message → 属性更新实现。
 
 ## P0 弹出交互与输入扩展
 
@@ -225,7 +225,7 @@ zui_widgets::edit 提供 Unicode 字素边界迭代，TextInput 使用它建立�
 
 ## P1 控件的职责
 
-TreeView 将应用的层级数据展平为带缩进的 ListBox，并转换选择/展开消息；Table 组合按钮、文本和 ScrollView，排序规则由应用执行；Splitter 只提供布局比例和交互请求；TextArea 复用已有 TextInput/TextBuffer 与文本几何。它们均位于 widgets 层，core、layout、paint、renderer 不增加具体控件依赖。控件之间的设备选择联动只在 examples/controls 的应用状态中实现。
+TreeView 将应用的层级数据展平为带缩进的 ListBox，并转换选择/展开消息；Table 组合按钮、文本和 ScrollView，排序规则由应用执行；Splitter 只提供布局比例和交互请求；TextArea 复用已有 TextInput/TextBuffer 与文本几何。它们均位于 widgets 层，core、layout、paint、renderer 不增加具体控件依赖。控件之间的设备选择联动只在 examples/widget-gallery 的应用状态中实现。
 
 ## P1/P2 组合控件与选择器
 

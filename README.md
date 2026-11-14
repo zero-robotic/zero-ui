@@ -69,21 +69,21 @@ ZUI 是一个使用 Rust 开发的模块化 GUI 框架。应用通过 View 描�
 git clone https://github.com/zero-robotic/zero-ui.git
 cd zero-ui
 
-# 启动传统控件展厅，默认使用 GPU。
-cargo run -p zui-controls-example --locked
+# 启动最小计数器，默认使用 GPU。
+cargo run -p minimal --locked
 ```
 
 ### 选择渲染后端
 
 ```sh
 # 使用默认构建，运行时显式选择 CPU。
-cargo run -p zui-controls-example --locked -- cpu
+cargo run -p minimal --locked -- cpu
 
 # 仅编译 CPU 后端，不引入 GPU 渲染依赖。
-cargo run -p zui-controls-example --no-default-features --features cpu --locked -- cpu
+cargo run -p minimal --no-default-features --features cpu --locked -- cpu
 
 # 仅编译 GPU 后端。
-cargo run -p zui-controls-example --no-default-features --features gpu --locked -- gpu
+cargo run -p minimal --no-default-features --features gpu --locked -- gpu
 ```
 
 **省略后端参数时选择 GPU。** 默认构建包含 GPU 与 CPU；指定 `cpu` 只改变运行方式，不会裁剪已经编译的 GPU 依赖。GPU 初始化失败会报错，不静默回退 CPU。
@@ -92,12 +92,15 @@ cargo run -p zui-controls-example --no-default-features --features gpu --locked 
 
 | 示例 | 启动命令 | 说明 |
 | --- | --- | --- |
-| [传统控件展厅](examples/controls/README.md) | `cargo run -p zui-controls-example --locked` | 主题、表单、菜单、树、虚拟表格与控件联动 |
-| [数据大屏](examples/dashboard/README.md) | `cargo run -p zui-dashboard-example --locked` | 指标、趋势、模拟采样与暂停/恢复 |
-| [OpenGL 控件](docs/rendering.md#opengl-view) | `cargo run -p zui-opengl-example --locked` | 自定义 shader 与 GL 绘制接入 |
+| [最小计数器](examples/minimal/README.md) | `cargo run -p minimal --locked` | 单文件入门：窗口、文本、按钮与状态更新 |
+| [传统控件展厅](examples/widget-gallery/README.md) | `cargo run -p widget-gallery --locked` | 主题、表单、菜单、树、虚拟表格与控件联动 |
+| [数据大屏](examples/dashboard/README.md) | `cargo run -p dashboard --locked` | 指标、趋势、模拟采样与暂停/恢复 |
+| [OpenGL 控件](docs/rendering.md#opengl-view) | `cargo run -p opengl --locked` | 自定义 shader 与 GL 绘制接入 |
 | [自定义 Widget](examples/custom-widget/README.md) | 阅读示例源码 | 仅依赖公共契约的自定义仪表，不是独立窗口程序 |
 
-窗口示例可追加 `-- --smoke-ms 1600` 自动退出，也可用 `-- cpu --smoke-ms 1600` 检查 CPU 路径。OpenGL 示例即使选择 CPU 合成，仍需要原生 OpenGL 环境。
+完整示例目录及阅读顺序见 [examples](examples/README.md)。
+
+控件展厅、数据大屏和 OpenGL 示例可追加 `-- --smoke-ms 1600` 自动退出，也可用 `-- cpu --smoke-ms 1600` 检查 CPU 路径。OpenGL 示例即使选择 CPU 合成，仍需要原生 OpenGL 环境。
 
 <details>
 <summary><b>无窗口预览与更多验证入口</b></summary>

@@ -139,7 +139,7 @@ Escape 或外部指针按下产生 `PopupDismissed { reason }`，应用决定何
 
 ### 示例与验证入口
 
-运行 `cargo run -p zui-controls-example -- cpu`。顶部展示下拉选择、菜单/右键菜单、确认弹窗、数字输入、密码与只读切换；下方展示列表多选及原有控件。GPU 使用 `--no-default-features --features gpu -- gpu`。
+运行 `cargo run -p widget-gallery -- cpu`。顶部展示下拉选择、菜单/右键菜单、确认弹窗、数字输入、密码与只读切换；下方展示列表多选及原有控件。GPU 使用 `--no-default-features --features gpu -- gpu`。
 
 `tools/render-check/tests/p0.rs` 覆盖焦点范围/恢复、防穿透、边界定位、选择确认、子菜单、快捷键、数值编辑、密码字素映射和剪贴板策略、多选范围、Tooltip 时序、占位提示，以及共用 CPU/GPU 像素用例。真实 GPU 测试需要显式 `--ignored`。完整无障碍平台适配、触摸手势和真实嵌入式设备验收不属于本批完成范围。
 
@@ -221,7 +221,7 @@ TextArea 是纯文本编辑器，当前无行号、语法高亮、富文本、�
 ### 展厅与验证
 
 ```sh
-cargo run --release -p zui-controls-example -- cpu
+cargo run --release -p widget-gallery -- cpu
 ```
 
 展厅滚动内容顶部展示 P1：树和表格共享设备选择；表格标题可排序；分栏拖动调整两侧宽度；下方多行巡检记录实时更新字数。
@@ -342,12 +342,12 @@ ColorPicker 用 RGBA8 表示颜色。十六进制字段接受 `#RRGGBB` 或 `#RR
 ### 展厅和验证
 
 ```sh
-cargo run --release -p zui-controls-example -- cpu
+cargo run --release -p widget-gallery -- cpu
 ```
 
 滚动内容顶部展示本轮补充控件：必填表单校验、日期范围弹层、时间输入、DataGrid 数值校验与分页排序、文件模式与面包屑联动、颜色输入、自动隐藏通知和状态栏。
 
-专项测试入口为 `tools/render-check/tests/catalog.rs`，展厅联动/宽窄布局测试位于 `examples/controls/src/demo/catalog.rs`。完整无障碍平台映射、触摸、真实 MCU 显示设备、系统文件对话框和百万行数据性能均不在当前已验收范围。
+专项测试入口为 `tools/render-check/tests/catalog.rs`，展厅联动/宽窄布局测试位于 `examples/widget-gallery/src/app/catalog.rs`。完整无障碍平台映射、触摸、真实 MCU 显示设备、系统文件对话框和百万行数据性能均不在当前已验收范围。
 
 
 <a id="controls-catalog--已有控件增强进展"></a>
@@ -440,7 +440,7 @@ ColorPicker 内置 HsvPickerView。HsvChanged 同时给出 HSV 和 RGBA；ColorC
 
 ### 展厅与验证
 
-`cargo run -p zui-controls-example -- cpu` 的“增强交互”展示搜索多选、自定义输入、页签关闭/重排、按展开请求加载设备、树多选/移动，以及万行虚拟表格。原颜色区域增加 HSV 控件。
+`cargo run -p widget-gallery -- cpu` 的“增强交互”展示搜索多选、自定义输入、页签关闭/重排、按展开请求加载设备、树多选/移动，以及万行虚拟表格。原颜色区域增加 HSV 控件。
 
 专项测试覆盖过滤后的隐藏选择、自由文本提交、懒加载状态、多选/拖放请求、页签关闭/重排/拖出请求、万行表格节点上限、万节点虚拟树末项导航和焦点保留、编辑草稿回收恢复、菜单分隔/悬停及 HSV 转换/键盘/绘制。测试不等同于所有交互的人工验收或 MCU 实机运行。
 
@@ -538,10 +538,10 @@ let config = WindowConfig {
 控件展厅可直接预览系统装饰设置：
 
 ```sh
-cargo run -p zui-controls-example -- cpu --no-minimize --no-maximize
-cargo run -p zui-controls-example -- cpu --no-titlebar
+cargo run -p widget-gallery -- cpu --no-minimize --no-maximize
+cargo run -p widget-gallery -- cpu --no-titlebar
 ```
 
 还支持 `--no-close`。无系统标题栏的展厅可按 Escape 退出；该参数用于验证无边框窗口，不会额外创建自绘标题栏。
 
-验证：`cargo test -p zui-backend-winit`、`cargo test -p zui-controls-example`、`cargo test -p zui-render-check --test p0 --test scroll`。Windows 的实际窗口按钮外观需在 Windows 实机验收。
+验证：`cargo test -p zui-backend-winit`、`cargo test -p widget-gallery`、`cargo test -p zui-render-check --test p0 --test scroll`。Windows 的实际窗口按钮外观需在 Windows 实机验收。

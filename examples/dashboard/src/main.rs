@@ -2,7 +2,7 @@ use std::{error::Error, time::Duration};
 use zui_app::Backend;
 use zui_platform::WindowConfig;
 use zui_types::Size;
-mod demo;
+mod app;
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args().skip(1).peekable();
     let backend = Backend::from_args(&mut args)?;
@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             _ => return Err(format!("unknown option: {arg}").into()),
         }
     }
-    let report = demo::run(
+    let report = app::run(
         WindowConfig {
             title: "ZUI · 大屏组件展示 · 模拟数据".into(),
             size: Size::new(1100.0, 800.0),

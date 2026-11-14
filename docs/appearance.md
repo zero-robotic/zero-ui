@@ -188,7 +188,7 @@ cargo run -p zui-render-check -- cpu artifacts/desktop-dark.png desktop-dark
 cargo run -p zui-render-check -- cpu artifacts/desktop-light.png desktop-light
 cargo test -p zui-render-check --test desktop
 cargo test -p zui-render-check --features gpu --test desktop
-cargo test -p zui-controls-example
+cargo test -p widget-gallery
 ```
 
 桌面样张覆盖按钮层级、输入框、下拉按钮、分组面板和树节点；测试覆盖深浅主题正文/辅助文字/选中态对比度，以及 1/1.25/1.5/2 倍离屏渲染的圆角和背景。沿用同一字体资源与场景绘制路径，不依赖系统默认字体。离屏测试不等同于 Windows/macOS 的窗口、系统缩放、输入法或显示器色彩实机验收。

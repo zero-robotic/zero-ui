@@ -1,5 +1,5 @@
 [package]
-name = "zui-custom-widget-example"
+name = "custom-widget"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -2,7 +2,7 @@ use std::{error::Error, time::Duration};
 use zui_app::Backend;
 use zui_platform::WindowConfig;
 use zui_types::Size;
-mod demo;
+mod app;
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args().skip(1).peekable();
     let backend = Backend::from_args(&mut args)?;
@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             _ => return Err(format!("unknown option: {arg}").into()),
         }
     }
-    let report = demo::run(config, backend, smoke)?;
+    let report = app::run(config, backend, smoke)?;
     println!("events={}, redraws={}", report.events, report.redraws);
     if report.redraws == 0 {
         return Err("window never drew".into());

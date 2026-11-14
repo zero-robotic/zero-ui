@@ -1,9 +1,9 @@
 # 大屏组件展示
 
 ```sh
-cargo run -p zui-dashboard-example
-cargo run -p zui-dashboard-example -- cpu
-cargo run -p zui-dashboard-example --no-default-features --features cpu -- cpu
+cargo run -p dashboard
+cargo run -p dashboard -- cpu
+cargo run -p dashboard --no-default-features --features cpu -- cpu
 ```
 
 省略后端默认 GPU；默认构建同时支持显式 CPU。最后一条命令仅编译 CPU 后端。不指定后端也可直接传入 `--smoke-ms 1600`。
@@ -19,3 +19,10 @@ cargo run -p zui-dashboard-example --no-default-features --features cpu -- cpu
 定时采样和消息协调都在应用层；组件仅接收数据与属性，不引用其他组件实例或窗口后端。测试覆盖暂停、手动调整、恢复后的定时采样和宽窄窗口布局。
 
 此示例展示现有组件，不包含尚未实现的柱状图、饼图、仪表盘或高级发光特效。
+
+## 代码结构
+
+- `src/main.rs`：命令行和窗口配置。
+- `src/app.rs`：采样状态、消息处理、定时与窗口生命周期。
+- `src/app/views.rs`：指标卡、趋势图和控制面板组合。
+- `src/app/tests.rs`：采样联动与宽窄布局回归。

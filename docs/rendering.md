@@ -589,10 +589,10 @@ GL 工作在 `Widget::animate` 阶段进行，`paint` 只提交缓存图像。�
 ### 示例与验证
 
 ```sh
-cargo run -p zui-opengl-example -- cpu
-cargo run -p zui-opengl-example --features gpu -- gpu
-cargo run -p zui-opengl-example -- cpu --snapshot artifacts/opengl.png
-cargo run -p zui-opengl-example --features gpu -- gpu --smoke-ms 1000
+cargo run -p opengl -- cpu
+cargo run -p opengl --features gpu -- gpu
+cargo run -p opengl -- cpu --snapshot artifacts/opengl.png
+cargo run -p opengl --features gpu -- gpu --smoke-ms 1000
 cargo test -p zui-opengl
 # 真实驱动验证必须在有图形驱动的桌面环境运行，使用独立主线程测试入口。
 cargo test -p zui-opengl --test native -- --native

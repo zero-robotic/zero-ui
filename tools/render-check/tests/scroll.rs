@@ -1,3 +1,4 @@
+use custom_widget::MeterView;
 use zui_api::{
     action::ActionId,
     event::*,
@@ -6,7 +7,6 @@ use zui_api::{
     widget::Invalidation,
 };
 use zui_core::Tree;
-use zui_custom_widget_example::MeterView;
 use zui_paint::{Frame, OffscreenRenderer};
 use zui_types::{Color, Extent, Point, Size};
 use zui_widgets::{Scroll, ScrollChanged, ScrollView, column};

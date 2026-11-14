@@ -1,10 +1,10 @@
+use custom_widget::MeterView;
 use zui_api::{
     layout::{Align, Dimension, Edges, Justify, LayoutStyle},
     view::View,
     widget::Invalidation,
 };
 use zui_core::{Tree, TreeLimits};
-use zui_custom_widget_example::MeterView;
 use zui_layout::TaffyLayout;
 use zui_paint::{Frame, OffscreenRenderer};
 use zui_types::{Color, Extent, Point, Rect, Size};

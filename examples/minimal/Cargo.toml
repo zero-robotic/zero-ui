@@ -1,5 +1,5 @@
 [package]
-name = "zui-controls-example"
+name = "minimal"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,16 +12,17 @@ cpu = ["zui-app/cpu"]
 gpu = ["zui-app/gpu"]
 
 [dependencies]
-zui-core.workspace = true
-zui-app = { workspace = true, features = ["clipboard"] }
+zui-app.workspace = true
 zui-api.workspace = true
 zui-types.workspace = true
 zui-platform.workspace = true
-zui-paint.workspace = true
 zui-layout.workspace = true
 zui-text.workspace = true
 zui-theme.workspace = true
 zui-widgets.workspace = true
+
+[dev-dependencies]
+zui-core.workspace = true
 
 [lints]
 workspace = true

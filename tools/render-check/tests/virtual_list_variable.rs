@@ -1,3 +1,4 @@
+use custom_widget::MeterView;
 use std::rc::Rc;
 use zui_api::{
     layout::{Dimension, Edges, LayoutError, LayoutStyle},
@@ -5,7 +6,6 @@ use zui_api::{
     widget::Invalidation,
 };
 use zui_core::{Tree, TreeError};
-use zui_custom_widget_example::MeterView;
 use zui_paint::{Frame, OffscreenRenderer};
 use zui_types::{Color, Extent, Point, Size};
 use zui_widgets::{ScrollAlignment, VirtualList, VirtualListView};

@@ -1,10 +1,10 @@
+use custom_widget::MeterView;
 use zui_api::{
     layout::{Dimension, LayoutKind, LayoutStyle},
     view::{View, ViewSpec},
     widget::{ChildViewport, Invalidation, PaintContext, Widget},
 };
 use zui_core::Tree;
-use zui_custom_widget_example::MeterView;
 use zui_paint::{Frame, OffscreenRenderer, Painter};
 use zui_types::{Color, Extent, Point, Rect, Size};
 
