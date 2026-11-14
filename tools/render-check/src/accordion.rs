@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use zui_api::{
     action::ActionId,
     layout::{Dimension, Edges},
@@ -13,10 +12,7 @@ use zui_widgets::{
 };
 
 pub fn accordion_preview() -> Result<Scene, Box<dyn std::error::Error>> {
-    let mut text = zui_text::ParleyText::default();
-    let families = text.register_font(Arc::from(
-        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
-    ))?;
+    let (mut text, families) = crate::preview_support::text()?;
     let theme = Theme::dashboard();
     let label = |value, role| View::new(TextView::themed(&theme, value, families.clone(), role));
     let group = |multiple| -> Result<View, zui_widgets::AccordionError> {

@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use zui_api::{
     action::ActionId,
     layout::{Dimension, Edges},
@@ -9,10 +8,7 @@ use zui_theme::{Theme, TypeRole};
 use zui_types::Size;
 use zui_widgets::{SegmentId, SegmentOption, SegmentedControlView, TextView, column};
 pub fn segmented_preview() -> Result<Scene, Box<dyn std::error::Error>> {
-    let mut text = zui_text::ParleyText::default();
-    let families = text.register_font(Arc::from(
-        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
-    ))?;
+    let (mut text, families) = crate::preview_support::text()?;
     let theme = Theme::dashboard();
     let options = || {
         vec![

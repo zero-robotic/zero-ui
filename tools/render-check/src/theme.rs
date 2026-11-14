@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use zui_api::{
     layout::{Dimension, Edges},
     view::View,
@@ -48,10 +47,7 @@ pub fn theme_view(theme: &Theme, families: Vec<String>) -> View {
 }
 
 pub fn theme_preview(theme: &Theme) -> Result<Scene, Box<dyn std::error::Error>> {
-    let mut text = zui_text::ParleyText::default();
-    let families = text.register_font(Arc::from(
-        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
-    ))?;
+    let (mut text, families) = crate::preview_support::text()?;
     let mut tree = zui_core::Tree::from_view(theme_view(theme, families), Default::default())?;
     tree.layout_with_text(
         &mut zui_layout::TaffyLayout::default(),
@@ -65,10 +61,7 @@ pub fn theme_preview(theme: &Theme) -> Result<Scene, Box<dyn std::error::Error>>
 pub fn desktop_preview(theme: &Theme) -> Result<Scene, Box<dyn std::error::Error>> {
     use zui_api::action::ActionId;
     use zui_widgets::*;
-    let mut text = zui_text::ParleyText::default();
-    let families = text.register_font(Arc::from(
-        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
-    ))?;
+    let (mut text, families) = crate::preview_support::text()?;
     let button = |label: &str, style: ButtonStyle| {
         let mut b = ButtonView::themed(theme, label, families.clone(), ActionId(1));
         b.style = style;
@@ -206,10 +199,7 @@ pub fn desktop_preview(theme: &Theme) -> Result<Scene, Box<dyn std::error::Error
 pub fn dialog_preview(header: bool) -> Result<Scene, Box<dyn std::error::Error>> {
     use zui_api::action::ActionId;
     let theme = Theme::desktop_dark();
-    let mut text = zui_text::ParleyText::default();
-    let families = text.register_font(Arc::from(
-        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
-    ))?;
+    let (mut text, families) = crate::preview_support::text()?;
     let mut dialog = zui_widgets::MessageBoxView::themed(
         &theme,
         "确认设备设置",

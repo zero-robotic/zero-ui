@@ -1,7 +1,5 @@
-use std::sync::Arc;
 use zui_api::text::{TextAlign, TextError, TextRequest, TextService, TextStyle, TextWidth};
 use zui_paint::{Path, Scene};
-use zui_text::ParleyText;
 use zui_types::{Affine, Color, Rect};
 
 /// Exercises the public control, tree, injected services and final layout preparation.
@@ -10,10 +8,7 @@ pub fn text_widget_preview() -> Result<Scene, Box<dyn std::error::Error>> {
         layout::{Dimension, Edges, LayoutStyle},
         view::View,
     };
-    let mut text = ParleyText::default();
-    let families = text.register_font(Arc::from(
-        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
-    ))?;
+    let (mut text, families) = crate::preview_support::text()?;
     let view = View::new(zui_widgets::TextView::new(
         "ZUI · 文本控件\n\n文字服务通过公共契约注入。布局测量支持中文与 Rust 混排，最终绘制遵循内容宽度和内边距。\n\nCPU / GPU 共享控件与排版结果。",
         TextStyle { families, font_size: 26.0, line_height: 1.35, align: TextAlign::Start },
@@ -32,10 +27,7 @@ pub fn text_widget_preview() -> Result<Scene, Box<dyn std::error::Error>> {
 
 /// The service is dropped before rendering; Scene owns every referenced font.
 pub fn text_preview() -> Result<Scene, TextError> {
-    let mut text = ParleyText::default();
-    let families = text.register_font(Arc::from(
-        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
-    ))?;
+    let (mut text, families) = crate::preview_support::text()?;
     let mut style = TextStyle {
         families,
         font_size: 34.0,
@@ -87,10 +79,7 @@ pub fn text_preview() -> Result<Scene, TextError> {
 /// Selection/caret overlays use the same retained layout as glyph rendering.
 pub fn text_selection_preview() -> Result<Scene, Box<dyn std::error::Error>> {
     use zui_api::text::{TextAffinity, TextPosition};
-    let mut service = ParleyText::default();
-    let families = service.register_font(Arc::from(
-        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
-    ))?;
+    let (mut service, families) = crate::preview_support::text()?;
     let text = "ZUI · 文字选择与光标\n中文与 Latin 共用同一份排版结果，换行后仍能准确绘制选择区域。\n组合字符 e\u{301} 不会被光标拆开。";
     let result = service.layout_interactive(TextRequest {
         text,

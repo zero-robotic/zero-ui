@@ -43,6 +43,15 @@ ALLOWED = {
 }
 
 
+def selected_dependencies(package, features=()):
+    tree = subprocess.check_output([
+        "cargo", "tree", "--offline", "--locked", "-p", package,
+        "--no-default-features", *features,
+        "--edges", "normal,build", "--prefix", "none", "--format", "{p}",
+    ], cwd=ROOT, text=True)
+    return {line.split()[0] for line in tree.splitlines() if line.strip()}
+
+
 def main():
     metadata = json.loads(subprocess.check_output(
         ["cargo", "metadata", "--no-deps", "--format-version", "1", "--offline"], cwd=ROOT
@@ -81,12 +90,7 @@ def main():
         ("gpu", {"vello_cpu", "zui-render-cpu"}),
     ):
         for application in ("zui-render-check", "zui-window-check", "zui-controls-example", "zui-dashboard-example"):
-            tree = subprocess.check_output([
-                "cargo", "tree", "--offline", "--locked", "-p", application,
-                "--no-default-features", "--features", feature,
-                "--edges", "normal,build", "--prefix", "none", "--format", "{p}",
-            ], cwd=ROOT, text=True)
-            selected = {line.split()[0] for line in tree.splitlines() if line.strip()}
+            selected = selected_dependencies(application, ["--features", feature])
             for dependency in selected & forbidden:
                 failures.append(f"{application} {feature}-only build unexpectedly depends on {dependency}")
     for features, forbidden in (
@@ -94,12 +98,7 @@ def main():
         (["--features", "charts"], {"zui-widgets", "zui-core", "zui-app"}),
         (["--features", "dashboard"], {"zui-core", "zui-app", "zui-render-cpu", "zui-render-gpu"}),
     ):
-        tree = subprocess.check_output([
-            "cargo", "tree", "--offline", "--locked", "-p", "zui-extras",
-            "--no-default-features", *features,
-            "--edges", "normal,build", "--prefix", "none", "--format", "{p}",
-        ], cwd=ROOT, text=True)
-        selected = {line.split()[0] for line in tree.splitlines() if line.strip()}
+        selected = selected_dependencies("zui-extras", features)
         for dependency in selected & forbidden:
             failures.append(f"zui-extras {features or 'empty'} unexpectedly depends on {dependency}")
     for features, clipboard_expected in (
@@ -109,12 +108,7 @@ def main():
         (["--features", "clipboard"], True),
         (["--features", "clipboard-wayland"], True),
     ):
-        tree = subprocess.check_output([
-            "cargo", "tree", "--offline", "--locked", "-p", "zui-app",
-            "--no-default-features", *features,
-            "--edges", "normal,build", "--prefix", "none", "--format", "{p}",
-        ], cwd=ROOT, text=True)
-        selected = {line.split()[0] for line in tree.splitlines() if line.strip()}
+        selected = selected_dependencies("zui-app", features)
         if ("arboard" in selected) != clipboard_expected:
             failures.append(f"zui-app {features or 'empty'} has unexpected clipboard dependencies")
     if failures:

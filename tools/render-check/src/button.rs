@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use zui_api::{
     action::ActionId,
     event::{InputEvent, Key, KeyInput},
@@ -12,10 +11,7 @@ use zui_widgets::{ButtonView, column};
 
 /// Three real controls; the first is focused and armed through the event router.
 pub fn button_preview() -> Result<Scene, Box<dyn std::error::Error>> {
-    let mut text = zui_text::ParleyText::default();
-    let families = text.register_font(Arc::from(
-        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
-    ))?;
+    let (mut text, families) = crate::preview_support::text()?;
     let theme = Theme::dashboard();
     let children = [
         ("焦点与按下 · Space", false),

@@ -1,6 +1,5 @@
-#[allow(dead_code, unused_imports)]
-#[path = "refresh-bench.rs"]
-mod workload;
+mod support;
+use support::{Model, events, percentile};
 
 use std::{
     sync::Arc,
@@ -8,14 +7,9 @@ use std::{
 };
 use zui_app::{Application, WidgetHost};
 use zui_paint::{DamageConfig, Frame, Scene};
-use zui_platform::{InputEvent, WindowEvent, WindowMetrics};
+use zui_platform::WindowMetrics;
 use zui_render_gpu::GpuRenderer;
-use zui_types::{Color, Extent, Point};
-
-fn percentile(values: &mut [f64], fraction: f64) -> f64 {
-    values.sort_by(f64::total_cmp);
-    values[((values.len() - 1) as f64 * fraction) as usize]
-}
+use zui_types::{Color, Extent};
 
 fn main() {
     let arguments: Vec<_> = std::env::args().collect();
@@ -54,7 +48,7 @@ fn main() {
                 ))
                 .unwrap();
             let mut host = WidgetHost::new(
-                workload::Model {
+                Model {
                     kind,
                     value: 0,
                     families,
@@ -107,18 +101,7 @@ fn main() {
             host.draw(&mut scene, metrics, Duration::ZERO).unwrap();
             for iteration in 0..samples + 30 {
                 let elapsed = Duration::from_millis(iteration as u64 * 16);
-                let events = if kind == "pointer32" {
-                    (0..32)
-                        .map(|index| {
-                            WindowEvent::Input(InputEvent::PointerMoved(Point::new(
-                                index as f64 * 5.0,
-                                470.0,
-                            )))
-                        })
-                        .collect()
-                } else {
-                    vec![WindowEvent::Wake; if kind == "burst32" { 32 } else { 1 }]
-                };
+                let events = events(kind);
                 let begin = Instant::now();
                 host.update_batch(events, metrics, elapsed).unwrap();
                 host.draw(&mut scene, metrics, elapsed).unwrap();

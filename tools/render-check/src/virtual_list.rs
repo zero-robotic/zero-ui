@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use zui_api::{
     layout::{Dimension, Edges},
     view::View,
@@ -15,10 +14,7 @@ pub fn virtual_list_measured_preview() -> Result<Scene, Box<dyn std::error::Erro
     preview(true)
 }
 fn preview(measured: bool) -> Result<Scene, Box<dyn std::error::Error>> {
-    let mut text = zui_text::ParleyText::default();
-    let families = text.register_font(Arc::from(
-        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
-    ))?;
+    let (mut text, families) = crate::preview_support::text()?;
     let theme = Theme::dashboard();
     let heading = View::new(TextView::themed(
         &theme,

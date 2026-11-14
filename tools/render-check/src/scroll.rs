@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use zui_api::{
     layout::{Dimension, Edges},
     view::View,
@@ -9,10 +8,7 @@ use zui_types::{Color, Size};
 use zui_widgets::{Container, ScrollView, TextView, column};
 
 pub fn scroll_preview() -> Result<Scene, Box<dyn std::error::Error>> {
-    let mut text = zui_text::ParleyText::default();
-    let families = text.register_font(Arc::from(
-        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
-    ))?;
+    let (mut text, families) = crate::preview_support::text()?;
     let theme = Theme::dashboard();
     let label =
         |value: String, role| View::new(TextView::themed(&theme, value, families.clone(), role));
@@ -65,10 +61,7 @@ pub fn scroll_preview() -> Result<Scene, Box<dyn std::error::Error>> {
 }
 
 pub fn scroll_both_preview() -> Result<Scene, Box<dyn std::error::Error>> {
-    let mut text = zui_text::ParleyText::default();
-    let families = text.register_font(Arc::from(
-        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
-    ))?;
+    let (mut text, families) = crate::preview_support::text()?;
     let theme = Theme::dashboard();
     let label =
         |value: String, role| View::new(TextView::themed(&theme, value, families.clone(), role));

@@ -1,5 +1,6 @@
 //! Top-level rendering fixtures. Lower-level crates never depend on this crate.
 mod panel;
+mod preview_support;
 pub use panel::panel_preview;
 mod metric;
 pub use metric::metric_preview;

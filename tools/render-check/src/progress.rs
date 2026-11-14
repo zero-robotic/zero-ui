@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 use zui_api::{
     layout::{Dimension, LayoutStyle},
     view::View,
@@ -9,10 +9,7 @@ use zui_types::Size;
 use zui_widgets::{ProgressBarView, ProgressValue, TextView, column, row};
 
 pub fn progress_preview() -> Result<Scene, Box<dyn std::error::Error>> {
-    let mut text = zui_text::ParleyText::default();
-    let families = text.register_font(Arc::from(
-        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
-    ))?;
+    let (mut text, families) = crate::preview_support::text()?;
     let theme = Theme::dashboard();
     let mut children = vec![View::new(TextView::themed(
         &theme,

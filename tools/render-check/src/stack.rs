@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use zui_api::layout::{Align, Dimension, Edges};
 use zui_api::view::View;
 use zui_paint::Scene;
@@ -8,10 +7,7 @@ use zui_widgets::{TextView, column, stack};
 
 /// Shared-area layers and independent anchors, without absolute positioning.
 pub fn stack_preview() -> Result<Scene, Box<dyn std::error::Error>> {
-    let mut text = zui_text::ParleyText::default();
-    let families = text.register_font(Arc::from(
-        include_bytes!("../../../assets/fonts/NotoSansSC.ttf").as_slice(),
-    ))?;
+    let (mut text, families) = crate::preview_support::text()?;
     let theme = Theme::dashboard();
     let label =
         |value: &str, role| View::new(TextView::themed(&theme, value, families.clone(), role));
