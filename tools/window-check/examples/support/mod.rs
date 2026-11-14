@@ -14,37 +14,53 @@ pub(crate) struct Model {
     pub(crate) value: u64,
     pub(crate) families: Vec<String>,
 }
+impl Model {
+    fn label(&self, i: u64, theme: &Theme) -> View {
+        let value = if i == 0 && matches!(self.kind, "local_text" | "local_text_scoped" | "burst32")
+        {
+            self.value
+        } else {
+            i
+        };
+        let mut label = TextView::themed(
+            theme,
+            format!("T{i:03}: {value:05}"),
+            self.families.clone(),
+            TypeRole::Caption,
+        );
+        if (i == 0 && self.kind == "color") || self.kind == "full_damage" {
+            label.color = if self.value.is_multiple_of(2) {
+                Color::WHITE
+            } else {
+                Color::rgb(0, 220, 240)
+            };
+        }
+        View::new(label)
+            .keyed(i)
+            .styled(zui_api::layout::LayoutStyle {
+                width: Dimension::Length(100.0),
+                height: Dimension::Length(28.0),
+                ..Default::default()
+            })
+    }
+}
 impl ViewApplication for Model {
     type Message = ();
+    fn view_update(&self, tree: &zui_core::Tree) -> zui_app::ViewUpdate {
+        if self.kind == "local_text_scoped" {
+            let grid = tree.children(tree.root()).unwrap()[0];
+            let root = tree.children(grid).unwrap()[0];
+            zui_app::ViewUpdate::Subtree {
+                root,
+                view: self.label(0, &Theme::dark()),
+            }
+        } else {
+            zui_app::ViewUpdate::Root(self.view())
+        }
+    }
     fn view(&self) -> View {
         let theme = Theme::dark();
-        let labels = (0..120).map(|i| {
-            let value = if i == 0 && matches!(self.kind, "local_text" | "burst32") {
-                self.value
-            } else {
-                i
-            };
-            let mut label = TextView::themed(
-                &theme,
-                format!("T{i:03}: {value:05}"),
-                self.families.clone(),
-                TypeRole::Caption,
-            );
-            if (i == 0 && self.kind == "color") || self.kind == "full_damage" {
-                label.color = if self.value.is_multiple_of(2) {
-                    Color::WHITE
-                } else {
-                    Color::rgb(0, 220, 240)
-                };
-            }
-            View::new(label)
-                .keyed(i)
-                .styled(zui_api::layout::LayoutStyle {
-                    width: Dimension::Length(100.0),
-                    height: Dimension::Length(28.0),
-                    ..Default::default()
-                })
-        });
+        let labels = (0..120).map(|i| self.label(i, &theme));
         let body = grid([Track::Length(100.0); 8], labels)
             .keyed("grid")
             .build();

@@ -351,7 +351,9 @@ fn child_viewport(&self, context: PaintContext) -> ChildViewport {
 
 节点自己的子视口不能裁剪它自己的 IME 区域。嵌套视口逐级累加平移，裁剪留在各自容器坐标中，不跟随内容平移。
 
-当前快照遍历全部节点并保存 BTreeMap，时间开销为 O(N log N)，额外空间为 O(N)。此实现优先保证各坐标消费者一致；大规模列表还需要结合虚拟化与失效规则评估缓存。当前没有将它宣称为大列表性能优化。
+快照首次建立仍遍历全部节点并保存 BTreeMap，时间开销为 O(N log N)，额外空间为 O(N)。core 内部通过 Rc 共享不可变快照；没有变化的命中、输入、IME 和绘制查询复用同一份数据。节点变更、布局提交、显式失效及控件返回的 Paint/Layout 失效会清除快照，包含仅平移内容的滚动。一次事件仍持有自己的旧快照，回调产生的变化在下一次操作生效。非法快照不进入缓存。
+
+控件的 `child_viewport` 必须是当前已声明状态的稳定查询；改变平移/裁剪必须报告至少 Paint 失效，不能依赖未声明的内部可变状态刷新坐标。缓存属于 core，不暴露给 app、layout 或 renderer。
 
 
 <a id="child-viewport--验证与后续"></a>
@@ -424,3 +426,23 @@ tree.reveal_rect(target_id, zui_types::Rect::new(x, y, width, height))?;
 `tree.request_focus(Some(target_id))?` 同时请求焦点和自动滚入，None 清除焦点。目标必须已存在且 enabled、focusable；验证失败保留原焦点。布局未完成时延迟滚入，重复请求不覆盖已成功滚入后的手动滚动，也不改变指针捕获。返回值表示焦点所有者是否改变，不保证目标可见。焦点通知完成后的滚入错误不回滚焦点；尚未完成的滚入可重试。
 
 专项测试覆盖布局前延迟滚入、已布局目标立即滚入、重复请求保留手动滚动位置、清除焦点不改变偏移。虚拟列表测试验证远索引生成后转移焦点，并拒绝已回收的旧 NodeId。
+
+
+## 局部 View 更新
+
+`ViewApplication::view()` 仍负责首次完整建树；后续 `ViewAction::rebuild()` 合并到准备边界后调用 `view_update(&Tree)`。默认返回 `ViewUpdate::Root(self.view())`，原有应用无需修改。
+
+知道变更范围的应用可返回 `ViewUpdate::Subtree { root, view }`，只构造目标子树。应用根据当前只读树解析节点 ID；多个状态变化应选择共同祖先，无法确定范围时返回 Root。不要复用已卸载节点的 ID，也不要遗漏同批事件改变的其他分支。
+
+```rust,ignore
+fn view_update(&self, tree: &Tree) -> ViewUpdate {
+    match self.find_counter_node(tree) {
+        Some(root) => ViewUpdate::Subtree { root, view: self.counter_view() },
+        None => ViewUpdate::Root(self.view()),
+    }
+}
+```
+
+Host 只把更新交给 `Tree::reconcile_subtree`；core 不识别业务消息或具体控件。核心在回调前验证兄弟 key 冲突、绝对深度和整树预算，沿用 key/type 匹配、状态保留、卸载及焦点清理规则。无关分支不执行 View 更新回调；改变目标 key/type 会替换该子树。节点不存在时返回错误，不静默丢弃更新。局部更新并不覆盖后续完整更新或 widget-owned children 的权威描述。
+
+`refresh-bench` 与 `gpu-refresh-bench` 增加 `local_text_scoped`：与 `local_text` 使用相同内容和变化序列，仅缩小描述构造/协调范围。比较性能时同时核对 CPU checksum；离屏结果不代表窗口 FPS。

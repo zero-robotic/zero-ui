@@ -29,6 +29,7 @@ struct Plan {
 impl Tree {
     pub fn from_view(view: View, limits: TreeLimits) -> Result<Self, TreeError> {
         let mut tree = Self {
+            presentation_cache: Default::default(),
             paint_dirty: BTreeSet::new(),
             paint_cache: Default::default(),
             events: Default::default(),
@@ -60,6 +61,64 @@ impl Tree {
         self.root = plan.id;
         self.next_id = next_id;
         apply(self, plan, None, &mut report);
+        self.prune_input();
+        if report.created != 0 || report.removed != 0 {
+            self.dirty = Invalidation::Layout;
+        }
+        report.invalidation = self.dirty;
+        Ok(report)
+    }
+
+    /// Reconcile one subtree using the same identity and validation rules as a
+    /// full update. Unrelated branches receive no update/lifecycle callbacks.
+    /// The caller selects scope; later full/owner updates remain authoritative.
+    pub fn reconcile_subtree(
+        &mut self,
+        root: NodeId,
+        view: View,
+    ) -> Result<ReconcileReport, TreeError> {
+        let parent = self.get(root)?.parent;
+        if parent.is_none() {
+            return self.reconcile(view);
+        }
+        let parent = parent.unwrap();
+        if let Some(key) = &view.key
+            && self.nodes[&parent]
+                .children
+                .iter()
+                .any(|id| *id != root && self.nodes[id].key.as_ref() == Some(key))
+        {
+            return Err(TreeError::DuplicateKey(key.clone()));
+        }
+        let old_nodes = self.subtree(root);
+        let outside = self.nodes.len() - old_nodes.len();
+        validate_forest(
+            core::slice::from_ref(&view),
+            self.depth(root),
+            outside,
+            self.limits,
+        )?;
+        let mut next_id = self.next_id;
+        let plan = plan(self, view, Some(root), &mut next_id)?;
+        validate_planned(self, core::slice::from_ref(&plan), outside)?;
+        let replacement = plan.id;
+        let mut report = ReconcileReport::default();
+        remove_unretained(self, old_nodes, core::slice::from_ref(&plan), &mut report);
+        if replacement != root {
+            let siblings = &mut self
+                .nodes
+                .get_mut(&parent)
+                .expect("validated parent")
+                .children;
+            *siblings
+                .iter_mut()
+                .find(|id| **id == root)
+                .expect("attached subtree") = replacement;
+            self.presentation_cache.invalidate();
+            self.paint_dirty.insert(parent);
+        }
+        self.next_id = next_id;
+        apply(self, plan, Some(parent), &mut report);
         self.prune_input();
         if report.created != 0 || report.removed != 0 {
             self.dirty = Invalidation::Layout;
@@ -101,6 +160,7 @@ impl Tree {
         let mut report = ReconcileReport::default();
         remove_unretained(self, old_nodes, &plans, &mut report);
         if order != old_children {
+            self.presentation_cache.invalidate();
             self.paint_dirty.insert(parent);
             self.dirty = Invalidation::Layout;
         }
@@ -301,6 +361,7 @@ fn apply(tree: &mut Tree, plan: Plan, parent: Option<NodeId>, report: &mut Recon
             .expect("type checked during planning");
         tree.dirty = tree.dirty.max(invalidation);
         if invalidation != Invalidation::None {
+            tree.presentation_cache.invalidate();
             tree.paint_dirty.insert(id);
         }
         if node.style != view.style
@@ -308,10 +369,12 @@ fn apply(tree: &mut Tree, plan: Plan, parent: Option<NodeId>, report: &mut Recon
             || node.child_ownership != view.child_ownership
             || node.layout_tag != view.layout_tag
         {
+            tree.presentation_cache.invalidate();
             tree.paint_dirty.insert(id);
             tree.dirty = Invalidation::Layout;
         }
         if node.clip != view.clip {
+            tree.presentation_cache.invalidate();
             tree.paint_dirty.insert(id);
             tree.dirty = tree.dirty.max(Invalidation::Paint);
         }
@@ -329,6 +392,7 @@ fn apply(tree: &mut Tree, plan: Plan, parent: Option<NodeId>, report: &mut Recon
             id,
             Node {
                 key: view.key,
+                layout_cache_key: Default::default(),
                 parent,
                 children: order,
                 child_ownership: view.child_ownership,
@@ -339,6 +403,7 @@ fn apply(tree: &mut Tree, plan: Plan, parent: Option<NodeId>, report: &mut Recon
                 layout: LayoutBox::default(),
             },
         );
+        tree.presentation_cache.invalidate();
         report.created += 1;
     }
     for child in children {

@@ -1,6 +1,6 @@
 //! Immutable presentation coordinates, independent of layout and widget kinds.
 use crate::{Tree, TreeError, geometry::content_bounds};
-use alloc::collections::BTreeMap;
+use alloc::{collections::BTreeMap, rc::Rc};
 use zui_api::widget::{ChildViewport, PaintContext};
 use zui_types::{NodeId, Point, Rect};
 
@@ -9,6 +9,21 @@ pub(crate) struct PresentedNode {
     pub children: ChildViewport,
 }
 pub(crate) type Presentation = BTreeMap<NodeId, PresentedNode>;
+
+/// Owns snapshot sharing and invalidation; callers never mutate published data.
+#[derive(Default)]
+pub(crate) struct PresentationCache(core::cell::RefCell<Option<Rc<Presentation>>>);
+impl PresentationCache {
+    pub fn invalidate(&mut self) {
+        self.0.get_mut().take();
+    }
+    fn get(&self) -> Option<Rc<Presentation>> {
+        self.0.borrow().clone()
+    }
+    fn store(&self, snapshot: Rc<Presentation>) {
+        *self.0.borrow_mut() = Some(snapshot);
+    }
+}
 
 impl Tree {
     /// Presented border box in scene coordinates, including ancestor scrolling.
@@ -22,8 +37,11 @@ impl Tree {
         })
     }
 
-    /// One immutable snapshot per operation, shared by every coordinate consumer.
-    pub(crate) fn presentation(&self) -> Result<Presentation, TreeError> {
+    /// Share an immutable snapshot until a declared mutation invalidates geometry.
+    pub(crate) fn presentation(&self) -> Result<Rc<Presentation>, TreeError> {
+        if let Some(snapshot) = self.presentation_cache.get() {
+            return Ok(snapshot);
+        }
         let mut result = BTreeMap::new();
         let mut pending = alloc::vec![(self.root, Point::ZERO)];
         while let Some((id, parent_origin)) = pending.pop() {
@@ -65,6 +83,8 @@ impl Tree {
             pending.extend(node.children.iter().map(|&child| (child, child_origin)));
             result.insert(id, PresentedNode { origin, children });
         }
+        let result = Rc::new(result);
+        self.presentation_cache.store(result.clone());
         Ok(result)
     }
 }

@@ -119,6 +119,7 @@ pub trait Widget: Any {
     }
     /// A pure geometry query. Changes require at least Paint invalidation.
     /// The runtime applies this to paint, hits, event coordinates and IME areas.
+    /// The runtime may cache this result until the next declared mutation.
     fn child_viewport(&self, _context: PaintContext) -> ChildViewport {
         ChildViewport::default()
     }

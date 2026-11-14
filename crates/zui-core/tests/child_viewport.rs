@@ -446,3 +446,59 @@ fn presented_bounds_include_parent_origin_and_scroll_and_require_layout() {
     tree.invalidate(Invalidation::Layout);
     assert_eq!(tree.presented_bounds(child), Err(TreeError::LayoutRequired));
 }
+
+#[test]
+fn presentation_snapshot_is_reused_and_paint_only_scroll_invalidates_it() {
+    struct Counted {
+        calls: Rc<std::cell::Cell<usize>>,
+        offset: f64,
+    }
+    impl Widget for Counted {
+        fn paint(&self, _: PaintContext, _: &mut Painter<'_>) {}
+        fn child_viewport(&self, _: PaintContext) -> ChildViewport {
+            self.calls.set(self.calls.get() + 1);
+            ChildViewport {
+                translation: Point::new(0.0, self.offset),
+                clip: None,
+            }
+        }
+    }
+    let calls = Rc::new(std::cell::Cell::new(0));
+    let mut tree = Tree::new(
+        Counted {
+            calls: calls.clone(),
+            offset: 0.0,
+        },
+        LayoutStyle {
+            kind: LayoutKind::Column,
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
+    let root = tree.root();
+    let child = tree
+        .insert(root, 0, Probe::default(), LayoutStyle::default())
+        .unwrap();
+    tree.layout(
+        &mut FixedLayout(vec![
+            (root, Rect::new(0.0, 0.0, 100.0, 100.0)),
+            (child, Rect::new(0.0, 20.0, 10.0, 10.0)),
+        ]),
+        Size::new(100.0, 100.0),
+    )
+    .unwrap();
+    assert_eq!(tree.presented_bounds(child).unwrap().origin.y, 20.0);
+    let count = calls.get();
+    tree.hit_test(Point::new(1.0, 21.0)).unwrap();
+    tree.presented_bounds(child).unwrap();
+    tree.scene().unwrap();
+    assert_eq!(calls.get(), count);
+    tree.update_widget::<Counted>(root, Invalidation::Paint, |w| w.offset = -10.0)
+        .unwrap();
+    assert_eq!(tree.presented_bounds(child).unwrap().origin.y, 10.0);
+    assert_eq!(calls.get(), count + 1);
+    tree.invalidate(Invalidation::Paint);
+    tree.presented_bounds(child).unwrap();
+    assert_eq!(calls.get(), count + 2);
+}

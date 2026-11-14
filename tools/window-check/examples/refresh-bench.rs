@@ -36,6 +36,7 @@ fn main() {
     );
     for kind in [
         "local_text",
+        "local_text_scoped",
         "color",
         "popup",
         "burst32",

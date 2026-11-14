@@ -9,7 +9,7 @@ mod presenter;
 mod tests;
 mod wake;
 mod widget;
-pub use widget::{ViewAction, ViewApplication, ViewFocusRequest, WidgetHost};
+pub use widget::{ViewAction, ViewApplication, ViewFocusRequest, ViewUpdate, WidgetHost};
 
 pub type ApplicationError = Box<dyn std::error::Error + Send + Sync>;
 

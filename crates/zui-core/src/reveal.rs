@@ -78,6 +78,7 @@ impl Tree {
             };
             let invalidated = parent_node.widget.reveal_child(context, area);
             if invalidated {
+                self.presentation_cache.invalidate();
                 self.paint_dirty.insert(parent);
             }
             self.dirty = self.dirty.max(if invalidated {

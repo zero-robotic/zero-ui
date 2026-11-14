@@ -9,6 +9,8 @@ struct Tree {
     writes: usize,
     measures: Vec<MeasureInput>,
     fail: bool,
+    keys: BTreeMap<NodeId, LayoutCacheKey>,
+    measured_ids: Vec<NodeId>,
 }
 struct Node {
     style: LayoutStyle,
@@ -33,6 +35,9 @@ impl Tree {
     }
 }
 impl LayoutTree for Tree {
+    fn cache_key(&self, id: NodeId) -> Option<LayoutCacheKey> {
+        self.keys.get(&id).cloned()
+    }
     fn node(&self, id: NodeId) -> Option<LayoutNode<'_>> {
         self.nodes.get(&id).map(|n| LayoutNode {
             style: &n.style,
@@ -41,6 +46,7 @@ impl LayoutTree for Tree {
     }
     fn measure(&mut self, id: NodeId, input: MeasureInput) -> Result<Size, LayoutError> {
         self.measures.push(input);
+        self.measured_ids.push(id);
         if self.fail {
             return Err(LayoutError::MeasurementFailed(id));
         }
@@ -584,5 +590,108 @@ fn unsupported_intrinsic_min_max_bounds_are_rejected_without_publishing() {
             Err(LayoutError::InvalidStyle(NodeId(1)))
         );
         assert_eq!(tree.writes, 0);
+    }
+}
+
+fn cached_fixture() -> Tree {
+    let mut tree = Tree::default();
+    tree.add(1, root(LayoutKind::Column), &[2, 3], Size::ZERO);
+    tree.add(2, LayoutStyle::default(), &[], Size::new(50.0, 10.0));
+    tree.add(3, LayoutStyle::default(), &[], Size::new(70.0, 15.0));
+    tree.keys = tree
+        .nodes
+        .keys()
+        .map(|&id| (id, LayoutCacheKey::default()))
+        .collect();
+    tree
+}
+fn matches_fresh(tree: &mut Tree, engine: &mut TaffyLayout, size: Size) {
+    engine.compute(tree, NodeId(1), size).unwrap();
+    let cached: Vec<_> = tree.nodes.values().map(|n| n.layout).collect();
+    TaffyLayout::default()
+        .compute(tree, NodeId(1), size)
+        .unwrap();
+    assert_eq!(
+        cached,
+        tree.nodes.values().map(|n| n.layout).collect::<Vec<_>>()
+    );
+}
+#[test]
+fn cross_pass_cache_reuses_siblings_and_invalidates_changed_measurement() {
+    let mut tree = cached_fixture();
+    let mut engine = TaffyLayout::default();
+    let size = Size::new(200.0, 200.0);
+    engine.compute(&mut tree, NodeId(1), size).unwrap();
+    tree.measured_ids.clear();
+    engine.compute(&mut tree, NodeId(1), size).unwrap();
+    assert!(tree.measured_ids.is_empty());
+    tree.nodes.get_mut(&NodeId(2)).unwrap().natural.height = 30.0;
+    tree.keys.insert(NodeId(2), LayoutCacheKey::default());
+    engine.compute(&mut tree, NodeId(1), size).unwrap();
+    assert!(tree.measured_ids.contains(&NodeId(2)));
+    assert!(!tree.measured_ids.contains(&NodeId(3)));
+    matches_fresh(&mut tree, &mut engine, size);
+    matches_fresh(&mut tree, &mut engine, Size::new(35.0, 100.0));
+    tree.nodes.get_mut(&NodeId(1)).unwrap().children.reverse();
+    matches_fresh(&mut tree, &mut engine, size);
+    tree.nodes.get_mut(&NodeId(3)).unwrap().style.padding = Edges::all(4.0);
+    matches_fresh(&mut tree, &mut engine, size);
+    tree.nodes
+        .get_mut(&NodeId(1))
+        .unwrap()
+        .children
+        .retain(|id| *id != NodeId(2));
+    tree.nodes.remove(&NodeId(2));
+    matches_fresh(&mut tree, &mut engine, size);
+}
+#[test]
+fn cache_isolates_owners_and_recovers_from_failed_passes() {
+    let mut engine = TaffyLayout::default();
+    let size = Size::new(200.0, 200.0);
+    let mut first = cached_fixture();
+    engine.compute(&mut first, NodeId(1), size).unwrap();
+    let mut second = cached_fixture();
+    second.nodes.get_mut(&NodeId(2)).unwrap().natural.height = 45.0;
+    matches_fresh(&mut second, &mut engine, size);
+    second.fail = true;
+    second.keys.insert(NodeId(2), LayoutCacheKey::default());
+    let writes = second.writes;
+    assert!(engine.compute(&mut second, NodeId(1), size).is_err());
+    assert_eq!(second.writes, writes);
+    second.fail = false;
+    matches_fresh(&mut second, &mut engine, size);
+    second.keys.clear();
+    engine.compute(&mut second, NodeId(1), size).unwrap();
+    second.measured_ids.clear();
+    engine.compute(&mut second, NodeId(1), size).unwrap();
+    assert!(
+        !second.measured_ids.is_empty(),
+        "legacy owners remain uncached"
+    );
+}
+
+#[test]
+fn cached_flex_grid_and_stack_match_fresh_layout_after_reorder_and_resize() {
+    for kind in [LayoutKind::Row, LayoutKind::Grid, LayoutKind::Stack] {
+        let mut tree = cached_fixture();
+        let style = &mut tree.nodes.get_mut(&NodeId(1)).unwrap().style;
+        style.kind = kind;
+        if kind == LayoutKind::Grid {
+            style.columns = vec![Track::Fraction(1.0), Track::Fraction(2.0)];
+        }
+        let mut engine = TaffyLayout::default();
+        for size in [
+            Size::new(200.0, 100.0),
+            Size::new(40.0, 80.0),
+            Size::new(200.0, 100.0),
+        ] {
+            matches_fresh(&mut tree, &mut engine, size);
+            matches_fresh(&mut tree, &mut engine, size);
+            tree.nodes.get_mut(&NodeId(1)).unwrap().children.reverse();
+            matches_fresh(&mut tree, &mut engine, size);
+            tree.nodes.get_mut(&NodeId(2)).unwrap().natural.height += 10.0;
+            tree.keys.insert(NodeId(2), LayoutCacheKey::default());
+            matches_fresh(&mut tree, &mut engine, size);
+        }
     }
 }

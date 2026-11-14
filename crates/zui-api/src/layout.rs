@@ -1,5 +1,5 @@
 //! Logical layout contracts. No platform, renderer or layout-library types escape here.
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use core::fmt;
 use zui_types::{Rect, Size};
 
@@ -193,9 +193,32 @@ pub struct LayoutNode<'a> {
     pub children: &'a [NodeId],
 }
 
+/// Opaque identity for unchanged intrinsic measurement inputs. Keep a clone while
+/// inputs are unchanged; replace it on content/resource changes. Identity, not
+/// numeric node IDs, isolates trees and prevents reuse after an owner is dropped.
+#[derive(Clone, Debug)]
+pub struct LayoutCacheKey(Arc<()>);
+impl Default for LayoutCacheKey {
+    fn default() -> Self {
+        Self(Arc::new(()))
+    }
+}
+impl PartialEq for LayoutCacheKey {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for LayoutCacheKey {}
+
 /// The owner guarantees stable topology/styles during a compute call.
 /// Measurement can update private text/image caches, but cannot mutate the tree.
 pub trait LayoutTree {
+    /// Opt in to cross-call measurement caching. None conservatively disables
+    /// reuse for this node. Styles, child order and viewport are checked by the
+    /// engine separately. A key must never be shared by distinct node instances.
+    fn cache_key(&self, _id: NodeId) -> Option<LayoutCacheKey> {
+        None
+    }
     /// Optional preferred layout box ratio. Concrete controls remain opaque.
     fn preferred_aspect_ratio(&self, _id: NodeId) -> Option<f32> {
         None

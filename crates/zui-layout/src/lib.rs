@@ -23,14 +23,18 @@ impl Default for LayoutLimits {
 }
 
 /// Uses the caller's stable IDs and topology, never a second TaffyTree.
-/// Caches are per compute pass until the runtime supplies an invalidation protocol.
+/// Retains engine-private caches only for owners supplying stable cache keys.
 #[derive(Default)]
 pub struct TaffyLayout {
     limits: LayoutLimits,
+    nodes: BTreeMap<NodeId, adapter::Entry>,
 }
 impl TaffyLayout {
     pub fn new(limits: LayoutLimits) -> Self {
-        Self { limits }
+        Self {
+            limits,
+            nodes: BTreeMap::new(),
+        }
     }
 }
 
@@ -47,13 +51,17 @@ impl LayoutEngine for TaffyLayout {
         {
             return Err(LayoutError::InvalidViewport);
         }
-        let mut nodes = BTreeMap::new();
+        // Take before validation: a failed pass must never publish reusable caches.
+        let mut nodes = core::mem::take(&mut self.nodes);
+        let mut visited = std::collections::BTreeSet::new();
+        let mut order = Vec::new();
+        let mut dirty = std::collections::BTreeSet::new();
         let mut pending = vec![(root, 1, false)];
         while let Some((id, depth, stacked)) = pending.pop() {
-            if nodes.contains_key(&id) {
+            if visited.contains(&id) {
                 return Err(LayoutError::RepeatedNode(id));
             }
-            if nodes.len() >= self.limits.max_nodes || depth > self.limits.max_depth {
+            if visited.len() >= self.limits.max_nodes || depth > self.limits.max_depth {
                 return Err(LayoutError::BudgetExceeded);
             }
             let node = tree.node(id).ok_or(LayoutError::MissingNode(id))?;
@@ -61,7 +69,7 @@ impl LayoutEngine for TaffyLayout {
                 > self
                     .limits
                     .max_nodes
-                    .saturating_sub(nodes.len() + pending.len())
+                    .saturating_sub(visited.len() + pending.len())
                 || node.style.columns.len() > self.limits.max_tracks_per_axis
                 || node.style.rows.len() > self.limits.max_tracks_per_axis
                 || (node.style.kind == LayoutKind::Stack && self.limits.max_tracks_per_axis == 0)
@@ -71,32 +79,60 @@ impl LayoutEngine for TaffyLayout {
             if node.style.kind == LayoutKind::Leaf && !node.children.is_empty() {
                 return Err(LayoutError::InvalidStyle(id));
             }
-            let mut converted = style::convert(node.style).ok_or(LayoutError::InvalidStyle(id))?;
-            if let Some(ratio) = tree.preferred_aspect_ratio(id) {
-                if !ratio.is_finite() || ratio <= 0.0 {
-                    return Err(LayoutError::InvalidStyle(id));
+            let ratio = tree.preferred_aspect_ratio(id);
+            if ratio.is_some_and(|ratio| !ratio.is_finite() || ratio <= 0.0) {
+                return Err(LayoutError::InvalidStyle(id));
+            }
+            let same_style = nodes.get(&id).is_some_and(|entry| {
+                entry.source_style == *node.style
+                    && entry.ratio == ratio
+                    && entry.stacked == stacked
+            });
+            if !same_style {
+                let mut converted =
+                    style::convert(node.style).ok_or(LayoutError::InvalidStyle(id))?;
+                converted.aspect_ratio = ratio;
+                // Stack placement belongs to the adapter, not public node identity.
+                if stacked {
+                    converted.grid_column = taffy::Line {
+                        start: taffy::style_helpers::line(1),
+                        end: taffy::style_helpers::span(1),
+                    };
+                    converted.grid_row = converted.grid_column.clone();
                 }
-                converted.aspect_ratio = Some(ratio);
+                let mut entry = adapter::Entry::new(node.style.kind, converted);
+                entry.source_style = node.style.clone();
+                entry.ratio = ratio;
+                entry.stacked = stacked;
+                nodes.insert(id, entry);
+                dirty.insert(id);
             }
-            // Stack uses one shared grid cell. Placement is an adapter detail;
-            // children keep their own sizing/alignment and nested layout kind.
-            if stacked {
-                converted.grid_column = taffy::Line {
-                    start: taffy::style_helpers::line(1),
-                    end: taffy::style_helpers::span(1),
-                };
-                converted.grid_row = taffy::Line {
-                    start: taffy::style_helpers::line(1),
-                    end: taffy::style_helpers::span(1),
-                };
+            let entry = nodes.get_mut(&id).expect("prepared node");
+            let key = tree.cache_key(id);
+            if key.is_none() || entry.key != key || entry.children != node.children {
+                dirty.insert(id);
             }
-            nodes.insert(id, adapter::Entry::new(node.style.kind, converted));
+            entry.key = key;
+            if entry.children != node.children {
+                entry.children = node.children.to_vec();
+            }
+            visited.insert(id);
+            order.push(id);
             pending.extend(
                 node.children
                     .iter()
                     .rev()
                     .map(|child| (*child, depth + 1, node.style.kind == LayoutKind::Stack)),
             );
+        }
+        nodes.retain(|id, _| visited.contains(id));
+        // A changed descendant invalidates ancestors, while sibling caches remain.
+        for id in order.into_iter().rev() {
+            let entry = nodes.get_mut(&id).expect("validated node");
+            if dirty.contains(&id) || entry.children.iter().any(|id| dirty.contains(id)) {
+                entry.cache.clear();
+                dirty.insert(id);
+            }
         }
         let mut adapter = adapter::Adapter {
             tree,
@@ -152,6 +188,7 @@ impl LayoutEngine for TaffyLayout {
         for (id, layout) in results? {
             adapter.tree.set_layout(id, layout);
         }
+        self.nodes = adapter.nodes;
         Ok(())
     }
 }

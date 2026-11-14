@@ -493,3 +493,60 @@ fn partial_validation_accounts_for_external_nodes_and_absolute_depth_atomically(
     );
     assert_eq!(tree.len(), 2);
 }
+
+#[test]
+fn subtree_reconcile_updates_only_selected_branch_and_validates_atomically() {
+    let stats = Shared::default();
+    let mut tree = Tree::from_view(
+        parent(&stats, vec![keyed(&stats, 1), keyed(&stats, 2)]),
+        TreeLimits::default(),
+    )
+    .unwrap();
+    clean(&mut tree);
+    let ids = tree.children(tree.root()).unwrap().to_vec();
+    tree.update_widget::<Stateful>(ids[0], Invalidation::None, |w| w.local_state = 42)
+        .unwrap();
+    let updates = stats.borrow().updates;
+    let report = tree
+        .reconcile_subtree(ids[0], leaf(&stats, 9).keyed(1_u64))
+        .unwrap();
+    assert_eq!(report.reused, 1);
+    assert_eq!(stats.borrow().updates, updates + 1);
+    assert_eq!(state(&mut tree, ids[0]), (9, 42));
+    assert_eq!(state(&mut tree, ids[1]), (2, 0));
+    let updates = stats.borrow().updates;
+    assert_eq!(
+        tree.reconcile_subtree(ids[0], keyed(&stats, 2)),
+        Err(TreeError::DuplicateKey(Key::Number(2)))
+    );
+    assert_eq!(stats.borrow().updates, updates);
+    assert_eq!(tree.children(tree.root()).unwrap(), ids);
+    let report = tree.reconcile_subtree(ids[0], keyed(&stats, 3)).unwrap();
+    assert_eq!((report.created, report.removed), (1, 1));
+    assert!(!tree.contains(ids[0]));
+    assert_eq!(tree.children(tree.root()).unwrap()[1], ids[1]);
+    assert!(matches!(
+        tree.reconcile_subtree(ids[0], keyed(&stats, 4)),
+        Err(TreeError::MissingNode(_))
+    ));
+}
+#[test]
+fn subtree_reconcile_respects_absolute_depth_and_total_budget() {
+    let stats = Shared::default();
+    let mut tree = Tree::from_view(
+        parent(&stats, vec![keyed(&stats, 1), keyed(&stats, 2)]),
+        TreeLimits {
+            max_nodes: 3,
+            max_depth: 2,
+        },
+    )
+    .unwrap();
+    let child = tree.children(tree.root()).unwrap()[0];
+    let updates = stats.borrow().updates;
+    assert_eq!(
+        tree.reconcile_subtree(child, parent(&stats, vec![keyed(&stats, 3)]).keyed(1_u64)),
+        Err(TreeError::BudgetExceeded)
+    );
+    assert_eq!(stats.borrow().updates, updates);
+    assert_eq!(tree.len(), 3);
+}

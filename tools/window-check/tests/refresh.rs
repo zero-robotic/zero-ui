@@ -130,3 +130,83 @@ fn profiling_is_opt_in_and_reset_preserves_enabled_state() {
     assert!(host.profiling_enabled());
     assert_eq!(host.refresh_metrics().rebuild_requests, 0);
 }
+
+#[test]
+fn scoped_updates_coalesce_and_match_full_rebuild_geometry_and_scene() {
+    struct Scoped {
+        value: usize,
+        scoped: bool,
+    }
+    impl Scoped {
+        fn child(&self) -> View {
+            column([])
+                .style(|s| {
+                    s.width = Dimension::Length(100.0 + self.value as f32);
+                    s.height = Dimension::Length(20.0);
+                })
+                .background(zui_types::Color::WHITE)
+                .build()
+                .keyed(1_u64)
+        }
+    }
+    impl ViewApplication for Scoped {
+        type Message = ();
+        fn view(&self) -> View {
+            column([self.child(), column([]).build().keyed(2_u64)]).build()
+        }
+        fn view_update(&self, tree: &zui_core::Tree) -> zui_app::ViewUpdate {
+            if self.scoped {
+                zui_app::ViewUpdate::Subtree {
+                    root: tree.children(tree.root()).unwrap()[0],
+                    view: self.child(),
+                }
+            } else {
+                zui_app::ViewUpdate::Root(self.view())
+            }
+        }
+        fn update(&mut self, event: WindowEvent, _: WindowMetrics, _: Duration) -> ViewAction {
+            if event == WindowEvent::Wake {
+                self.value += 1;
+                ViewAction::rebuild()
+            } else {
+                ViewAction::default()
+            }
+        }
+    }
+    let make = |scoped| {
+        WidgetHost::new(
+            Scoped { value: 0, scoped },
+            zui_layout::TaffyLayout::default(),
+            ParleyText::default(),
+            Default::default(),
+        )
+        .unwrap()
+    };
+    let mut full = make(false);
+    let mut scoped = make(true);
+    let mut full_scene = zui_paint::Scene::new();
+    let mut scoped_scene = zui_paint::Scene::new();
+    full.draw(&mut full_scene, metrics(), Duration::ZERO)
+        .unwrap();
+    scoped
+        .draw(&mut scoped_scene, metrics(), Duration::ZERO)
+        .unwrap();
+    scoped.set_profiling(true);
+    for host in [&mut full, &mut scoped] {
+        host.update_batch(vec![WindowEvent::Wake; 32], metrics(), Duration::ZERO)
+            .unwrap();
+    }
+    full.draw(&mut full_scene, metrics(), Duration::ZERO)
+        .unwrap();
+    scoped
+        .draw(&mut scoped_scene, metrics(), Duration::ZERO)
+        .unwrap();
+    assert_eq!(full_scene.commands(), scoped_scene.commands());
+    assert_eq!(scoped.refresh_metrics().phase(RefreshPhase::View).calls, 1);
+    assert_eq!(scoped.refresh_metrics().coalesced_rebuilds, 31);
+    let child = scoped.tree().children(scoped.tree().root()).unwrap()[0];
+    assert_eq!(
+        scoped.tree().layout_box(child).unwrap().bounds.size.width,
+        132.0
+    );
+}

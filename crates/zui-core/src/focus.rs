@@ -83,6 +83,7 @@ impl Tree {
             });
             self.dirty = self.dirty.max(response.invalidation);
             if response.invalidation != zui_api::widget::Invalidation::None {
+                self.presentation_cache.invalidate();
                 self.paint_dirty.insert(id);
             }
             actions.extend(
@@ -123,6 +124,7 @@ impl Tree {
                 let response = node.widget.navigate_focus(navigation);
                 self.dirty = self.dirty.max(response.invalidation);
                 if response.invalidation != zui_api::widget::Invalidation::None {
+                    self.presentation_cache.invalidate();
                     self.paint_dirty.insert(id);
                 }
                 actions.extend(

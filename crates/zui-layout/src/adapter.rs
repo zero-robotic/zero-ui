@@ -3,11 +3,16 @@ use taffy::{CacheTree, LayoutPartialTree};
 use zui_api::layout::{AvailableSpace, LayoutError, LayoutKind, LayoutTree, MeasureInput, NodeId};
 
 pub(crate) struct Entry {
-    kind: LayoutKind,
-    style: taffy::Style,
-    cache: taffy::Cache,
+    pub kind: LayoutKind,
+    pub style: taffy::Style,
+    pub cache: taffy::Cache,
     pub layout: taffy::Layout,
     hoisted: Vec<taffy::NodeId>,
+    pub key: Option<zui_api::layout::LayoutCacheKey>,
+    pub children: Vec<NodeId>,
+    pub source_style: zui_api::layout::LayoutStyle,
+    pub ratio: Option<f32>,
+    pub stacked: bool,
 }
 impl Entry {
     pub fn new(kind: LayoutKind, style: taffy::Style) -> Self {
@@ -17,6 +22,11 @@ impl Entry {
             cache: taffy::Cache::new(),
             layout: taffy::Layout::default(),
             hoisted: Vec::new(),
+            key: None,
+            children: Vec::new(),
+            source_style: Default::default(),
+            ratio: None,
+            stacked: false,
         }
     }
 }

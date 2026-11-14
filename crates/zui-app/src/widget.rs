@@ -39,11 +39,24 @@ impl ViewAction {
     }
 }
 
+/// Description chosen at the coalesced rebuild boundary. Applications may select
+/// one affected subtree, or the root when changes span independent branches.
+pub enum ViewUpdate {
+    Root(View),
+    Subtree { root: NodeId, view: View },
+}
+
 /// Application-owned state and typed messages. Only unhandled window input is
 /// offered to `update`; control actions are mapped after propagation finishes.
 pub trait ViewApplication {
     type Message;
     fn view(&self) -> View;
+    /// Resolve scope against the current tree after all pending model updates.
+    /// Include every changed property; choose Root if scope is uncertain. The
+    /// default preserves existing behavior. Missing/stale subtree IDs are errors.
+    fn view_update(&self, _tree: &Tree) -> ViewUpdate {
+        ViewUpdate::Root(self.view())
+    }
     /// Called after reconciliation and successful layout, before input/drawing.
     /// Resolve pending intent using current keys/IDs and consume it when returning
     /// Some. None leaves focus unchanged. This may run multiple times per frame;
@@ -132,10 +145,13 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> WidgetHost<M, L, T> {
     fn prepare(&mut self, metrics: WindowMetrics) -> Result<(), TreeError> {
         if self.rebuild {
             let started = self.profiler.start();
-            let view = self.model.view();
+            let update = self.model.view_update(&self.tree);
             self.profiler.finish(RefreshPhase::View, started);
             let started = self.profiler.start();
-            let result = self.tree.reconcile(view);
+            let result = match update {
+                ViewUpdate::Root(view) => self.tree.reconcile(view),
+                ViewUpdate::Subtree { root, view } => self.tree.reconcile_subtree(root, view),
+            };
             self.profiler.finish(RefreshPhase::Reconcile, started);
             if let Err(error) = result {
                 self.ime = None;

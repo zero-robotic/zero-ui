@@ -21,6 +21,11 @@ struct LayoutAdapter<'a> {
     text: &'a mut dyn TextService,
 }
 impl LayoutTree for LayoutAdapter<'_> {
+    fn cache_key(&self, id: NodeId) -> Option<zui_api::layout::LayoutCacheKey> {
+        self.nodes
+            .get(&id)
+            .map(|node| node.layout_cache_key.clone())
+    }
     fn preferred_aspect_ratio(&self, id: NodeId) -> Option<f32> {
         self.nodes
             .get(&id)
@@ -145,6 +150,12 @@ impl Tree {
         if !viewport.is_valid() {
             return Err(LayoutError::InvalidViewport.into());
         }
+        for (&id, node) in &mut self.nodes {
+            if self.text_epoch != Some(epoch) || self.paint_dirty.contains(&id) {
+                node.layout_cache_key = Default::default();
+            }
+        }
+        self.presentation_cache.invalidate();
         let mut adapter = LayoutAdapter {
             nodes: &mut self.nodes,
             outputs: BTreeMap::new(),

@@ -39,6 +39,7 @@ impl Tree {
                 .children_prepared(context, &children)?;
             self.dirty = self.dirty.max(invalidation);
             if invalidation != zui_api::widget::Invalidation::None {
+                self.presentation_cache.invalidate();
                 self.paint_dirty.insert(id);
             }
         }

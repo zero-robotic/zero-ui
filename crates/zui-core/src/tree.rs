@@ -14,6 +14,7 @@ use zui_types::{NodeId, Size};
 
 pub(crate) struct Node {
     pub key: Option<Key>,
+    pub layout_cache_key: zui_api::layout::LayoutCacheKey,
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
     pub child_ownership: ChildOwnership,
@@ -77,6 +78,7 @@ impl From<LayoutError> for TreeError {
 /// IDs are scoped to one tree and never reused during its lifetime. Topology can
 /// only change through validated operations; callers cannot mutate child arrays.
 pub struct Tree {
+    pub(crate) presentation_cache: crate::presentation::PresentationCache,
     pub(crate) paint_dirty: BTreeSet<NodeId>,
     pub(crate) paint_cache: crate::paint_cache::PaintCache,
     pub(crate) events: crate::event::EventState,
@@ -103,6 +105,7 @@ impl Tree {
         widget.lifecycle(root, Lifecycle::Mounted);
         let node = Node {
             key: None,
+            layout_cache_key: Default::default(),
             parent: None,
             children: Vec::new(),
             child_ownership: ChildOwnership::Declarative,
@@ -113,6 +116,7 @@ impl Tree {
             clip: false,
         };
         Ok(Self {
+            presentation_cache: Default::default(),
             paint_dirty: BTreeSet::new(),
             paint_cache: Default::default(),
             events: Default::default(),
@@ -144,7 +148,13 @@ impl Tree {
     /// Use for external resource changes or replacing the injected layout service.
     pub fn invalidate(&mut self, invalidation: Invalidation) {
         if invalidation != Invalidation::None {
+            self.presentation_cache.invalidate();
             self.paint_cache.clear();
+        }
+        if invalidation == Invalidation::Layout {
+            for node in self.nodes.values_mut() {
+                node.layout_cache_key = Default::default();
+            }
         }
         self.dirty = self.dirty.max(invalidation);
     }
@@ -216,6 +226,7 @@ impl Tree {
             id,
             Node {
                 key: None,
+                layout_cache_key: Default::default(),
                 parent: Some(parent),
                 children: Vec::new(),
                 child_ownership: ChildOwnership::Declarative,
@@ -232,6 +243,7 @@ impl Tree {
             .children
             .insert(index, id);
         self.next_id = next;
+        self.presentation_cache.invalidate();
         self.paint_dirty.insert(parent);
         self.dirty = Invalidation::Layout;
         Ok(id)
@@ -244,6 +256,7 @@ impl Tree {
             return Err(TreeError::LeafHasChildren);
         }
         if node.style != style {
+            self.presentation_cache.invalidate();
             self.paint_dirty.insert(id);
             node.style = style;
             self.dirty = Invalidation::Layout;
@@ -253,6 +266,7 @@ impl Tree {
     pub fn set_clip(&mut self, id: NodeId, clip: bool) -> Result<(), TreeError> {
         let node = self.nodes.get_mut(&id).ok_or(TreeError::MissingNode(id))?;
         if node.clip != clip {
+            self.presentation_cache.invalidate();
             self.paint_dirty.insert(id);
             node.clip = clip;
             self.dirty = self.dirty.max(Invalidation::Paint);
@@ -274,6 +288,7 @@ impl Tree {
         self.dirty = self.dirty.max(invalidation);
         update(widget);
         if invalidation != Invalidation::None {
+            self.presentation_cache.invalidate();
             self.paint_dirty.insert(id);
         }
         self.prune_input();
@@ -287,6 +302,7 @@ impl Tree {
             return Err(TreeError::InvalidOrder);
         }
         if node.children != order {
+            self.presentation_cache.invalidate();
             self.paint_dirty.insert(parent);
             self.nodes
                 .get_mut(&parent)
@@ -338,6 +354,7 @@ impl Tree {
             .children
             .insert(index, id);
         self.nodes.get_mut(&id).expect("validated node").parent = Some(parent);
+        self.presentation_cache.invalidate();
         self.paint_dirty.insert(old);
         self.paint_dirty.insert(parent);
         self.dirty = Invalidation::Layout;
@@ -346,6 +363,7 @@ impl Tree {
     pub fn remove(&mut self, id: NodeId) -> Result<(), TreeError> {
         let parent = self.get(id)?.parent.ok_or(TreeError::RootMutation)?;
         let subtree = self.subtree(id);
+        self.presentation_cache.invalidate();
         self.paint_dirty.insert(parent);
         self.nodes
             .get_mut(&parent)

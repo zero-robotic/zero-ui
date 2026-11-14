@@ -306,6 +306,7 @@ impl Tree {
                 );
                 self.dirty = self.dirty.max(response.invalidation);
                 if response.invalidation != Invalidation::None {
+                    self.presentation_cache.invalidate();
                     self.paint_dirty.insert(id);
                 }
                 handled |= response.handled;
@@ -423,6 +424,7 @@ impl Tree {
             // Ownership requests from notifications are ignored to avoid recursive transfers.
             self.dirty = self.dirty.max(response.invalidation);
             if response.invalidation != Invalidation::None {
+                self.presentation_cache.invalidate();
                 self.paint_dirty.insert(id);
             }
         }
