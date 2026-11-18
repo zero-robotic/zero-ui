@@ -19,6 +19,7 @@ pub fn run(config: WindowConfig, handler: impl WindowHandler) -> Result<RunRepor
     }
     let event_loop = EventLoop::new().map_err(backend)?;
     let mut runner = Runner {
+        proxy: event_loop.create_proxy(),
         config,
         handler,
         window: None,
@@ -37,6 +38,7 @@ pub fn run(config: WindowConfig, handler: impl WindowHandler) -> Result<RunRepor
 }
 
 struct Runner<H> {
+    proxy: winit::event_loop::EventLoopProxy<()>,
     config: WindowConfig,
     handler: H,
     window: Option<Arc<DesktopWindow>>,
@@ -101,7 +103,7 @@ impl<H: WindowHandler> ApplicationHandler for Runner<H> {
             .with_decorations(self.config.decorations)
             .with_enabled_buttons(window_buttons(&self.config));
         let window = match event_loop.create_window(attributes) {
-            Ok(window) => Arc::new(DesktopWindow(window)),
+            Ok(window) => Arc::new(DesktopWindow(window, self.proxy.clone())),
             Err(error) => {
                 self.fail(event_loop, backend(error));
                 return;
@@ -115,6 +117,10 @@ impl<H: WindowHandler> ApplicationHandler for Runner<H> {
         }
         self.schedule.apply(WindowAction::redraw());
         self.dispatch(event_loop, WindowEvent::Resumed);
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
+        self.dispatch(event_loop, WindowEvent::ExternalWake);
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {

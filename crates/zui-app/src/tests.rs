@@ -392,3 +392,59 @@ fn explicit_backend_consumes_only_the_selector() {
     assert!(crate::Backend::from_args(&mut args).is_err());
     assert_eq!(args.next().as_deref(), Some("invalid"));
 }
+
+#[test]
+fn external_wake_updates_application_without_consuming_its_timer() {
+    #[derive(Default)]
+    struct App(Vec<WindowEvent>);
+    impl Application for App {
+        fn update(
+            &mut self,
+            event: WindowEvent,
+            _: WindowMetrics,
+            _: Duration,
+        ) -> Result<WindowAction, ApplicationError> {
+            self.0.push(event);
+            Ok(WindowAction::default())
+        }
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: WindowMetrics,
+            _: Duration,
+        ) -> Result<(), ApplicationError> {
+            Ok(())
+        }
+    }
+    let mut driver = Driver {
+        application: App::default(),
+        backend: Backend::Cpu,
+        limits: Default::default(),
+        window: None,
+        presenter: None,
+        scene: Scene::new(),
+        wake: Default::default(),
+        ime: Default::default(),
+        input_available: true,
+    };
+    let deadline = Duration::from_secs(10);
+    driver.wake.application_action(WindowAction {
+        wake_at: Some(deadline),
+        ..Default::default()
+    });
+    let metrics = WindowMetrics {
+        extent: zui_types::Extent::new(100, 100),
+        scale: 1.0,
+        occluded: false,
+    };
+    let response = driver
+        .event(WindowEvent::ExternalWake, metrics, Duration::from_secs(1))
+        .unwrap();
+    assert_eq!(driver.application.0, [WindowEvent::ExternalWake]);
+    assert_eq!(response.wake_at, Some(deadline));
+    driver.event(WindowEvent::Wake, metrics, deadline).unwrap();
+    assert_eq!(
+        driver.application.0,
+        [WindowEvent::ExternalWake, WindowEvent::Wake]
+    );
+}

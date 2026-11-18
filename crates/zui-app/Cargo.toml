@@ -13,6 +13,7 @@ clipboard = ["dep:arboard"]
 clipboard-wayland = ["clipboard", "arboard/wayland-data-control"]
 
 [dependencies]
+zui-state.workspace = true
 arboard = { workspace = true, optional = true }
 zui-types.workspace = true
 zui-api.workspace = true

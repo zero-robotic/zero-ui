@@ -10,6 +10,7 @@ rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+zui-state = { path = "crates/zui-state" }
 zui-opengl = { path = "crates/zui-opengl" }
 zui-image = { path = "crates/zui-image" }
 zui-extras = { path = "crates/zui-extras", default-features = false }

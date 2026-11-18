@@ -2573,6 +2573,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "settings"
+version = "0.1.0"
+dependencies = [
+ "zui-api",
+ "zui-app",
+ "zui-core",
+ "zui-layout",
+ "zui-platform",
+ "zui-text",
+ "zui-theme",
+ "zui-types",
+ "zui-widgets",
+]
+
+[[package]]
 name = "sha3"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4026,6 +4041,7 @@ dependencies = [
  "zui-platform",
  "zui-render-cpu",
  "zui-render-gpu",
+ "zui-state",
  "zui-types",
 ]
 
@@ -4163,6 +4179,10 @@ dependencies = [
  "zui-types",
  "zui-vello",
 ]
+
+[[package]]
+name = "zui-state"
+version = "0.1.0"
 
 [[package]]
 name = "zui-text"

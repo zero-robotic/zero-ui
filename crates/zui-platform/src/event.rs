@@ -9,7 +9,9 @@ pub enum WindowEvent {
     Occluded(bool),
     Input(InputEvent),
     RedrawRequested,
-    /// An application-requested timer or external wakeup fired.
+    /// An application-requested timer fired.
     Wake,
+    /// An external producer requested UI-thread work; independent of timers.
+    ExternalWake,
     CloseRequested,
 }

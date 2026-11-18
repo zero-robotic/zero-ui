@@ -13,6 +13,7 @@ use zui_api::{
 use zui_types::{NodeId, Size};
 
 pub(crate) struct Node {
+    pub marker: Option<zui_api::view::ViewMarker>,
     pub key: Option<Key>,
     pub layout_cache_key: zui_api::layout::LayoutCacheKey,
     pub parent: Option<NodeId>,
@@ -104,6 +105,7 @@ impl Tree {
         let mut widget: Box<dyn Widget> = Box::new(widget);
         widget.lifecycle(root, Lifecycle::Mounted);
         let node = Node {
+            marker: None,
             key: None,
             layout_cache_key: Default::default(),
             parent: None,
@@ -174,6 +176,10 @@ impl Tree {
     pub fn key(&self, id: NodeId) -> Result<Option<&Key>, TreeError> {
         Ok(self.get(id)?.key.as_ref())
     }
+    /// Read an opaque upper-layer association without interpreting its meaning.
+    pub fn view_marker(&self, id: NodeId) -> Result<Option<&zui_api::view::ViewMarker>, TreeError> {
+        Ok(self.get(id)?.marker.as_ref())
+    }
     pub fn style(&self, id: NodeId) -> Result<&LayoutStyle, TreeError> {
         Ok(&self.get(id)?.style)
     }
@@ -225,6 +231,7 @@ impl Tree {
         self.nodes.insert(
             id,
             Node {
+                marker: None,
                 key: None,
                 layout_cache_key: Default::default(),
                 parent: Some(parent),

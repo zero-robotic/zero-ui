@@ -136,3 +136,9 @@ Vello 渲染器、Parley 文本、Taffy 布局、桌面窗口及应用装配不�
 4. 量化 RAM/Flash、峰值分配、帧缓冲策略、绘制与输入延迟，并明确哪些控件和效果可用。
 
 这些工作完成前，项目只声明“保留 MCU 扩展能力，指定可移植库已通过裸机编译”。
+
+## 可观察组件与后台结果
+
+`zui-app::reactive::ReactiveApplication` 是既有 ViewApplication 的可选适配器，提供属性观察、类型化事件与区域更新，不替换 WidgetHost。新应用可从 [应用状态与绑定](state.md) 和 settings 示例开始；已有消息应用继续使用原接口。
+
+NativeWindow 的可选 `event_waker` 返回线程安全 EventWaker。桌面实现产生 ExternalWake，驱动更新而不是直接绘制；应用任务完成队列在 UI 线程消费。无此能力的平台可以主动提交事件处理队列，不需要引入线程或具体任务库到核心。

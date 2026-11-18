@@ -12,12 +12,14 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ALLOWED = {
     "minimal": {"zui-app", "zui-api", "zui-types", "zui-platform", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-core"},
+    "settings": {"zui-app", "zui-api", "zui-types", "zui-platform", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-core"},
     "zui-opengl": {"zui-types", "zui-api", "zui-paint", "zui-core", "zui-layout", "zui-text", "zui-render-cpu"},
     "opengl": {"zui-opengl", "zui-app", "zui-api", "zui-types", "zui-platform", "zui-paint", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-render-cpu"},
     "widget-gallery": {"zui-core", "zui-app", "zui-api", "zui-types", "zui-platform", "zui-paint", "zui-layout", "zui-text", "zui-theme", "zui-widgets"},
     "dashboard": {"zui-core", "zui-app", "zui-api", "zui-types", "zui-platform", "zui-paint", "zui-layout", "zui-text", "zui-theme", "zui-widgets", "zui-extras"},
 
     "zui-types": set(),
+    "zui-state": set(),
     "zui-image": {"zui-types", "zui-paint"},
     "zui-extras": {"zui-paint", "zui-api", "zui-types", "zui-theme", "zui-widgets"},
     "zui-theme": {"zui-types"},
@@ -34,7 +36,7 @@ ALLOWED = {
     "zui-platform": {"zui-types", "zui-paint", "zui-input"},
     "zui-backend-winit": {"zui-types", "zui-paint", "zui-platform"},
     "zui-app": {
-        "zui-api", "zui-core",
+        "zui-api", "zui-core", "zui-state",
         "zui-types", "zui-paint", "zui-platform", "zui-backend-winit",
         "zui-render-cpu", "zui-render-gpu",
     },
@@ -90,7 +92,7 @@ def main():
         ("cpu", {"wgpu", "wgpu-core", "wgpu-hal", "vello_gpu", "zui-render-gpu"}),
         ("gpu", {"vello_cpu", "zui-render-cpu"}),
     ):
-        for application in ("minimal", "zui-render-check", "zui-window-check", "widget-gallery", "dashboard"):
+        for application in ("minimal", "settings", "zui-render-check", "zui-window-check", "widget-gallery", "dashboard"):
             selected = selected_dependencies(application, ["--features", feature])
             for dependency in selected & forbidden:
                 failures.append(f"{application} {feature}-only build unexpectedly depends on {dependency}")

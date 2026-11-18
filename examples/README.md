@@ -5,6 +5,7 @@
 | 示例 | 适合学习 | 启动方式 |
 | --- | --- | --- |
 | [minimal](minimal/README.md) | 最小窗口、View、Action 和状态更新 | `cargo run -p minimal --locked` |
+| [settings](settings/README.md) | 共享属性、派生值、局部刷新和后台任务 | `cargo run -p settings --locked` |
 | [widget-gallery](widget-gallery/README.md) | 控件交互、主题、表单和页面组合 | `cargo run -p widget-gallery --locked` |
 | [dashboard](dashboard/README.md) | 定时采样、业务状态和图表联动 | `cargo run -p dashboard --locked` |
 | [custom-widget](custom-widget/README.md) | 用公共 Widget/Painter 契约扩展控件 | 库示例，按 README 运行集成测试 |

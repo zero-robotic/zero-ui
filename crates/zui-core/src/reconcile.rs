@@ -378,6 +378,7 @@ fn apply(tree: &mut Tree, plan: Plan, parent: Option<NodeId>, report: &mut Recon
             tree.paint_dirty.insert(id);
             tree.dirty = tree.dirty.max(Invalidation::Paint);
         }
+        node.marker = view.marker;
         node.layout_tag = view.layout_tag;
         node.child_ownership = view.child_ownership;
         node.style = view.style;
@@ -391,6 +392,7 @@ fn apply(tree: &mut Tree, plan: Plan, parent: Option<NodeId>, report: &mut Recon
         tree.nodes.insert(
             id,
             Node {
+                marker: view.marker,
                 key: view.key,
                 layout_cache_key: Default::default(),
                 parent,

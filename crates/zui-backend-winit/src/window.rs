@@ -8,7 +8,13 @@ use winit::{
 use zui_platform::{NativeWindow, WindowMetrics};
 use zui_types::{Extent, Rect, Size};
 
-pub(crate) struct DesktopWindow(pub Window);
+pub(crate) struct DesktopWindow(pub Window, pub winit::event_loop::EventLoopProxy<()>);
+struct DesktopWaker(winit::event_loop::EventLoopProxy<()>);
+impl zui_platform::EventWaker for DesktopWaker {
+    fn wake(&self) -> Result<(), zui_platform::PlatformError> {
+        self.0.send_event(()).map_err(crate::backend)
+    }
+}
 
 impl HasWindowHandle for DesktopWindow {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
@@ -28,6 +34,9 @@ impl NativeWindow for DesktopWindow {
             scale: self.0.scale_factor(),
             occluded: false,
         }
+    }
+    fn event_waker(&self) -> Option<std::sync::Arc<dyn zui_platform::EventWaker>> {
+        Some(std::sync::Arc::new(DesktopWaker(self.1.clone())))
     }
     fn request_redraw(&self) {
         self.0.request_redraw();

@@ -36,3 +36,22 @@ pub struct ActionEvent {
     pub source: NodeId,
     pub action: WidgetAction,
 }
+
+/// Primary typed action exposed by a declarative control. Assembly adapters can
+/// connect a handler without knowing the concrete widget or erasing its payload.
+/// Controls may additionally emit diagnostic or secondary action payloads.
+pub trait ActionView: Sized + 'static {
+    type Action: 'static;
+    fn set_action(&mut self, action: ActionId);
+    /// Convert either a leaf spec or a composite control into a description.
+    fn into_view(self) -> crate::view::View;
+}
+
+/// A controlled value and the primary action requesting its replacement.
+/// This describes the control contract, not state ownership or subscriptions.
+pub trait ValueView: ActionView {
+    type Value: Clone + PartialEq + 'static;
+    fn set_value(&mut self, value: Self::Value);
+    /// None for secondary actions such as submission or rejection.
+    fn requested_value(action: &Self::Action) -> Option<Self::Value>;
+}

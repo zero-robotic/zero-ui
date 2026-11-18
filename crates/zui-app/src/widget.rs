@@ -51,6 +51,18 @@ pub enum ViewUpdate {
 pub trait ViewApplication {
     type Message;
     fn view(&self) -> View;
+    /// Observable adapters report pending changes without manual rebuild flags.
+    fn view_is_dirty(&self) -> bool {
+        false
+    }
+    /// Invoked after propagation. Default preserves the existing message API.
+    fn action(&mut self, event: &ActionEvent, tree: &Tree) -> ViewAction {
+        if let Some(message) = self.map_action_with_tree(event, tree) {
+            self.message(message)
+        } else {
+            ViewAction::default()
+        }
+    }
     /// Resolve scope against the current tree after all pending model updates.
     /// Include every changed property; choose Root if scope is uncertain. The
     /// default preserves existing behavior. Missing/stale subtree IDs are errors.
@@ -143,6 +155,7 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> WidgetHost<M, L, T> {
         &self.tree
     }
     fn prepare(&mut self, metrics: WindowMetrics) -> Result<(), TreeError> {
+        self.rebuild |= self.model.view_is_dirty();
         if self.rebuild {
             let started = self.profiler.start();
             let update = self.model.view_update(&self.tree);
@@ -218,10 +231,8 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> WidgetHost<M, L, T> {
     }
     fn dispatch_actions(&mut self, events: Vec<ActionEvent>, action: &mut WindowAction) {
         for event in events {
-            if let Some(message) = self.model.map_action_with_tree(&event, &self.tree) {
-                let response = self.model.message(message);
-                self.apply(response, action);
-            }
+            let response = self.model.action(&event, &self.tree);
+            self.apply(response, action);
         }
     }
     fn refresh_ime(&mut self, metrics: WindowMetrics) -> Result<(), TreeError> {
@@ -246,12 +257,13 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> WidgetHost<M, L, T> {
         Ok(())
     }
     fn apply(&mut self, response: ViewAction, action: &mut WindowAction) {
-        if self.profiler.enabled && response.rebuild {
+        let changed = response.rebuild || self.model.view_is_dirty();
+        if self.profiler.enabled && changed {
             self.profiler.metrics.rebuild_requests += 1;
             self.profiler.metrics.coalesced_rebuilds += u64::from(self.rebuild);
         }
-        self.rebuild |= response.rebuild;
-        action.redraw |= response.window.redraw || response.rebuild;
+        self.rebuild |= changed;
+        action.redraw |= response.window.redraw || changed;
         action.exit |= response.window.exit;
         action.wake_at = match (action.wake_at, response.window.wake_at) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -418,6 +430,7 @@ impl<M: ViewApplication, L: LayoutEngine, T: TextService> Application for Widget
             self.apply(response, &mut action);
         }
         let animated = self.advance(metrics, elapsed, &mut action)?;
+        self.rebuild |= self.model.view_is_dirty();
         action.redraw |= animated;
         action.redraw |=
             self.rebuild || metrics_changed || self.tree.invalidation() != Invalidation::None;

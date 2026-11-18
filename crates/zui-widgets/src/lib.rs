@@ -2,6 +2,7 @@
 #![no_std]
 extern crate alloc;
 mod accordion;
+mod binding;
 pub mod edit;
 pub mod virtualization;
 pub use accordion::{

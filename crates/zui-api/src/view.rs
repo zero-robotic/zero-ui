@@ -3,7 +3,7 @@ use crate::{
     layout::LayoutStyle,
     widget::{Invalidation, LayoutTag, Widget},
 };
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use core::any::{Any, TypeId};
 
 /// Unique among siblings, not globally. Text and numeric keys are distinct.
@@ -27,6 +27,17 @@ impl From<String> for Key {
         Self::Text(value)
     }
 }
+
+/// Opaque association for upper-layer view owners. Does not affect matching,
+/// layout, or widget behavior. Clones identify the same association.
+#[derive(Clone, Debug, Default)]
+pub struct ViewMarker(Arc<()>);
+impl PartialEq for ViewMarker {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for ViewMarker {}
 
 /// Implement alongside a widget to separate current properties from local state.
 /// `build` is called only for new instances. `update` must preserve local state
@@ -69,6 +80,7 @@ pub enum ChildOwnership {
 /// Unkeyed children match by absolute sibling position. Keyed children match by
 /// key within the same reused parent. A changed widget type replaces its subtree.
 pub struct View {
+    pub marker: Option<ViewMarker>,
     pub key: Option<Key>,
     pub style: LayoutStyle,
     pub clip: bool,
@@ -80,6 +92,7 @@ pub struct View {
 impl View {
     pub fn new(spec: impl ViewSpec) -> Self {
         Self {
+            marker: None,
             key: None,
             style: LayoutStyle::default(),
             clip: false,

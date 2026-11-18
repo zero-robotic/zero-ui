@@ -58,11 +58,21 @@ impl Default for WindowConfig {
     }
 }
 
+/// Thread-safe event-loop wake capability. It carries no UI or business data.
+pub trait EventWaker: Send + Sync {
+    fn wake(&self) -> Result<(), PlatformError>;
+}
+
 /// Desktop native-handle interoperability is isolated in this platform contract.
 /// Future bare-metal display drivers do not need to implement NativeWindow.
 pub trait NativeWindow: HasWindowHandle + HasDisplayHandle + Send + Sync {
     fn metrics(&self) -> WindowMetrics;
     fn request_redraw(&self);
+    /// Optional external wake support; background result dispatch uses this
+    /// instead of polling or requesting a render without updating the model.
+    fn event_waker(&self) -> Option<Arc<dyn EventWaker>> {
+        None
+    }
     fn request_size(&self, size: Size);
     fn set_title(&self, title: &str);
     /// Begin a native window move from a primary pointer press in custom chrome.

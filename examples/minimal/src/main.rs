@@ -1,62 +1,54 @@
-//! Smallest interactive example: state -> view -> action -> state.
-use std::{error::Error, time::Duration};
-use zui_api::{
-    action::{ActionEvent, ActionId},
-    layout::Edges,
-    view::View,
+//! Smallest interactive example: scoped state, declarative view, typed event.
+use std::error::Error;
+use zui_api::{layout::Edges, view::View};
+use zui_app::{
+    Backend, ViewAction, WidgetHost,
+    reactive::{Component, Event, Events, ReactiveApplication},
+    state::{Property, Scope},
 };
-use zui_app::{Backend, ViewAction, ViewApplication, WidgetHost};
-use zui_platform::{WindowConfig, WindowEvent, WindowMetrics};
+use zui_platform::WindowConfig;
 use zui_theme::{Theme, TypeRole};
 use zui_types::Size;
 use zui_widgets::{ButtonActivated, ButtonView, TextView, column};
 
 struct Counter {
-    count: u64,
+    count: Property<u64>,
+    increment: Event<ButtonActivated>,
     families: Vec<String>,
 }
-
-impl ViewApplication for Counter {
-    type Message = ();
-
+impl Counter {
+    fn create(scope: &Scope, events: &mut Events<Self>, families: Vec<String>) -> Self {
+        Self {
+            count: scope.property(0),
+            increment: events.on(|counter: &mut Self, _: &ButtonActivated| {
+                counter
+                    .count
+                    .set(counter.count.get().saturating_add(1))
+                    .expect("live event scope");
+                ViewAction::default()
+            }),
+            families,
+        }
+    }
+}
+impl Component for Counter {
     fn view(&self) -> View {
         let theme = Theme::desktop_dark();
         column([
             View::new(TextView::themed(
                 &theme,
-                format!("点击次数：{}", self.count),
+                format!("点击次数：{}", self.count.get()),
                 self.families.clone(),
                 TypeRole::Heading,
             )),
-            View::new(ButtonView::themed(
-                &theme,
-                "加一",
-                self.families.clone(),
-                ActionId(1),
-            )),
+            self.increment
+                .view(|action| ButtonView::themed(&theme, "加一", self.families.clone(), action)),
         ])
         .style(|style| {
             style.padding = Edges::all(24.0);
             style.gap = Size::new(0.0, 16.0);
         })
         .build()
-    }
-
-    fn map_action(&self, event: &ActionEvent) -> Option<()> {
-        (event.action.id == ActionId(1) && event.action.payload::<ButtonActivated>().is_some())
-            .then_some(())
-    }
-
-    fn message(&mut self, (): ()) -> ViewAction {
-        self.count = self.count.saturating_add(1);
-        ViewAction::rebuild()
-    }
-
-    fn update(&mut self, event: WindowEvent, _: WindowMetrics, _: Duration) -> ViewAction {
-        match event {
-            WindowEvent::CloseRequested => ViewAction::exit(),
-            _ => ViewAction::default(),
-        }
     }
 }
 
@@ -70,7 +62,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut text = zui_text::ParleyText::with_system_fonts(Default::default());
     let families = text.resolve_families(&[])?;
     let host = WidgetHost::new(
-        Counter { count: 0, families },
+        ReactiveApplication::new(|scope, events| Counter::create(scope, events, families)),
         zui_layout::TaffyLayout::default(),
         text,
         Default::default(),
@@ -89,3 +81,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod regions;

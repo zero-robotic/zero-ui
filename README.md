@@ -93,12 +93,13 @@ cargo run -p minimal --no-default-features --features gpu --locked -- gpu
 | 示例 | 启动命令 | 说明 |
 | --- | --- | --- |
 | [最小计数器](examples/minimal/README.md) | `cargo run -p minimal --locked` | 单文件入门：窗口、文本、按钮与状态更新 |
+| [设置与绑定](examples/settings/README.md) | `cargo run -p settings --locked` | 共享属性、派生状态、局部刷新与后台任务 |
 | [传统控件展厅](examples/widget-gallery/README.md) | `cargo run -p widget-gallery --locked` | 主题、表单、菜单、树、虚拟表格与控件联动 |
 | [数据大屏](examples/dashboard/README.md) | `cargo run -p dashboard --locked` | 指标、趋势、模拟采样与暂停/恢复 |
 | [OpenGL 控件](docs/rendering.md#opengl-view) | `cargo run -p opengl --locked` | 自定义 shader 与 GL 绘制接入 |
 | [自定义 Widget](examples/custom-widget/README.md) | 阅读示例源码 | 仅依赖公共契约的自定义仪表，不是独立窗口程序 |
 
-完整示例目录及阅读顺序见 [examples](examples/README.md)。
+完整示例目录及阅读顺序见 [examples](examples/README.md)。新应用推荐采用 [声明式组件、属性绑定与类型化事件](docs/state.md)，已有 ViewApplication 消息应用保持兼容。
 
 控件展厅、数据大屏和 OpenGL 示例可追加 `-- --smoke-ms 1600` 自动退出，也可用 `-- cpu --smoke-ms 1600` 检查 CPU 路径。OpenGL 示例即使选择 CPU 合成，仍需要原生 OpenGL 环境。
 
