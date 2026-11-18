@@ -35,7 +35,8 @@ glifo = { version = "=0.4.0", default-features = false, features = ["std"] }
 skrifa = "=0.44.0"
 zui-layout = { path = "crates/zui-layout" }
 taffy = { version = "=0.15.0", default-features = false, features = ["std", "flexbox", "grid", "content_size"] }
-winit = "=0.30.13"
+# Includes the upstream Windows mixed-DPI drag fix (PR #4341).
+winit = "=0.31.0-beta.4"
 softbuffer = "=0.4.8"
 raw-window-handle = "0.6"
 vello_common = { version = "=0.3.0", default-features = false, features = ["std"] }

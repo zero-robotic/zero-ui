@@ -4,8 +4,9 @@ use winit::{
     application::ApplicationHandler,
     dpi::LogicalSize,
     event::WindowEvent as NativeEvent,
+    event_loop::run_on_demand::EventLoopExtRunOnDemand,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    window::{Window, WindowId},
+    window::{WindowAttributes, WindowId},
 };
 use zui_platform::{
     NativeWindow, PlatformError, RunReport, WindowAction, WindowConfig, WindowEvent, WindowHandler,
@@ -17,7 +18,7 @@ pub fn run(config: WindowConfig, handler: impl WindowHandler) -> Result<RunRepor
     if !config.size.is_valid() || config.size.width <= 0.0 || config.size.height <= 0.0 {
         return Err(PlatformError::Unsupported("invalid initial window size"));
     }
-    let event_loop = EventLoop::new().map_err(backend)?;
+    let mut event_loop = EventLoop::new().map_err(backend)?;
     let mut runner = Runner {
         proxy: event_loop.create_proxy(),
         config,
@@ -29,8 +30,12 @@ pub fn run(config: WindowConfig, handler: impl WindowHandler) -> Result<RunRepor
         start: Instant::now(),
         failure: None,
         report: RunReport::default(),
+        trace_window: std::env::var_os("ZUI_TRACE_WINDOW").is_some(),
     };
-    event_loop.run_app(&mut runner).map_err(backend)?;
+    // Preserve the synchronous API and borrowed handlers on desktop platforms.
+    let result = event_loop.run_app_on_demand(&mut runner);
+    runner.detach();
+    result.map_err(backend)?;
     match runner.failure {
         Some(error) => Err(error),
         None => Ok(runner.report),
@@ -38,7 +43,7 @@ pub fn run(config: WindowConfig, handler: impl WindowHandler) -> Result<RunRepor
 }
 
 struct Runner<H> {
-    proxy: winit::event_loop::EventLoopProxy<()>,
+    proxy: winit::event_loop::EventLoopProxy,
     config: WindowConfig,
     handler: H,
     window: Option<Arc<DesktopWindow>>,
@@ -48,6 +53,7 @@ struct Runner<H> {
     start: Instant,
     failure: Option<PlatformError>,
     report: RunReport,
+    trace_window: bool,
 }
 
 impl<H: WindowHandler> Runner<H> {
@@ -57,16 +63,30 @@ impl<H: WindowHandler> Runner<H> {
             ..window.metrics()
         })
     }
-    fn fail(&mut self, event_loop: &ActiveEventLoop, error: PlatformError) {
+    fn fail(&mut self, event_loop: &dyn ActiveEventLoop, error: PlatformError) {
         if self.failure.is_none() {
             self.failure = Some(error);
         }
         event_loop.exit();
     }
-    fn dispatch(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
+    fn dispatch(&mut self, event_loop: &dyn ActiveEventLoop, event: WindowEvent) {
         let Some(metrics) = self.metrics() else {
             return;
         };
+        if self.trace_window
+            && matches!(
+                event,
+                WindowEvent::Resized | WindowEvent::ScaleChanged | WindowEvent::RedrawRequested
+            )
+        {
+            eprintln!(
+                "zui window: {event:?}, physical={}x{}, scale={}, logical={:?}",
+                metrics.extent.width,
+                metrics.extent.height,
+                metrics.scale,
+                metrics.logical_size()
+            );
+        }
         self.report.events += 1;
         match self.handler.event(event, metrics, self.start.elapsed()) {
             Ok(action) => {
@@ -89,13 +109,13 @@ impl<H: WindowHandler> Runner<H> {
 }
 
 impl<H: WindowHandler> ApplicationHandler for Runner<H> {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         if self.window.is_some() {
             return;
         }
-        let attributes = Window::default_attributes()
+        let attributes = WindowAttributes::default()
             .with_title(&self.config.title)
-            .with_inner_size(LogicalSize::new(
+            .with_surface_size(LogicalSize::new(
                 self.config.size.width,
                 self.config.size.height,
             ))
@@ -119,17 +139,17 @@ impl<H: WindowHandler> ApplicationHandler for Runner<H> {
         self.dispatch(event_loop, WindowEvent::Resumed);
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, (): ()) {
+    fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.dispatch(event_loop, WindowEvent::ExternalWake);
     }
 
-    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+    fn destroy_surfaces(&mut self, _event_loop: &dyn ActiveEventLoop) {
         self.detach();
     }
 
     fn window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn ActiveEventLoop,
         window_id: WindowId,
         event: NativeEvent,
     ) {
@@ -155,7 +175,7 @@ impl<H: WindowHandler> ApplicationHandler for Runner<H> {
                 self.report.redraws += 1;
                 WindowEvent::RedrawRequested
             }
-            NativeEvent::Resized(_) => {
+            NativeEvent::SurfaceResized(_) => {
                 self.schedule.apply(WindowAction::redraw());
                 WindowEvent::Resized
             }
@@ -189,7 +209,7 @@ impl<H: WindowHandler> ApplicationHandler for Runner<H> {
         self.dispatch(event_loop, translated);
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         if self.schedule.take_wake(self.start.elapsed()) {
             self.dispatch(event_loop, WindowEvent::Wake);
         }
@@ -204,10 +224,6 @@ impl<H: WindowHandler> ApplicationHandler for Runner<H> {
             Some(deadline) => ControlFlow::WaitUntil(self.start + deadline),
             None => ControlFlow::Wait,
         });
-    }
-
-    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        self.detach();
     }
 }
 

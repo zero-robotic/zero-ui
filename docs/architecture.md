@@ -101,7 +101,7 @@ UI 树由单一执行上下文修改，在桌面上通常为主线程。首期�
 
 核心运行时接收输入事件、时间推进和任务结果，不直接创建线程或依赖特定异步执行器。平台层负责等待与唤醒；未来 MCU 可以使用应用驱动的循环或协作式执行器。
 
-`winit` 提供 `EventLoopProxy`，可以从其他线程唤醒事件循环，参见 [EventLoop 官方文档](https://docs.rs/winit/latest/winit/event_loop/struct.EventLoop.html)。
+桌面后端使用 winit 0.31 的 `EventLoopProxy::wake_up` 从其他线程唤醒事件循环，并转换为 ZUI 的 `ExternalWake`。唤醒可能合并，任务数据由应用层队列保存和消费，不能依赖唤醒次数计数任务。版本与生命周期适配详见[平台装配](platform.md#跨显示器与渲染尺寸限制)。
 
 
 <a id="rust-gui-framework-design--4-rust-所有权与控件树"></a>

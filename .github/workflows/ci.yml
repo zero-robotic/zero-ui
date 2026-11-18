@@ -2,6 +2,13 @@ name: Rust
 on: [push, pull_request]
 
 jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p zui-backend-winit -p zui-app --all-features --locked
+
   msrv:
     runs-on: ubuntu-latest
     steps:

@@ -137,6 +137,45 @@ Vello 渲染器、Parley 文本、Taffy 布局、桌面窗口及应用装配不�
 
 这些工作完成前，项目只声明“保留 MCU 扩展能力，指定可移植库已通过裸机编译”。
 
+## 跨显示器与渲染尺寸限制
+
+窗口与控件使用逻辑尺寸；平台提供实际物理尺寸和缩放比例，渲染目标直接使用物理尺寸，绘制坐标只缩放一次。跨屏拖动时原生窗口的位置与 DPI 尺寸调整由 winit 负责，业务层不需要再次调用 `request_size` 补偿缩放。
+
+当前精确锁定注册表版本 `winit = "=0.31.0-beta.4"`，使用已合入主线的 [PR #4341](https://github.com/rust-windowing/winit/pull/4341) 修复。该版本的 Windows 后端在 Windows 11 上直接采用 `WM_DPICHANGED` 提供的建议矩形，避免旧版跨屏位置修正引发连续 DPI 变化与窗口放大；Windows 10 的兼容处理仍由上游维护。不再依赖尚未合并的 0.30 补丁，也不跟随浮动的 master。此版本仍为预发布版，升级需固定版本并重新验证。
+
+0.31 的 API 变化集中适配在 `zui-backend-winit`：
+
+- 使用 `can_create_surfaces` / `destroy_surfaces` 管理窗口及呈现资源；桌面 `run_app_on_demand` 保留同步返回和借用 handler 的现有接口，返回后释放呈现资源，再释放原生窗口。
+- `EventLoopProxy::wake_up` 对接原有 `ExternalWake`；允许合并唤醒，业务任务仍从队列取出。
+- `surface_size` 提供物理渲染尺寸；统一指针事件转换为原有鼠标/触摸事件，点击使用事件自身坐标，触摸离开按释放或取消分别处理。
+- 通过 `request_ime_update` 启用/关闭 IME 并更新逻辑坐标下的候选窗口区域；只声明现有接口支持的能力。空格键与 Meta 修饰键映射到原有 ZUI 键盘协议。
+
+布局、控件、渲染与应用公共接口保持不变。ZUI 不增加重复的 DPI 尺寸状态机，也不通过跳帧或提高像素预算掩盖无限放大。
+
+可设置环境变量 `ZUI_TRACE_WINDOW=1`，记录尺寸变化、DPI 变化与重绘时的物理/逻辑尺寸。该诊断默认关闭。Windows 手动验收应使用 3840×2160 / 150% 与 3072×1920 / 200% 双屏，分别从标题栏左侧和中间往返拖动普通窗口、最大化后拖动还原的窗口，确认无持续增长、闪退，且文字、鼠标命中与输入法位置正确；另外检查缩放设置改变和最大化/还原。自动化 Windows CI 只覆盖构建与单元测试，不代替双屏交互验收。
+
+### 应用升级与验证
+
+通过 Git 引用 ZUI 的应用，需要先将各个 ZUI 依赖的 `rev` 统一更新到包含此次升级的提交，再重新解析并提交应用自己的 `Cargo.lock`。只更新 ZUI 仓库内的锁文件不会更新其他应用；固定旧 `rev` 时重复运行 `cargo run --locked` 仍使用旧实现。应用无需自行添加 winit 补丁或改写业务接口。
+
+在 ZUI 仓库运行以下命令可验证后端、应用适配与原生窗口：
+
+```sh
+cargo test -p zui-backend-winit -p zui-app -p minimal -p settings --all-features --locked
+cargo run -p settings --no-default-features --features cpu --locked -- cpu --smoke
+cargo run -p settings --no-default-features --features gpu --locked -- gpu --smoke
+```
+
+冒烟测试验证窗口启动、后台完成事件唤醒和自动退出，不验证真实双屏拖动或人工输入法交互。本次升级已通过上述 macOS 验证、Windows 后端及 GPU 应用交叉编译、依赖边界检查和工作区 Clippy；Windows 双屏交互仍待实机验收。
+
+Windows PowerShell 中可开启日志后手动拖动示例窗口，关闭窗口后取消日志开关：
+
+```powershell
+$env:ZUI_TRACE_WINDOW = "1"
+cargo run -p settings --locked -- gpu 2> window-trace.log
+Remove-Item Env:ZUI_TRACE_WINDOW
+```
+
 ## 可观察组件与后台结果
 
 `zui-app::reactive::ReactiveApplication` 是既有 ViewApplication 的可选适配器，提供属性观察、类型化事件与区域更新，不替换 WidgetHost。新应用可从 [应用状态与绑定](state.md) 和 settings 示例开始；已有消息应用继续使用原接口。

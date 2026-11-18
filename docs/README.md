@@ -15,7 +15,7 @@
 | 复合控件、菜单与弹层 | [复合控件、菜单与弹层](advanced-widgets.md) | 表格、树、表单、选择器、菜单、弹层与窗口装饰边界 |
 | 绘制契约、资源与渲染适配 | [绘制契约、资源与渲染适配](rendering.md) | 后端选型、区域缓存、Canvas、图片与可选 OpenGL |
 | 可选扩展 | [可选扩展：图表与大屏](visualization.md) | zui-extras 功能开关、图表、指标卡与大屏 |
-| 应用装配、平台与可移植性 | [应用装配、平台与可移植性](platform.md) | WidgetHost、窗口装配、刷新计时与 MCU 边界 |
+| 应用装配、平台与可移植性 | [应用装配、平台与可移植性](platform.md) | WidgetHost、窗口生命周期、跨屏 DPI、后端升级与 MCU 边界 |
 | 跨层约束 | [模块分层与依赖约束](module-boundaries.md) | 依赖方向、状态所有权与服务注入 |
 | 实施计划 | [未完成事项与实施约束](implementation-plan.md) | 待实现、待验收与验收门槛 |
 
